@@ -1,0 +1,49 @@
+{
+  "name": "handsfree",
+  "version": "0.1.0",
+  "description": "Local small-LLM orchestrator that delegates tasks to frontier-model CLIs (claude, gemini, codex) running headless",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "handsfree": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "e2e:tui": "pnpm build && HANDSFREE_E2E_SKIP_LLM_CHECK=1 vitest run --config vitest.e2e.config.ts e2e/00-tui-visual.e2e.ts",
+    "e2e:report": "open e2e-report/index.html",
+    "e2e:core": "pnpm build && vitest run --config vitest.e2e.config.ts e2e/01-core-llm.e2e.ts",
+    "e2e:claude": "pnpm build && vitest run --config vitest.e2e.config.ts e2e/02-delegate-claude.e2e.ts",
+    "e2e:gemini": "pnpm build && vitest run --config vitest.e2e.config.ts e2e/03-delegate-gemini.e2e.ts",
+    "e2e:codex": "pnpm build && vitest run --config vitest.e2e.config.ts e2e/04-delegate-codex.e2e.ts",
+    "e2e:smoke": "pnpm build && vitest run --config vitest.e2e.config.ts e2e/01-core-llm.e2e.ts e2e/02-delegate-claude.e2e.ts",
+    "e2e": "pnpm build && vitest run --config vitest.e2e.config.ts"
+  },
+  "dependencies": {
+    "execa": "^10.0.1",
+    "ink": "^7.1.1",
+    "ink-spinner": "^5.0.0",
+    "ink-text-input": "^6.0.0",
+    "openai": "^7.5.0",
+    "react": "^19.2.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.2.0",
+    "@xterm/headless": "^6.0.0",
+    "ink-testing-library": "^4.0.0",
+    "node-pty": "^1.1.0",
+    "sharp": "^0.35.3",
+    "tsup": "^8.5.1",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.0"
+  }
+}

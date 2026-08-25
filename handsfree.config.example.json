@@ -1,0 +1,31 @@
+{
+  "llm": {
+    "baseURL": "http://localhost:1234/v1",
+    "model": "google/gemma-3-12b",
+    "apiKey": "not-needed",
+    "temperature": 0.1
+  },
+  "orchestrator": {
+    "maxTurns": 6,
+    "maxDelegationsPerMessage": 3
+  },
+  "agents": {
+    "claude": {
+      "enabled": true,
+      "permissionMode": "acceptEdits",
+      "allowedTools": ["Read", "Write", "Edit", "Glob", "Grep"],
+      "timeoutMs": 300000
+    },
+    "gemini": {
+      "enabled": true,
+      "approvalMode": "auto_edit",
+      "model": "gemini-3.5-flash",
+      "timeoutMs": 300000
+    },
+    "codex": {
+      "enabled": true,
+      "sandbox": "workspace-write",
+      "timeoutMs": 300000
+    }
+  }
+}
