@@ -36,4 +36,11 @@ export const BAND = '#3a3a3a';
 export const RESULT_GUTTER = '⎿';
 export const RESULT_INDENT = ' ';
 
+/**
+ * The startup mark, drawn the way Claude Code draws its condensed logo: three
+ * rows of quadrant blocks in the brand colour, with the terminal's own
+ * background showing through as the face.
+ */
+export const MASCOT = [' ▐▛███▜▌ ', '▝▜█████▛▘', '  ▘▘ ▝▝  '] as const;
+
 export const SPINNER = ['·', '✢', '✳', '∗', '✻', '✽'];

@@ -5,12 +5,20 @@ import type { Runtime } from '../../runtime.js';
 import { buildView, type Tone, type ViewItem } from '../view-model.js';
 import { itemAt, lastFitting, placeItems } from './layout.js';
 import { CURSOR_QUERY, isMouseReport, parseCursorReport, parseMouseEvent, trackMouse } from './mouse.js';
-import { BAND, BRAND, COLOUR, GLYPH, RESULT_GUTTER, RESULT_INDENT, SPINNER } from './theme.js';
+import { BAND, BRAND, COLOUR, GLYPH, MASCOT, RESULT_GUTTER, RESULT_INDENT, SPINNER } from './theme.js';
+import { VERSION } from '../../version.js';
 
 const EXPAND_HINT = 'click or ctrl+o to expand';
 
-/** Rows above the transcript: the header line and the blank one under it. */
-const HEADER_ROWS = 2;
+/**
+ * Rows above the transcript: the welcome box — its title border, eight content
+ * rows, its bottom border — and the blank row under it. The box never wraps,
+ * so this stays a constant a click's row can be measured against.
+ */
+const HEADER_ROWS = 11;
+
+/** Below this many columns the box drops its tips column and keeps only the mark. */
+const WIDE_HEADER = 70;
 
 /** Rows below it: the prompt's blank line, its bordered box, and the hint. */
 const PROMPT_ROWS = 5;
@@ -39,6 +47,15 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   const { stdout } = useStdout();
   const [items, setItems] = useState<ViewItem[]>([]);
   const [draft, setDraft] = useState<Draft>({ value: '', cursor: 0 });
+  // The draft's synchronous truth. Keys fused into one stdin chunk are all
+  // handled before React re-renders, so a handler that read `draft` would see
+  // the value from before any of them; edits go through this ref and state
+  // only mirrors it for rendering.
+  const draftRef = useRef<Draft>(draft);
+  const applyDraft = (update: (d: Draft) => Draft) => {
+    draftRef.current = update(draftRef.current);
+    setDraft(draftRef.current);
+  };
   const [startedAt, setStartedAt] = useState<number | undefined>();
   const [ask, setAsk] = useState<PendingAsk | undefined>();
   const [openTasks, setOpenTasks] = useState<ReadonlySet<number>>(() => new Set());
@@ -103,7 +120,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   // rendering share the result, or a click would be measured against a
   // different frame than the one on screen.
   const shown = useMemo(() => {
-    const fitting = lastFitting(items, Math.max(rows - 9, 8), columns);
+    const fitting = lastFitting(items, Math.max(rows - 1 - HEADER_ROWS - PROMPT_ROWS, 8), columns);
     return fitting.map((item, index) => (index === 0 && item.gap ? { ...item, gap: false } : item));
   }, [items, rows, columns]);
   const placements = useMemo(() => placeItems(shown, columns, HEADER_ROWS), [shown, columns]);
@@ -114,19 +131,19 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   );
   const allOpen = tasks.size > 0 && [...tasks].every((id) => openTasks.has(id));
   // Mouse rows are screen rows, but the frame starts wherever the shell prompt
-  // left it and drifts up once output reaches the bottom of the window — so
-  // where it sits is measured, not assumed. After each layout settles the
-  // terminal is asked where its cursor is; Ink parks it on the line under the
-  // frame, so the answer minus the frame's height is the frame's first row.
-  // Until the first answer lands, clicks assume a fresh terminal: the frame
-  // immediately below the command that launched us.
+  // left it — so where it sits is measured, not assumed. After each layout
+  // settles the terminal is asked where its cursor is; Ink parks it on the
+  // line under the frame, and the frame is a fixed rows-1 tall, so the answer
+  // minus that height is the frame's first row. Until the first answer lands,
+  // clicks assume a fresh terminal: the frame immediately below the command
+  // that launched us.
   const frameTop = useRef<number | undefined>(undefined);
   useEffect(() => {
-    if (!stdout?.isTTY || ask) return;
+    if (!stdout?.isTTY) return;
     // Past Ink's render throttle, so the answer describes this frame.
     const timer = setTimeout(() => stdout.write(CURSOR_QUERY), 80);
     return () => clearTimeout(timer);
-  }, [stdout, placements, ask]);
+  }, [stdout, placements]);
 
   const toggleTask = (taskId: number) =>
     setOpenTasks((current) => {
@@ -143,12 +160,13 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
 
   const submit = (text: string) => {
     const trimmed = text.trim();
-    setDraft({ value: '', cursor: 0 });
-    if (trimmed === '' || busy) return;
+    applyDraft(() => ({ value: '', cursor: 0 }));
     if (trimmed === '/quit' || trimmed === '/exit') {
+      runtime.conversation.cancel();
       exit();
       return;
     }
+    if (trimmed === '' || busy) return;
     if (trimmed === '/reset') {
       runtime.conversation.reset();
       return;
@@ -169,13 +187,9 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     }
     const cursorRow = parseCursorReport(char);
     if (cursorRow !== undefined) {
-      // The answer describes the frame the terminal had when it replied; while
-      // an ask is up the footer is not the prompt, so the height would lie.
-      if (!ask) {
-        const transcript = layout.current;
-        const bottom = transcript[transcript.length - 1]?.bottom ?? HEADER_ROWS;
-        frameTop.current = Math.max(0, cursorRow - (bottom + PROMPT_ROWS));
-      }
+      // The frame fills the window whatever it holds, so the answer minus its
+      // fixed height is the frame's first row — even while an ask is up.
+      frameTop.current = Math.max(0, cursorRow - (rows - 1));
       return;
     }
     if (isMouseReport(char)) {
@@ -208,27 +222,27 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     // While a turn runs the prompt is off screen, so nothing below applies.
     if (busy) return;
     if (key.return) {
-      submit(draft.value);
+      submit(draftRef.current.value);
       return;
     }
     if (key.leftArrow) {
-      setDraft((d) => ({ ...d, cursor: Math.max(0, d.cursor - 1) }));
+      applyDraft((d) => ({ ...d, cursor: Math.max(0, d.cursor - 1) }));
       return;
     }
     if (key.rightArrow) {
-      setDraft((d) => ({ ...d, cursor: Math.min([...d.value].length, d.cursor + 1) }));
+      applyDraft((d) => ({ ...d, cursor: Math.min([...d.value].length, d.cursor + 1) }));
       return;
     }
     if (key.home || (key.ctrl && char === 'a')) {
-      setDraft((d) => ({ ...d, cursor: 0 }));
+      applyDraft((d) => ({ ...d, cursor: 0 }));
       return;
     }
     if (key.end || (key.ctrl && char === 'e')) {
-      setDraft((d) => ({ ...d, cursor: [...d.value].length }));
+      applyDraft((d) => ({ ...d, cursor: [...d.value].length }));
       return;
     }
     if (key.backspace) {
-      setDraft((d) => {
+      applyDraft((d) => {
         if (d.cursor === 0) return d;
         const chars = [...d.value];
         chars.splice(d.cursor - 1, 1);
@@ -238,7 +252,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     }
     // Forward delete: fn+delete on a Mac keyboard, the Delete key elsewhere.
     if (key.delete) {
-      setDraft((d) => {
+      applyDraft((d) => {
         const chars = [...d.value];
         if (d.cursor >= chars.length) return d;
         chars.splice(d.cursor, 1);
@@ -249,30 +263,27 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     // Chords and special keys carry no text to type; Ink hands the latter to
     // us as an empty string.
     if (key.ctrl || key.meta || key.tab || char === '') return;
-    setDraft((d) => {
-      const chars = [...d.value];
-      const typed = [...char];
-      chars.splice(d.cursor, 0, ...typed);
-      return { value: chars.join(''), cursor: d.cursor + typed.length };
-    });
+    // Keys or a paste fused into one stdin chunk arrive as a single event
+    // whose `return` flag is never set — a line break inside the text is the
+    // enter it carries, so it submits right where it sits.
+    for (const [index, segment] of char.split(/\r\n|[\r\n]/).entries()) {
+      if (index > 0) submit(draftRef.current.value);
+      if (segment === '') continue;
+      applyDraft((d) => {
+        const chars = [...d.value];
+        const typed = [...segment];
+        chars.splice(d.cursor, 0, ...typed);
+        return { value: chars.join(''), cursor: d.cursor + typed.length };
+      });
+    }
   });
 
+  // The frame takes the whole window minus the line Ink keeps the cursor on:
+  // the spacer below the transcript is what pushes the prompt to the bottom,
+  // the way Claude Code's chat sits under its welcome box.
   return (
-    <Box flexDirection="column">
-      {/* Kept to exactly one row: HEADER_ROWS is what a click's row is measured
-          against, so a workspace path long enough to wrap would aim every click
-          two lines off. The tail of the path is the part worth keeping. */}
-      <Box marginBottom={1}>
-        <Box flexShrink={0}>
-          <Text color={BRAND}>✻ </Text>
-          <Text bold>handsfree</Text>
-        </Box>
-        <Box flexShrink={1} paddingLeft={2}>
-          <Text color="gray" wrap="truncate-start">
-            {tildify(runtime.workspace.dir)}
-          </Text>
-        </Box>
-      </Box>
+    <Box flexDirection="column" height={rows - 1}>
+      <Header runtime={runtime} columns={columns} />
 
       <Box flexDirection="column">
         {shown.map((item, index) => {
@@ -291,11 +302,97 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
         })}
       </Box>
 
+      <Box flexGrow={1} />
+
       {ask ? (
         <Ask ask={ask} />
       ) : (
         <Prompt draft={draft} startedAt={startedAt} allOpen={allOpen} />
       )}
+    </Box>
+  );
+}
+
+/**
+ * The welcome box, in the shape of Claude Code's full logo: the name and
+ * version worked into the top border, the mark and its facts centred on the
+ * left, and — when the terminal is wide enough — a tips column across a faint
+ * rule. Ink cannot put text in a border, so the top edge is drawn by hand and
+ * the box below it goes without one.
+ *
+ * Kept to exactly HEADER_ROWS rows — that constant is what a click's row is
+ * measured against — so every line truncates rather than wraps, and the tail
+ * of the path is the part worth keeping.
+ */
+function Header({ runtime, columns }: { runtime: Runtime; columns: number }): React.JSX.Element {
+  const agents = Object.entries(runtime.config.agents)
+    .filter(([, profile]) => profile.enabled)
+    .map(([id]) => id)
+    .join(', ');
+  const model = `${runtime.config.llm.model} · ${agents}`;
+  const welcome = 'Welcome back!';
+  const title = ` handsfree v${VERSION} `;
+  const border = `╭─${title}${'─'.repeat(Math.max(0, columns - 3 - title.length))}╮`;
+  const wide = columns >= WIDE_HEADER;
+  return (
+    <Box flexDirection="column" marginBottom={1}>
+      <Text color={BRAND} wrap="truncate">
+        {border}
+      </Text>
+      <Box borderStyle="round" borderColor={BRAND} borderTop={false} paddingX={1} gap={2}>
+        <Box
+          flexDirection="column"
+          alignItems="center"
+          flexShrink={0}
+          flexGrow={wide ? 0 : 1}
+          width={wide ? Math.min(50, Math.max(24, welcome.length + 4, model.length + 4)) : undefined}
+        >
+          <Text bold wrap="truncate">
+            {welcome}
+          </Text>
+          <Box height={1} />
+          {MASCOT.map((line, index) => (
+            <Text key={index} color={BRAND}>
+              {line}
+            </Text>
+          ))}
+          <Box height={1} />
+          <Text color="gray" wrap="truncate">
+            {model}
+          </Text>
+          <Text color="gray" wrap="truncate-start">
+            {tildify(runtime.workspace.dir)}
+          </Text>
+        </Box>
+        {wide ? (
+          <Box
+            borderStyle="single"
+            borderColor={BRAND}
+            borderDimColor
+            borderTop={false}
+            borderBottom={false}
+            borderLeft={false}
+          />
+        ) : null}
+        {wide ? (
+          <Box flexDirection="column" flexShrink={1}>
+            <Text color={BRAND} bold wrap="truncate">
+              Tips for getting started
+            </Text>
+            <Text wrap="truncate">Describe a task and handsfree delegates it to an agent</Text>
+            <Box height={1} />
+            <Text color="gray" dimColor>
+              ────────
+            </Text>
+            <Box height={1} />
+            <Text color={BRAND} bold wrap="truncate">
+              Shortcuts
+            </Text>
+            <Text wrap="truncate">click a task · ctrl+o to expand all · esc to interrupt</Text>
+            <Text wrap="truncate">/reset to start over · /quit to leave</Text>
+          </Box>
+        ) : null}
+      </Box>
     </Box>
   );
 }
