@@ -228,6 +228,21 @@ describe('PolicyEngine', () => {
     expect(audit.map((entry) => entry.verdict)).toEqual(['allow', 'deny']);
     expect(audit[0]?.summary).toBe('read a.ts');
   });
+
+  it('summarises a tool call without repeating the workspace path', async () => {
+    const audit: AuditEntry[] = [];
+    const policy = engine({}, undefined, audit);
+    await policy.resolve({
+      kind: 'tool',
+      toolKind: 'edit',
+      // Adapters put the absolute path in the title and again in `locations`.
+      title: `Write ${inside('query.txt')}`,
+      locations: [inside('query.txt')],
+      rawInput: null,
+      ...where,
+    });
+    expect(audit[0]?.summary).toBe('Write query.txt');
+  });
 });
 
 describe('pathsFromRawInput', () => {

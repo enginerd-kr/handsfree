@@ -314,8 +314,12 @@ export function describe(request: PolicyRequest, jail?: Jail): string {
     case 'exec':
       return `run ${render([request.command, ...request.args])}`;
     case 'tool': {
-      const where = request.locations.length > 0 ? ` [${request.locations.map(rel).join(', ')}]` : '';
-      return `${request.title}${where}`;
+      // Adapters put the absolute path straight into the title, so cutting the
+      // paths down has to happen inside the sentence as well as beside it.
+      let title = request.title;
+      for (const target of request.locations) title = title.split(target).join(rel(target));
+      const unnamed = request.locations.map(rel).filter((target) => !title.includes(target));
+      return unnamed.length > 0 ? `${title} [${unnamed.join(', ')}]` : title;
     }
   }
 }
