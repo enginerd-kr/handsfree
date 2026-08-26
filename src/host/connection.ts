@@ -14,6 +14,7 @@ import type { HostContext } from '../capabilities/context.js';
 import { createFsHandlers } from '../capabilities/fs.js';
 import { createPermissionHandler } from '../capabilities/permission.js';
 import { TerminalRegistry } from '../capabilities/terminal.js';
+import { VERSION } from '../version.js';
 import { HostSession } from './session.js';
 
 export interface ConnectionTarget {
@@ -57,7 +58,7 @@ export class AuthenticationRequiredError extends Error {
 const CLIENT_INFO: Implementation = {
   name: 'handsfree',
   title: 'handsfree',
-  version: '0.2.0',
+  version: VERSION,
 };
 
 /**

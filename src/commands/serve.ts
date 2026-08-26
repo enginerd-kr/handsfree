@@ -12,6 +12,7 @@ import type { Config } from '../config/schema.js';
 import { createRuntime, type Runtime, type RuntimeOptions } from '../runtime.js';
 import type { Escalator } from '../policy/types.js';
 import type { TranscriptRecord } from '../workspace/transcript.js';
+import { VERSION } from '../version.js';
 
 interface ServedSession {
   runtime: Runtime;
@@ -37,7 +38,7 @@ export function createServeApp(config: Config, overrides: Partial<RuntimeOptions
   const app = agent({ name: 'handsfree' })
     .onRequest(methods.agent.initialize, () => ({
       protocolVersion: PROTOCOL_VERSION,
-      agentInfo: { name: 'handsfree', title: 'handsfree', version: '0.2.0' },
+      agentInfo: { name: 'handsfree', title: 'handsfree', version: VERSION },
       agentCapabilities: { loadSession: false, promptCapabilities: { embeddedContext: true } },
       authMethods: [],
     }))

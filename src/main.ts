@@ -1,6 +1,7 @@
 import { loadConfig } from './config/load.js';
 import { doctor } from './commands/doctor.js';
 import { run } from './commands/run.js';
+import { VERSION } from './version.js';
 
 const USAGE = `handsfree — an ACP host for frontier coding agents
 
@@ -63,7 +64,7 @@ async function main(): Promise<number> {
     return 0;
   }
   if (args.command === 'version') {
-    process.stdout.write('handsfree 0.2.0\n');
+    process.stdout.write(`handsfree ${VERSION}\n`);
     return 0;
   }
 
