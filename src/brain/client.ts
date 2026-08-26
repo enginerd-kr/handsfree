@@ -6,9 +6,14 @@ export interface ChatMessage {
   content: string;
 }
 
+export interface JsonSchemaSpec {
+  name: string;
+  schema: Record<string, unknown>;
+}
+
 export interface ChatOptions {
-  /** Ask the endpoint for a JSON object. Ignored by servers that do not support it. */
-  json?: boolean;
+  /** Ask the endpoint to constrain the reply to this JSON Schema, if it can. */
+  schema?: JsonSchemaSpec;
   signal?: AbortSignal;
 }
 
@@ -17,12 +22,28 @@ export interface ChatClient {
 }
 
 /**
+ * Which way of asking for JSON this endpoint accepts. Local servers disagree:
+ * LM Studio wants `json_schema` and rejects `json_object` outright, older
+ * llama.cpp builds accept only `json_object`, and some accept neither. Guessing
+ * wrong fails the request rather than degrading, so the first failure is used to
+ * pick the next rung down and remembered.
+ */
+type Mode = 'json_schema' | 'json_object' | 'text';
+
+const NEXT: Record<Mode, Mode> = {
+  json_schema: 'json_object',
+  json_object: 'text',
+  text: 'text',
+};
+
+/**
  * The local model. It routes work and writes the summary; it never decides
  * whether a side effect is allowed. Keeping it out of the policy path is what
  * makes it safe to run a small, quantised model here.
  */
 export class LocalModel implements ChatClient {
   private readonly client: OpenAI;
+  private mode: Mode = 'json_schema';
 
   constructor(private readonly config: Config['llm']) {
     this.client = new OpenAI({
@@ -34,17 +55,53 @@ export class LocalModel implements ChatClient {
   }
 
   async chat(messages: ChatMessage[], options: ChatOptions = {}): Promise<string> {
+    if (!options.schema) return this.send(messages, undefined, options.signal);
+
+    for (;;) {
+      const mode = this.mode;
+      try {
+        return await this.send(messages, mode === 'text' ? undefined : mode, options.signal, options.schema);
+      } catch (err) {
+        if (mode === 'text' || !isFormatRejection(err)) throw err;
+        // The endpoint told us it cannot honour this way of asking. Step down
+        // and try again rather than reporting a planning failure the user can
+        // do nothing about.
+        this.mode = NEXT[mode];
+      }
+    }
+  }
+
+  private async send(
+    messages: ChatMessage[],
+    mode: Exclude<Mode, 'text'> | undefined,
+    signal: AbortSignal | undefined,
+    schema?: JsonSchemaSpec,
+  ): Promise<string> {
+    const response_format =
+      mode === 'json_schema' && schema
+        ? { type: 'json_schema' as const, json_schema: { name: schema.name, schema: schema.schema, strict: false } }
+        : mode === 'json_object'
+          ? { type: 'json_object' as const }
+          : undefined;
+
     const response = await this.client.chat.completions.create(
       {
         model: this.config.model,
         temperature: this.config.temperature,
         messages,
-        ...(options.json ? { response_format: { type: 'json_object' as const } } : {}),
+        ...(response_format ? { response_format } : {}),
       },
-      { signal: options.signal },
+      { signal },
     );
     return response.choices[0]?.message?.content ?? '';
   }
+}
+
+/** True when the endpoint refused the *shape* of the request, not the content. */
+function isFormatRejection(err: unknown): boolean {
+  const error = err as { status?: number; message?: string };
+  if (error.status !== undefined && error.status !== 400 && error.status !== 422) return false;
+  return /response_format|json_schema|json_object|schema/i.test(error.message ?? '');
 }
 
 /** Keeps the system prompt and the most recent window. */

@@ -76,6 +76,19 @@ Every side effect an agent causes arrives through one of three calls, and each i
 
 The point of turning it on is not convenience. An agent that cannot use our terminal falls back to its own shell, where all we ever see is the permission request — so the choice is between commands we mediate and commands we merely hear about.
 
+### What each agent actually does
+
+Adapters differ more than the protocol suggests, and the differences decide what handsfree can allow:
+
+| | claude-code-acp 0.16.2 | gemini `--experimental-acp` | codex-acp 0.16.0 |
+|---|---|---|---|
+| file reads/writes | through `fs/*` | through `fs/*` | through `fs/*` |
+| permission requests | no `kind`, no `locations`; file in `rawInput` | `kind` and `locations` present | — |
+| shell commands | uses `terminal/*` when offered | its own shell; command only in the title | — |
+| `session/load` | yes | no | yes |
+
+Where an agent names its command only in a human-readable title, handsfree refuses it — approving would mean approving whatever that agent's own shell decides to run, which is exactly what the allowlist exists to prevent. In practice that means **gemini can create and edit files but cannot run commands** under handsfree, and it will say so plainly when asked to.
+
 ### How a decision is made
 
 ```

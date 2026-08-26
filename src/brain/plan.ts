@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { extractJsonObject } from './json.js';
-import type { ChatClient, ChatMessage } from './client.js';
+import type { ChatClient, ChatMessage, JsonSchemaSpec } from './client.js';
 
 export const StepSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('answer'), message: z.string() }),
@@ -12,6 +12,12 @@ export const StepSchema = z.discriminatedUnion('action', [
   }),
 ]);
 export type Step = z.infer<typeof StepSchema>;
+
+/** Handed to endpoints that can constrain a reply to a schema. */
+export const STEP_SCHEMA: JsonSchemaSpec = {
+  name: 'handsfree_step',
+  schema: z.toJSONSchema(StepSchema) as Record<string, unknown>,
+};
 
 export type ParsedStep = { ok: true; step: Step } | { ok: false; error: string };
 
@@ -92,7 +98,7 @@ export async function nextStep(
               content: `That reply was unusable: ${last.ok ? '' : last.error} Reply with ONLY one JSON object matching the schema.`,
             },
           ];
-    const reply = await llm.chat(prompt, { json: true, signal });
+    const reply = await llm.chat(prompt, { schema: STEP_SCHEMA, signal });
     last = parseStep(reply, agents);
     if (last.ok) return last;
   }

@@ -67,7 +67,10 @@ export const DEFAULT_AGENTS: Record<string, z.input<typeof AgentProfileSchema>> 
   },
   gemini: {
     command: 'gemini',
-    args: ['--experimental-acp'],
+    // The model is pinned on purpose: left to itself the CLI picks a default
+    // that is already retired for new keys, and the turn fails with a generic
+    // "Internal error" the first time you prompt it.
+    args: ['--experimental-acp', '-m', 'gemini-3.5-flash'],
     note: 'fast, good at bulk text and single-file work',
   },
   codex: {

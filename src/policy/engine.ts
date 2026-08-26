@@ -216,10 +216,14 @@ export class PolicyEngine {
       case 'execute': {
         const command = commandFromRawInput(request.rawInput);
         if (!command) {
+          // Some agents describe a command only in the title and keep the real
+          // invocation to themselves — gemini does. Approving that would be
+          // approving whatever its own shell decides to run, which is the one
+          // thing the allowlist exists to prevent. There is no safe yes here.
           return {
             outcome: 'deny',
             rule: 'tool.opaqueCommand',
-            reason: `cannot tell what "${request.title}" would run`,
+            reason: 'the agent did not say what it would run in a form handsfree can check',
           };
         }
         return this.execRule(command.command, command.args, undefined);

@@ -170,6 +170,40 @@ describe('filesystem gate', () => {
     expect(fs.existsSync('/tmp/handsfree-should-not-exist.txt')).toBe(false);
   });
 
+  // Gemini reads a file before creating it. An error here sends it to its own
+  // shell instead, which is the one path handsfree cannot mediate.
+  it('reads a file that does not exist yet as empty, and records that it did', async () => {
+    const results: { ok: boolean; detail: string }[] = [];
+    const { runtime } = await runTurn((dir) => [
+      {
+        do: 'read',
+        path: path.join(dir, 'not-created-yet.txt'),
+        onResult: (result) => results.push(result),
+      },
+    ]);
+
+    expect(results[0]).toMatchObject({ ok: true, detail: '' });
+    const notes = runtime.transcript
+      .all()
+      .filter((record) => record.type === 'note')
+      .map((record) => (record.type === 'note' ? record.text : ''));
+    expect(notes.some((text) => text.includes('does not exist yet'))).toBe(true);
+  });
+
+  it('still refuses a file that does not exist outside the workspace', async () => {
+    const results: { ok: boolean; detail: string }[] = [];
+    await runTurn(() => [
+      {
+        do: 'read',
+        path: '/etc/handsfree-not-a-real-file',
+        onResult: (result) => results.push(result),
+      },
+    ]);
+
+    expect(results[0]?.ok).toBe(false);
+    expect(results[0]?.detail).toContain('denied');
+  });
+
   it('refuses a traversal dressed up as an in-workspace path', async () => {
     const results: { ok: boolean; detail: string }[] = [];
     await runTurn((dir) => [

@@ -30,7 +30,21 @@ export function createFsHandlers(host: HostContext) {
       try {
         content = fs.readFileSync(params.path, 'utf8');
       } catch (err) {
-        throw RequestError.resourceNotFound(`${params.path}: ${(err as Error).message}`);
+        // A file that is not there yet reads as empty. Agents check for an
+        // existing file before creating one, and an error here does not make
+        // them careful — it makes them give up on the mediated path and reach
+        // for their own shell, which is the one place we cannot see. The write
+        // that follows still has to pass the gate, and the record below keeps
+        // the leniency from being silent.
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw RequestError.internalError(`${params.path}: ${(err as Error).message}`);
+        }
+        host.transcript.append({
+          type: 'note',
+          level: 'info',
+          text: `read ${host.jail.display(params.path)} — does not exist yet, returned empty`,
+        });
+        return { content: '' };
       }
       return { content: slice(content, params.line ?? null, params.limit ?? null) };
     },

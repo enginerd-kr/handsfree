@@ -214,9 +214,13 @@ export class AgentConnection {
       sessionId,
       {
         prompt: (request: PromptRequest, signal: AbortSignal) =>
-          this.connection.agent.request(methods.agent.session.prompt, request, {
-            cancellationSignal: signal,
-          }),
+          this.connection.agent
+            .request(methods.agent.session.prompt, request, { cancellationSignal: signal })
+            // The reason a turn failed — a retired model, a quota, a missing
+            // login — arrives in `data.details` behind a generic message.
+            .catch((err: unknown) => {
+              throw this.explain(err);
+            }),
         cancel: (id: string) =>
           this.connection.agent.notify(methods.agent.session.cancel, { sessionId: id }),
       },
