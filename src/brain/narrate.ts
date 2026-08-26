@@ -45,10 +45,32 @@ export async function narrate(
       { signal },
     );
     const prose = asProse(reply);
-    return prose || ledger;
+    return grounded(prose, input) ? prose : ledger;
   } catch {
     return ledger;
   }
+}
+
+/**
+ * A small model asked to summarise sometimes answers the conversation instead
+ * of the work — "Great! What's next?" after a task that created a file. A turn
+ * that delegated must report what it delegated, so a summary that names neither
+ * the agent nor anything it touched is discarded in favour of the ledger.
+ */
+function grounded(prose: string, input: NarrateInput): boolean {
+  if (prose === '') return false;
+  if (input.outcomes.length === 0) return true;
+
+  const text = prose.toLowerCase();
+  return input.outcomes.some((outcome) => {
+    if (text.includes(outcome.agentId.toLowerCase())) return true;
+    if (text.includes(outcome.status)) return true;
+    return outcome.files.some((file) => text.includes(basename(file).toLowerCase()));
+  });
+}
+
+function basename(file: string): string {
+  return file.split('/').pop() ?? file;
 }
 
 export function renderLedger(input: NarrateInput): string {

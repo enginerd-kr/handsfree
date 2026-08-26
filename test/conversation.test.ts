@@ -156,6 +156,42 @@ describe('Conversation', () => {
     expect(reply).not.toContain('done');
   });
 
+  it('discards a summary that does not report the work', async () => {
+    const agent = fakeAgent({
+      script: () => [
+        {
+          do: 'tool',
+          toolCallId: 't1',
+          title: 'Write notes.txt',
+          kind: 'edit',
+          locations: ['/tmp/notes.txt'],
+        },
+      ],
+    });
+    // What gemma-3-12b actually replies when asked to summarise a finished task.
+    const llm = scriptedModel([delegate('Create notes.txt'), "Great! What's next?"]);
+    // One step, so the reply after the task is the summary rather than a plan.
+    const h = harness({ agents: { claude: agent }, llm, config: { limits: { maxPlanSteps: 1 } } });
+    open = h;
+
+    await h.runtime.conversation.send('make notes.txt');
+
+    const reply = assistantText(h).at(-1) ?? '';
+    expect(reply).not.toBe("Great! What's next?");
+    expect(reply).toContain('Task 1 (claude): done');
+  });
+
+  it('keeps a summary that does report the work', async () => {
+    const agent = fakeAgent({ script: () => [{ do: 'say', text: 'ok' }] });
+    const llm = scriptedModel([delegate('Create notes.txt'), 'claude created the file.']);
+    const h = harness({ agents: { claude: agent }, llm, config: { limits: { maxPlanSteps: 1 } } });
+    open = h;
+
+    await h.runtime.conversation.send('make notes.txt');
+
+    expect(assistantText(h).at(-1)).toBe('claude created the file.');
+  });
+
   it('records the workspace path it gave the model', async () => {
     const agent = fakeAgent({ script: () => [] });
     const llm = scriptedModel([answer('ok')]);
