@@ -1,4 +1,5 @@
 import type { Config } from './config/schema.js';
+import { AcpModel } from './brain/acp.js';
 import { LocalModel, type ChatClient } from './brain/client.js';
 import { PolicyEngine } from './policy/engine.js';
 import type { Escalator } from './policy/types.js';
@@ -63,7 +64,30 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     transcript,
     createTarget: options.createTarget,
   });
-  const llm = 'llm' in options ? options.llm : new LocalModel(config.llm);
+  let brain: AcpModel | undefined;
+  let llm: ChatClient | undefined;
+  if ('llm' in options) {
+    llm = options.llm;
+  } else if (config.orchestration.provider === 'acp') {
+    const agentId = config.orchestration.acp.agent;
+    const profile = config.agents[agentId];
+    if (!profile) throw new Error(`orchestration wants agent "${agentId}", which is not configured.`);
+    brain = new AcpModel({
+      agentId,
+      profile,
+      // Its own agent id, so its sessions never overwrite the saved ids the
+      // pool resumes from — and its own in-memory transcript, so planning
+      // chatter never renders as agent output. Decisions still reach the main
+      // transcript through the shared policy engine.
+      host: { agentId: 'orchestrator', config, workspace, jail, policy, transcript: new Transcript() },
+      timeoutMs: config.orchestration.acp.timeoutMs,
+      cancelGraceMs: config.limits.cancelGraceMs,
+      createTarget: options.createTarget,
+    });
+    llm = brain;
+  } else {
+    llm = new LocalModel(config.orchestration.local);
+  }
   const conversation = new Conversation({ config, pool, transcript, workspace, llm });
 
   return {
@@ -81,7 +105,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       // period. Only once the turn has settled — nothing left that could
       // append — is the transcript ended.
       const conversationDone = conversation.close();
-      await pool.closeAll();
+      await Promise.all([pool.closeAll(), brain?.close()]);
       await conversationDone;
       await transcript.close();
     },

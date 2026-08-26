@@ -331,7 +331,12 @@ function Header({ runtime, columns }: { runtime: Runtime; columns: number }): Re
     .filter(([, profile]) => profile.enabled)
     .map(([id]) => id)
     .join(', ');
-  const model = `${runtime.config.llm.model} · ${agents}`;
+  const orchestration = runtime.config.orchestration;
+  const brain =
+    orchestration.provider === 'acp'
+      ? `${orchestration.acp.agent} (acp)`
+      : orchestration.local.model;
+  const model = `${brain} · ${agents}`;
   const welcome = 'Welcome back!';
   const title = ` handsfree v${VERSION} `;
   const border = `╭─${title}${'─'.repeat(Math.max(0, columns - 3 - title.length))}╮`;

@@ -51,3 +51,24 @@ describe('defaults', () => {
     expect(config.agents['local']?.enabled).toBe(true);
   });
 });
+
+describe('orchestration', () => {
+  it('defaults to the local provider with both blocks filled in', () => {
+    const config = ConfigSchema.parse({});
+    expect(config.orchestration.provider).toBe('local');
+    expect(config.orchestration.local.baseURL).toBe('http://localhost:1234/v1');
+    expect(config.orchestration.acp.agent).toBe('claude');
+  });
+
+  it('accepts the acp provider when it names a configured agent', () => {
+    const parsed = ConfigSchema.safeParse({ orchestration: { provider: 'acp' } });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('refuses the acp provider when its agent is not configured', () => {
+    const parsed = ConfigSchema.safeParse({
+      orchestration: { provider: 'acp', acp: { agent: 'nope' } },
+    });
+    expect(parsed.success).toBe(false);
+  });
+});

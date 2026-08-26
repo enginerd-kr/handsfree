@@ -37,15 +37,15 @@ const NEXT: Record<Mode, Mode> = {
 };
 
 /**
- * The local model. It routes work and writes the summary; it never decides
- * whether a side effect is allowed. Keeping it out of the policy path is what
- * makes it safe to run a small, quantised model here.
+ * The local orchestration model. It routes work and writes the summary; it
+ * never decides whether a side effect is allowed. Keeping it out of the policy
+ * path is what makes it safe to run a small, quantised model here.
  */
 export class LocalModel implements ChatClient {
   private readonly client: OpenAI;
   private mode: Mode = 'json_schema';
 
-  constructor(private readonly config: Config['llm']) {
+  constructor(private readonly config: Config['orchestration']['local']) {
     this.client = new OpenAI({
       baseURL: config.baseURL,
       apiKey: config.apiKey,

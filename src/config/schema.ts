@@ -120,51 +120,85 @@ export const PolicySchema = z
   .prefault({});
 export type Policy = z.infer<typeof PolicySchema>;
 
-export const ConfigSchema = z.object({
-  /** Where session workspaces are created. Resolved to an absolute path at load. */
-  workspaceRoot: z.string().default(''),
-  llm: z
+/**
+ * The model that plans and summarises. Both ways of running it are configured
+ * side by side and `provider` picks the live one, so switching between a local
+ * endpoint and a frontier agent is a one-word edit, not a rewrite.
+ */
+export const OrchestrationSchema = z.object({
+  provider: z.enum(['local', 'acp']).default('local'),
+  /** An OpenAI-compatible endpoint: LM Studio, Ollama, llama.cpp. */
+  local: z
     .object({
       baseURL: z.string().default('http://localhost:1234/v1'),
       model: z.string().default('google/gemma-3-12b'),
       apiKey: z.string().default('not-needed'),
       temperature: z.number().min(0).max(2).default(0.1),
       timeoutMs: z.number().int().positive().default(120_000),
-      /** Local models have small context windows; history is trimmed to this. */
-      maxHistoryMessages: z.number().int().positive().default(30),
     })
     .prefault({}),
-  agents: z.record(z.string(), AgentProfileSchema).prefault(DEFAULT_AGENTS),
-  capabilities: z
+  /** A frontier model reached by driving one of the configured agents over ACP. */
+  acp: z
     .object({
-      readTextFile: z.boolean().default(true),
-      writeTextFile: z.boolean().default(true),
-      /** Declaring this makes handsfree the owner of every shell command. */
-      terminal: z.boolean().default(false),
-      elicitation: z.boolean().default(true),
+      /** Which entry in `agents` does the planning. */
+      agent: z.string().default('claude'),
+      /** Wall clock for a single planning or summary reply. */
+      timeoutMs: z.number().int().positive().default(120_000),
     })
     .prefault({}),
-  policy: PolicySchema,
-  limits: z
-    .object({
-      /**
-       * How long an adapter has to answer `initialize`. Generous, because an
-       * adapter fetched through `npx` downloads itself on first use — but never
-       * unbounded, or a wedged adapter wedges handsfree.
-       */
-      handshakeTimeoutMs: z.number().int().positive().default(90_000),
-      /** Wall clock for a single session/prompt. */
-      turnTimeoutMs: z.number().int().positive().default(600_000),
-      /** No session/update for this long and the turn is cancelled. */
-      idleTimeoutMs: z.number().int().positive().default(180_000),
-      /** How long to wait for a `cancelled` stop reason before killing the process. */
-      cancelGraceMs: z.number().int().positive().default(10_000),
-      maxDelegationsPerTurn: z.number().int().positive().default(3),
-      maxPlanSteps: z.number().int().positive().default(6),
-      maxResultChars: z.number().int().positive().default(4000),
-    })
-    .prefault({}),
+  /** Local models have small context windows; history is trimmed to this. */
+  maxHistoryMessages: z.number().int().positive().default(30),
 });
+export type Orchestration = z.infer<typeof OrchestrationSchema>;
+
+export const ConfigSchema = z
+  .object({
+    /** Where session workspaces are created. Resolved to an absolute path at load. */
+    workspaceRoot: z.string().default(''),
+    orchestration: OrchestrationSchema.prefault({}),
+    agents: z.record(z.string(), AgentProfileSchema).prefault(DEFAULT_AGENTS),
+    capabilities: z
+      .object({
+        readTextFile: z.boolean().default(true),
+        writeTextFile: z.boolean().default(true),
+        /** Declaring this makes handsfree the owner of every shell command. */
+        terminal: z.boolean().default(false),
+        elicitation: z.boolean().default(true),
+      })
+      .prefault({}),
+    policy: PolicySchema,
+    limits: z
+      .object({
+        /**
+         * How long an adapter has to answer `initialize`. Generous, because an
+         * adapter fetched through `npx` downloads itself on first use — but never
+         * unbounded, or a wedged adapter wedges handsfree.
+         */
+        handshakeTimeoutMs: z.number().int().positive().default(90_000),
+        /** Wall clock for a single session/prompt. */
+        turnTimeoutMs: z.number().int().positive().default(600_000),
+        /** No session/update for this long and the turn is cancelled. */
+        idleTimeoutMs: z.number().int().positive().default(180_000),
+        /** How long to wait for a `cancelled` stop reason before killing the process. */
+        cancelGraceMs: z.number().int().positive().default(10_000),
+        maxDelegationsPerTurn: z.number().int().positive().default(3),
+        maxPlanSteps: z.number().int().positive().default(6),
+        maxResultChars: z.number().int().positive().default(4000),
+      })
+      .prefault({}),
+  })
+  .superRefine((config, ctx) => {
+    const { provider, acp } = config.orchestration;
+    if (provider === 'acp' && !config.agents[acp.agent]) {
+      ctx.addIssue({
+        code: 'custom',
+        message:
+          `orchestration wants agent "${acp.agent}", but no such agent is configured. ` +
+          `Configured: ${Object.keys(config.agents).join(', ') || '(none)'}.`,
+        path: ['orchestration', 'acp', 'agent'],
+      });
+    }
+  });
 
 export type Config = z.infer<typeof ConfigSchema>;
 export type AgentId = string;

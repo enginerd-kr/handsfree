@@ -1,8 +1,16 @@
 {
-  "llm": {
-    "baseURL": "http://localhost:1234/v1",
-    "model": "google/gemma-3-12b",
-    "temperature": 0.1
+  "orchestration": {
+    "provider": "local",
+    "local": {
+      "baseURL": "http://localhost:1234/v1",
+      "model": "google/gemma-3-12b",
+      "temperature": 0.1
+    },
+    "acp": {
+      "agent": "claude",
+      "timeoutMs": 120000
+    },
+    "maxHistoryMessages": 30
   },
 
   "agents": {

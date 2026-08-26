@@ -1,6 +1,6 @@
 # handsfree
 
-A local model routes your work to frontier coding agents — Claude Code, Gemini CLI, Codex — and **handsfree owns every side effect they cause**.
+An orchestration model — a local model by default, or a frontier agent over ACP — routes your work to frontier coding agents — Claude Code, Gemini CLI, Codex — and **handsfree owns every side effect they cause**.
 
 The agents run in their own default permission mode. No `--dangerously-skip-permissions`, no `--yolo`, no `danger-full-access`. Where those flags would put an approval, handsfree puts a policy engine, and where the policy engine cannot decide, it puts you.
 
@@ -9,7 +9,7 @@ This works because all three agents speak the [Agent Client Protocol](https://ag
 ```
         you
          │
-    local model ────── routes, summarises. Never decides permissions.
+  orchestration model ── routes, summarises. Never decides permissions.
          │
     ┌────┴─────────────────────────────────────────┐
     │  handsfree · ACP host                        │
@@ -35,7 +35,7 @@ You also need whichever agents you plan to use, each logged in with its own CLI:
 | gemini | `gemini --experimental-acp` | `gemini` |
 | codex | `npx -y @zed-industries/codex-acp` | `codex login` |
 
-And a local OpenAI-compatible endpoint for the routing model (LM Studio, Ollama, llama.cpp), by default at `http://localhost:1234/v1`.
+And an orchestration model to do the routing. By default that is a local OpenAI-compatible endpoint (LM Studio, Ollama, llama.cpp) at `http://localhost:1234/v1`; set `orchestration.provider` to `"acp"` and one of the agents above does the routing instead, with no local endpoint at all.
 
 Check the lot:
 
@@ -97,7 +97,7 @@ rules  →  human  →  deny
 
 Rules are deterministic and run first. Anything they cannot settle is escalated. An escalation that nobody answers — no UI attached, no reply within the timeout, a prompt that throws — is a denial. There is no path through the policy engine that ends in an unrecorded yes.
 
-The local model is not in this path. It routes tasks and writes the summary; a small quantised model has no business deciding whether a command may run.
+The orchestration model is not in this path. It routes tasks and writes the summary; whether it is a small quantised model or a frontier agent, it has no business deciding whether a command may run.
 
 ## The transcript
 
@@ -114,6 +114,18 @@ The transcript sits *above* the workspace, because an audit log an agent can edi
 ## Configuration
 
 Drop a `handsfree.config.json` in the working directory or at `~/.config/handsfree/config.json`. See `handsfree.config.example.json`; everything has a default.
+
+The orchestration model is picked by `orchestration.provider`, and both ways of running it sit side by side in the config:
+
+```json
+"orchestration": {
+  "provider": "local",
+  "local": { "baseURL": "http://localhost:1234/v1", "model": "google/gemma-3-12b" },
+  "acp": { "agent": "claude" }
+}
+```
+
+`local` speaks to any OpenAI-compatible endpoint. `acp` drives one of the configured `agents` over ACP in a connection of its own, separate from the sessions that do the work — its planning chatter never lands in a task's context, and it passes through the same policy engine as everything else. (The old top-level `llm` block is still read and treated as `orchestration.local`.)
 
 Two things are deliberately absent: there is no `permissionMode`, `approvalMode` or `sandbox` setting per agent, and no way to express a bypass flag. Launch arguments are checked at config load and again immediately before `exec`.
 

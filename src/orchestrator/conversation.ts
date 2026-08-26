@@ -91,7 +91,7 @@ export class Conversation {
 
         const planned = await this.plan(agents, turn.signal);
         if (!planned.ok) {
-          notes.push(`The local model did not produce a usable next step (${planned.error}).`);
+          notes.push(`The orchestration model did not produce a usable next step (${planned.error}).`);
           break;
         }
         this.push({ role: 'assistant', content: JSON.stringify(planned.step) });
@@ -148,7 +148,7 @@ export class Conversation {
 
   private async plan(agents: string[], signal: AbortSignal) {
     if (!this.deps.llm) {
-      return { ok: false as const, error: 'no local model is configured' };
+      return { ok: false as const, error: 'no orchestration model is configured' };
     }
     try {
       return await nextStep(this.deps.llm, this.messages, agents, signal);
@@ -241,6 +241,6 @@ export class Conversation {
 
   private push(message: ChatMessage): void {
     this.messages.push(message);
-    this.messages = trimHistory(this.messages, this.deps.config.llm.maxHistoryMessages);
+    this.messages = trimHistory(this.messages, this.deps.config.orchestration.maxHistoryMessages);
   }
 }

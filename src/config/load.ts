@@ -32,7 +32,7 @@ export function loadConfig(cwd = process.cwd()): LoadedConfig {
     break;
   }
 
-  const parsed = ConfigSchema.safeParse(raw);
+  const parsed = ConfigSchema.safeParse(migrateLegacyLlm(raw));
   if (!parsed.success) {
     const where = source ?? 'default config';
     throw new Error(`Invalid configuration in ${where}:\n${formatIssues(parsed.error)}`);
@@ -43,6 +43,31 @@ export function loadConfig(cwd = process.cwd()): LoadedConfig {
     ? path.resolve(cwd, config.workspaceRoot)
     : path.join(os.homedir(), '.handsfree');
   return { config, source };
+}
+
+/**
+ * `llm` became `orchestration` when the planner learned to run over ACP as well
+ * as against a local endpoint. Old files keep working: the flat block maps onto
+ * the local provider it always described. Without this, an old key would be
+ * silently dropped and the defaults used in its place.
+ */
+function migrateLegacyLlm(raw: unknown): unknown {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return raw;
+  const record = raw as Record<string, unknown>;
+  const legacy = record['llm'];
+  if (record['orchestration'] !== undefined) return raw;
+  if (typeof legacy !== 'object' || legacy === null || Array.isArray(legacy)) return raw;
+
+  const { maxHistoryMessages, ...local } = legacy as Record<string, unknown>;
+  const { llm: _llm, ...rest } = record;
+  return {
+    ...rest,
+    orchestration: {
+      provider: 'local',
+      local,
+      ...(maxHistoryMessages !== undefined ? { maxHistoryMessages } : {}),
+    },
+  };
 }
 
 function formatIssues(error: { issues: { path: PropertyKey[]; message: string }[] }): string {

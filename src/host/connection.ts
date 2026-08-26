@@ -9,6 +9,7 @@ import {
   type Implementation,
   type PromptRequest,
   type SessionNotification,
+  type SessionUpdate,
 } from '@agentclientprotocol/sdk';
 import type { HostContext } from '../capabilities/context.js';
 import { createFsHandlers } from '../capabilities/fs.js';
@@ -161,7 +162,8 @@ export class AgentConnection {
     return this.info?.version ? `${name} ${this.info.version}` : name;
   }
 
-  async newSession(): Promise<HostSession> {
+  /** `onUpdate` sees every `session/update` for the new session, live. */
+  async newSession(onUpdate?: (update: SessionUpdate) => void): Promise<HostSession> {
     let response;
     try {
       response = await this.connection.agent.request(methods.agent.session.new, {
@@ -171,7 +173,7 @@ export class AgentConnection {
     } catch (err) {
       throw this.explain(err);
     }
-    const session = this.register(response.sessionId);
+    const session = this.register(response.sessionId, onUpdate);
     this.host.workspace.writeSessionId(this.agentId, response.sessionId);
     return session;
   }
@@ -209,7 +211,10 @@ export class AgentConnection {
     await this.target.close();
   }
 
-  private register(sessionId: string): HostSession {
+  private register(
+    sessionId: string,
+    onUpdate: (update: SessionUpdate) => void = () => {},
+  ): HostSession {
     const session = new HostSession(
       this.agentId,
       sessionId,
@@ -225,7 +230,7 @@ export class AgentConnection {
         cancel: (id: string) =>
           this.connection.agent.notify(methods.agent.session.cancel, { sessionId: id }),
       },
-      () => {},
+      onUpdate,
     );
     this.sessions.set(sessionId, session);
     return session;

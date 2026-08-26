@@ -23,8 +23,14 @@ export async function doctor(config: Config, log: (line: string) => void): Promi
   const runtime = createRuntime({ config, llm: undefined });
   const reports: AgentReport[] = [];
 
+  const orchestration = config.orchestration;
   log(`handsfree — ACP v${PROTOCOL_VERSION}`);
   log(`workspace ${runtime.workspace.dir}`);
+  log(
+    orchestration.provider === 'acp'
+      ? `orchestration: ${orchestration.acp.agent} over ACP`
+      : `orchestration: ${orchestration.local.model} at ${orchestration.local.baseURL}`,
+  );
   log('');
 
   for (const agentId of runtime.pool.available()) {
