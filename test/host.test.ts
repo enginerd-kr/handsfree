@@ -84,6 +84,36 @@ describe('permission gate', () => {
     expect(answers).toEqual(['no']);
   });
 
+  // Exactly what claude-code-acp 0.16.2 sends: a title, a rawInput, and neither
+  // a kind nor a location.
+  it('approves a request that names its file only in rawInput', async () => {
+    const answers: string[] = [];
+    await runTurn((dir) => [
+      {
+        do: 'ask',
+        title: `Write ${path.join(dir, 'notes.txt')}`,
+        rawInput: { file_path: path.join(dir, 'notes.txt'), content: 'hello\n' },
+        onAnswer: (id) => answers.push(id),
+      },
+    ]);
+
+    expect(answers).toEqual(['once']);
+  });
+
+  it('refuses that same shape when the file is outside the workspace', async () => {
+    const answers: string[] = [];
+    await runTurn(() => [
+      {
+        do: 'ask',
+        title: 'Write /etc/hosts',
+        rawInput: { file_path: '/etc/hosts', content: 'nope\n' },
+        onAnswer: (id) => answers.push(id),
+      },
+    ]);
+
+    expect(answers).toEqual(['no']);
+  });
+
   it('refuses a command the allowlist does not cover', async () => {
     const answers: string[] = [];
     await runTurn(

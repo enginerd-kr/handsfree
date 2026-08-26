@@ -5,5 +5,3 @@ dist/
 handsfree.config.json
 .env
 .env.*
-!.env.e2e.example
-e2e-report/

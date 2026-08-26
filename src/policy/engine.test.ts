@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { PolicySchema } from '../config/schema.js';
-import { PolicyEngine, commandFromRawInput } from './engine.js';
+import { PolicyEngine, commandFromRawInput, pathsFromRawInput } from './engine.js';
 import { Jail } from './jail.js';
 import type { AuditEntry, Escalator, PolicyRequest } from './types.js';
 
@@ -227,6 +227,24 @@ describe('PolicyEngine', () => {
     await policy.resolve({ kind: 'fs.write', path: '/etc/passwd', bytes: 3, ...where });
     expect(audit.map((entry) => entry.verdict)).toEqual(['allow', 'deny']);
     expect(audit[0]?.summary).toBe('read a.ts');
+  });
+});
+
+describe('pathsFromRawInput', () => {
+  it('finds the file a write tool names', () => {
+    expect(pathsFromRawInput({ file_path: '/ws/notes.txt', content: 'hi' })).toEqual([
+      '/ws/notes.txt',
+    ]);
+  });
+
+  it('finds files nested in an edit list', () => {
+    expect(
+      pathsFromRawInput({ edits: [{ file_path: '/ws/a.ts' }, { file_path: '/ws/b.ts' }] }),
+    ).toEqual(['/ws/a.ts', '/ws/b.ts']);
+  });
+
+  it('ignores relative paths and unrelated strings', () => {
+    expect(pathsFromRawInput({ path: 'src/index.ts', title: '/ws/looks-like-a-path' })).toEqual([]);
   });
 });
 

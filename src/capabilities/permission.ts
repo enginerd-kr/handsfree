@@ -3,6 +3,7 @@ import type {
   RequestPermissionRequest,
   RequestPermissionResponse,
 } from '@agentclientprotocol/sdk';
+import { pathsFromRawInput } from '../policy/engine.js';
 import type { HostContext } from './context.js';
 
 /**
@@ -18,13 +19,21 @@ import type { HostContext } from './context.js';
 export function createPermissionHandler(host: HostContext) {
   return async (params: RequestPermissionRequest): Promise<RequestPermissionResponse> => {
     const call = params.toolCall;
+    // Adapters are inconsistent about `locations`: claude-code-acp sends none at
+    // all and puts the file in `rawInput`. Both are gathered, so the workspace
+    // boundary applies to every path the request actually names.
+    const locations = [
+      ...(call.locations ?? []).map((location) => location.path),
+      ...pathsFromRawInput(call.rawInput ?? null),
+    ].filter(Boolean);
+
     const decision = await host.policy.resolve({
       kind: 'tool',
       agentId: host.agentId,
       sessionId: params.sessionId,
       toolKind: call.kind ?? null,
       title: call.title ?? call.name ?? 'unnamed tool call',
-      locations: (call.locations ?? []).map((location) => location.path).filter(Boolean),
+      locations: [...new Set(locations)],
       rawInput: call.rawInput ?? null,
     });
 

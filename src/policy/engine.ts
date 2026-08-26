@@ -258,6 +258,29 @@ function aborted(signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
 }
 
+const PATH_KEY = /^(file_?path|path|notebook_?path|target_file|dir_?path)$/i;
+
+/**
+ * Files named inside an agent's own tool input. This is not a nicety: real
+ * adapters send a permission request with an empty `locations` array and the
+ * path only in `rawInput`, and a path the boundary never sees is a path the
+ * boundary never checks.
+ */
+export function pathsFromRawInput(raw: unknown, depth = 0): string[] {
+  if (depth > 4 || !raw || typeof raw !== 'object') return [];
+  const found: string[] = [];
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === 'string') {
+      if (PATH_KEY.test(key) && path.isAbsolute(value)) found.push(value);
+    } else if (Array.isArray(value)) {
+      for (const item of value) found.push(...pathsFromRawInput(item, depth + 1));
+    } else if (value && typeof value === 'object') {
+      found.push(...pathsFromRawInput(value, depth + 1));
+    }
+  }
+  return found;
+}
+
 /** Best-effort extraction of a command from an agent's own tool input. */
 export function commandFromRawInput(raw: unknown): { command: string; args: string[] } | undefined {
   if (!raw || typeof raw !== 'object') return undefined;

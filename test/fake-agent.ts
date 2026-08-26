@@ -25,7 +25,8 @@ export type Act =
   | {
       do: 'ask';
       title: string;
-      kind: ToolKind;
+      /** Omitted on purpose by some adapters — claude-code-acp sends no kind. */
+      kind?: ToolKind;
       locations?: string[];
       rawInput?: unknown;
       /** Defaults to the usual three-option set. */
@@ -160,7 +161,7 @@ async function perform(
             toolCall: {
               toolCallId: `call-${act.title}`,
               title: act.title,
-              kind: act.kind,
+              ...(act.kind ? { kind: act.kind } : {}),
               locations: (act.locations ?? []).map((path) => ({ path })),
               rawInput: act.rawInput ?? null,
             },
