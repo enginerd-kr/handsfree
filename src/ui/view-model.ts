@@ -1,93 +1,232 @@
 import path from 'node:path';
+import type {
+  ContentBlock,
+  Diff,
+  PlanEntry,
+  StopReason,
+  ToolCallContent,
+  ToolCallStatus,
+} from '@agentclientprotocol/sdk';
 import type { TranscriptRecord } from '../workspace/transcript.js';
 
-export type Tone = 'normal' | 'muted' | 'good' | 'bad' | 'warn' | 'accent';
+export type Tone = 'normal' | 'muted' | 'good' | 'bad' | 'warn' | 'accent' | 'brand';
+
+/** The glyph that opens a row. The renderer owns the actual characters. */
+export type Marker = 'none' | 'prompt' | 'bullet' | 'thought' | 'result' | 'allowed' | 'refused';
+
+/** A continuation line, rendered under the row's `⎿` gutter. */
+export interface ViewLine {
+  text: string;
+  tone: Tone;
+}
 
 export interface ViewItem {
   key: string;
   /** Who is speaking: the user, handsfree itself, an agent, or the machinery. */
   role: 'user' | 'handsfree' | 'agent' | 'system';
-  label: string;
+  /** 0 for handsfree's own conversation, 1 for anything inside a delegated task. */
+  depth: number;
+  marker: Marker;
+  markerTone: Tone;
+  /** Sits between the marker and the text, dimmed — the agent's name, mostly. */
+  label?: string;
   text: string;
   tone: Tone;
+  lines: ViewLine[];
+  /** Whether the row wants a blank line above it. */
+  gap: boolean;
+  /**
+   * The delegated task this row belongs to, opening and closing rows included.
+   * Every row of a task carries it, so hovering anywhere in the block lights
+   * all of it and a click anywhere in it folds or unfolds the task.
+   */
+  taskId?: number;
+}
+
+/** How much of a tool call's own output is worth putting on screen. */
+const MAX_DETAIL_LINES = 8;
+const MAX_LINE_CHARS = 200;
+
+interface ToolState {
+  title: string;
+  locations: string[];
+  status: ToolCallStatus;
+  content: ToolCallContent[];
+  /** What handsfree did about this call — approvals and the writes that landed. */
+  notes: ViewLine[];
+}
+
+export interface ViewOptions {
+  /** Show every row of every finished task rather than folding them. */
+  expanded?: boolean;
+  /** Tasks unfolded one at a time, by the id the delegation was given. */
+  expandedTasks?: ReadonlySet<number>;
+  /** How a reader gets the folded rows back, if there is a way. */
+  expandHint?: string;
 }
 
 /**
  * The transcript rendered for a human. Nothing here reaches for state of its
  * own: the same records replayed later produce the same view, which is why the
  * TUI, `run`, and any test can share this function.
+ *
+ * Everything an agent sends over ACP is already in the transcript verbatim, so
+ * this is the only place that decides what a person sees — thoughts, tool
+ * output, diffs and plans included, not just the prose at the end.
+ *
+ * A task is watched while it runs and folded once it ends. What it did is
+ * already in handsfree's report by then, so leaving the whole stream on screen
+ * only says everything twice — but a refusal never folds, because that is the
+ * one thing the report cannot make up for.
  */
-export function buildView(records: readonly TranscriptRecord[], workspaceDir: string): ViewItem[] {
+export function buildView(
+  records: readonly TranscriptRecord[],
+  workspaceDir: string,
+  options: ViewOptions = {},
+): ViewItem[] {
   const items: ViewItem[] = [];
   const byKey = new Map<string, ViewItem>();
-  let openAgentMessage: ViewItem | undefined;
+  const tools = new Map<string, ToolState>();
+
+  // Streamed chunks arrive as many records but read as one block, so the block
+  // stays open until something else interrupts it.
+  let openText: ViewItem | undefined;
+  let openThought: ViewItem | undefined;
+
+  // The tool call the machinery is currently talking about. One write produces a
+  // tool call, an approval at each gate it passes, and a note saying it landed;
+  // as separate rows that is four lines for one file, so the routine ones are
+  // folded under the call they belong to. Refusals never fold.
+  let openTool: { state: ToolState; item: ViewItem } | undefined;
+
+  // Everything between a delegation and its stop belongs to the agent, and is
+  // indented under the task the way a nested call reads.
+  let depth = 0;
+  let currentTask: number | undefined;
+  let taskStartedAt = 0;
+  let taskTools = 0;
+  // Where the current task's rows begin, and which of them survive folding.
+  let taskStart = -1;
+  const loud = new Set<string>();
 
   const add = (item: ViewItem): ViewItem => {
+    if (depth === 1) item.taskId = currentTask;
     items.push(item);
     byKey.set(item.key, item);
     return item;
   };
+  const closeBlocks = () => {
+    openText = undefined;
+    openThought = undefined;
+  };
+  const closeTool = () => {
+    openTool = undefined;
+  };
+  /** Files a routine remark under the tool call it describes. */
+  const fold = (line: ViewLine): boolean => {
+    if (!openTool) return false;
+    openTool.state.notes.push(line);
+    openTool.item.lines = toolLines(openTool.state, workspaceDir);
+    return true;
+  };
 
   for (const record of records) {
-    if (record.type !== 'session_update') openAgentMessage = undefined;
-
     switch (record.type) {
       case 'user':
-        add({ key: `u${record.seq}`, role: 'user', label: 'you', text: record.text, tone: 'normal' });
+        closeBlocks();
+        closeTool();
+        add(row(`u${record.seq}`, 'user', 0, 'prompt', 'muted', record.text, 'normal', true));
         break;
 
       case 'assistant':
-        add({
-          key: `a${record.seq}`,
-          role: 'handsfree',
-          label: 'handsfree',
-          text: record.text,
-          tone: 'normal',
-        });
+        closeBlocks();
+        closeTool();
+        add(row(`a${record.seq}`, 'handsfree', 0, 'bullet', 'brand', record.text, 'normal', true));
         break;
 
-      case 'delegation':
-        add({
-          key: `d${record.seq}`,
-          role: 'system',
-          label: record.agentId,
-          text: record.task,
-          tone: 'accent',
-        });
-        break;
-
-      case 'note':
-        add({
-          key: `n${record.seq}`,
-          role: 'system',
-          label: 'handsfree',
-          text: record.text,
-          tone: record.level === 'error' ? 'bad' : record.level === 'warn' ? 'warn' : 'muted',
-        });
-        break;
-
-      case 'decision': {
-        const mark = record.entry.verdict === 'allow' ? 'allowed' : 'refused';
-        const why = record.entry.reason ? ` — ${record.entry.reason}` : '';
-        add({
-          key: `p${record.seq}`,
-          role: 'system',
-          label: record.agentId,
-          text: `${mark}: ${record.entry.summary}${why}`,
-          tone: record.entry.verdict === 'allow' ? 'muted' : 'bad',
-        });
+      case 'delegation': {
+        closeBlocks();
+        closeTool();
+        const item = add(
+          row(`d${record.seq}`, 'system', 0, 'bullet', 'brand', record.task, 'normal', true),
+        );
+        item.label = record.agentId;
+        item.taskId = record.taskId;
+        depth = 1;
+        currentTask = record.taskId;
+        taskStartedAt = record.at;
+        taskTools = 0;
+        taskStart = items.length;
         break;
       }
 
-      case 'stop':
-        add({
-          key: `s${record.seq}`,
-          role: 'system',
-          label: record.agentId,
-          text: `turn ended (${record.stopReason})`,
-          tone: record.stopReason === 'end_turn' ? 'muted' : 'warn',
-        });
+      case 'note': {
+        closeBlocks();
+        if (record.level === 'info' && fold({ text: record.text, tone: 'muted' })) break;
+        closeTool();
+        if (record.level !== 'info') loud.add(`n${record.seq}`);
+        add(
+          row(
+            `n${record.seq}`,
+            'system',
+            depth,
+            'none',
+            'muted',
+            record.text,
+            record.level === 'error' ? 'bad' : record.level === 'warn' ? 'warn' : 'muted',
+            false,
+          ),
+        );
         break;
+      }
+
+      case 'decision': {
+        closeBlocks();
+        const allowed = record.entry.verdict === 'allow';
+        if (allowed && fold({ text: `✓ ${record.entry.summary}`, tone: 'muted' })) break;
+        closeTool();
+        const why = record.entry.reason ? ` — ${record.entry.reason}` : '';
+        if (!allowed) loud.add(`p${record.seq}`);
+        add(
+          row(
+            `p${record.seq}`,
+            'system',
+            depth,
+            allowed ? 'allowed' : 'refused',
+            allowed ? 'muted' : 'bad',
+            `${record.entry.summary}${allowed ? '' : why}`,
+            allowed ? 'muted' : 'bad',
+            false,
+          ),
+        );
+        break;
+      }
+
+      case 'stop': {
+        closeBlocks();
+        closeTool();
+        const took = taskStartedAt > 0 ? Math.max(1, Math.round((record.at - taskStartedAt) / 1000)) : 0;
+        const open = options.expanded === true || options.expandedTasks?.has(record.taskId) === true;
+        const hidden = open ? 0 : foldTask(items, byKey, loud, taskStart);
+        // The closing line belongs to the task, so it keeps the task's indent
+        // and its id; whatever comes next is handsfree talking again.
+        add(
+          row(
+            `s${record.seq}`,
+            'system',
+            depth,
+            'result',
+            'muted',
+            stopText(record.stopReason, taskTools, took, hidden > 0 ? options.expandHint : undefined),
+            record.stopReason === 'end_turn' ? 'muted' : 'warn',
+            false,
+          ),
+        );
+        depth = 0;
+        currentTask = undefined;
+        taskStart = -1;
+        break;
+      }
 
       case 'agent_stderr':
         break; // Kept in the file, not shown: adapters are chatty on stderr.
@@ -97,39 +236,111 @@ export function buildView(records: readonly TranscriptRecord[], workspaceDir: st
         switch (update.sessionUpdate) {
           case 'agent_message_chunk': {
             if (update.content.type !== 'text') break;
-            if (openAgentMessage) openAgentMessage.text += update.content.text;
+            openThought = undefined;
+            closeTool();
+            if (openText) openText.text += update.content.text;
             else {
-              openAgentMessage = add({
-                key: `m${record.seq}`,
-                role: 'agent',
-                label: record.agentId,
-                text: update.content.text,
-                tone: 'normal',
-              });
+              openText = add(
+                row(`m${record.seq}`, 'agent', depth, 'bullet', 'brand', update.content.text, 'normal', true),
+              );
             }
             break;
           }
+
+          case 'agent_thought_chunk': {
+            if (update.content.type !== 'text') break;
+            openText = undefined;
+            closeTool();
+            if (openThought) openThought.text += update.content.text;
+            else {
+              openThought = add(
+                row(`h${record.seq}`, 'agent', depth, 'thought', 'muted', update.content.text, 'muted', true),
+              );
+            }
+            break;
+          }
+
           case 'tool_call':
           case 'tool_call_update': {
+            closeBlocks();
             const key = `t${record.agentId}:${update.toolCallId}`;
-            const existing = byKey.get(key);
-            const title = update.title ?? existing?.text ?? update.toolCallId;
-            const where = (update.locations ?? [])
-              .map((location) => relative(location.path, workspaceDir))
-              .join(', ');
-            const status = update.status ?? 'pending';
-            const text = `${title}${where ? ` [${where}]` : ''}`;
-            const tone: Tone =
-              status === 'failed' ? 'bad' : status === 'completed' ? 'muted' : 'accent';
-            if (existing) {
-              existing.text = text;
-              existing.tone = tone;
-            } else {
-              add({ key, role: 'agent', label: record.agentId, text, tone });
+            const state = tools.get(key) ?? {
+              title: update.toolCallId,
+              locations: [],
+              status: 'pending' as ToolCallStatus,
+              content: [],
+              notes: [],
+            };
+            if (update.title) state.title = update.title;
+            if (update.status) state.status = update.status;
+            if (update.locations) {
+              state.locations = update.locations.map((location) => location.path).filter(Boolean);
             }
-            openAgentMessage = undefined;
+            if (update.content) state.content = update.content;
+            tools.set(key, state);
+
+            const existing = byKey.get(key);
+            const target =
+              existing ?? add(row(key, 'agent', depth, 'bullet', 'muted', '', 'normal', false));
+            if (!existing) taskTools++;
+            target.text = headline(state, workspaceDir);
+            target.tone = state.status === 'failed' ? 'bad' : 'normal';
+            target.markerTone = statusTone(state.status);
+            target.lines = toolLines(state, workspaceDir);
+            openTool = { state, item: target };
             break;
           }
+
+          case 'plan':
+          case 'plan_update': {
+            closeBlocks();
+            closeTool();
+            const entries =
+              update.sessionUpdate === 'plan'
+                ? update.entries
+                : update.plan.type === 'items'
+                  ? update.plan.entries
+                  : undefined;
+            const planId =
+              update.sessionUpdate === 'plan_update' && 'planId' in update.plan
+                ? update.plan.planId
+                : 'plan';
+            const key = `l${record.agentId}:${planId}`;
+
+            if (!entries) {
+              // A markdown or file-backed plan carries no checklist to draw.
+              const text = update.sessionUpdate === 'plan_update' && update.plan.type === 'markdown'
+                ? update.plan.content
+                : 'Plan updated';
+              const item = byKey.get(key) ?? add(row(key, 'agent', depth, 'bullet', 'accent', '', 'muted', true));
+              item.text = clip(text, MAX_LINE_CHARS);
+              break;
+            }
+
+            const item = byKey.get(key) ?? add(row(key, 'agent', depth, 'bullet', 'accent', '', 'normal', true));
+            const done = entries.filter((entry) => entry.status === 'completed').length;
+            item.text = `Plan (${done}/${entries.length})`;
+            item.lines = entries.map(planLine);
+            break;
+          }
+
+          case 'current_mode_update': {
+            closeBlocks();
+            add(
+              row(
+                `c${record.seq}`,
+                'agent',
+                depth,
+                'none',
+                'muted',
+                `mode: ${update.currentModeId}`,
+                'muted',
+                false,
+              ),
+            );
+            break;
+          }
+
           default:
             break;
         }
@@ -138,7 +349,209 @@ export function buildView(records: readonly TranscriptRecord[], workspaceDir: st
     }
   }
 
+  for (const item of items) item.text = item.text.trim();
   return items;
+}
+
+function row(
+  key: string,
+  role: ViewItem['role'],
+  depth: number,
+  marker: Marker,
+  markerTone: Tone,
+  text: string,
+  tone: Tone,
+  gap: boolean,
+): ViewItem {
+  return { key, role, depth, marker, markerTone, text, tone, lines: [], gap };
+}
+
+/**
+ * Drops the rows a finished task no longer needs to keep on screen, in place.
+ * Returns how many went, so the closing line can offer them back.
+ */
+function foldTask(
+  items: ViewItem[],
+  byKey: Map<string, ViewItem>,
+  loud: Set<string>,
+  from: number,
+): number {
+  if (from < 0 || from >= items.length) return 0;
+  const kept: ViewItem[] = [];
+  let hidden = 0;
+  for (const item of items.slice(from)) {
+    if (loud.has(item.key)) {
+      kept.push(item);
+      continue;
+    }
+    byKey.delete(item.key);
+    hidden++;
+  }
+  items.length = from;
+  items.push(...kept);
+  return hidden;
+}
+
+function statusTone(status: ToolCallStatus): Tone {
+  switch (status) {
+    case 'failed':
+      return 'bad';
+    case 'completed':
+      return 'good';
+    default:
+      return 'warn';
+  }
+}
+
+function stopText(
+  reason: StopReason,
+  toolCount: number,
+  seconds: number,
+  expandHint: string | undefined,
+): string {
+  const cost = [
+    toolCount > 0 ? `${toolCount} tool ${toolCount === 1 ? 'call' : 'calls'}` : undefined,
+    seconds > 0 ? `${seconds}s` : undefined,
+    expandHint,
+  ].filter(Boolean);
+  const suffix = cost.length > 0 ? ` (${cost.join(' · ')})` : '';
+  switch (reason) {
+    case 'end_turn':
+      return `Done${suffix}`;
+    case 'cancelled':
+      return `Cancelled${suffix}`;
+    case 'refusal':
+      return `Refused by the agent${suffix}`;
+    default:
+      return `Stopped: ${reason}${suffix}`;
+  }
+}
+
+function planLine(entry: PlanEntry): ViewLine {
+  switch (entry.status) {
+    case 'completed':
+      return { text: `☒ ${entry.content}`, tone: 'muted' };
+    case 'in_progress':
+      return { text: `☐ ${entry.content}`, tone: 'accent' };
+    default:
+      return { text: `☐ ${entry.content}`, tone: 'normal' };
+  }
+}
+
+/** The tool call's one-line title, with workspace paths cut down to size. */
+function headline(state: ToolState, root: string): string {
+  const title = shorten(state.title, root);
+  const named = state.locations
+    .map((file) => relative(file, root))
+    .filter((file) => !title.includes(file));
+  return named.length > 0 ? `${title} (${named.join(', ')})` : title;
+}
+
+/**
+ * Everything shown under one tool call: what it produced, then what handsfree
+ * did about it. The approvals sit outside the cap — they are the shortest lines
+ * and the ones a reader is least willing to lose to a long file.
+ */
+function toolLines(state: ToolState, root: string): ViewLine[] {
+  return [...detailLines(state.content, root), ...state.notes];
+}
+
+/**
+ * What the tool itself produced. This is the part the protocol gives us for
+ * free and the part a host most easily throws away: without it a tool call is
+ * a title and nothing else.
+ */
+function detailLines(content: readonly ToolCallContent[], root: string): ViewLine[] {
+  const lines: ViewLine[] = [];
+  for (const part of content) {
+    switch (part.type) {
+      case 'content':
+        lines.push(...blockLines(part.content));
+        break;
+      case 'diff':
+        lines.push(...diffLines(part, root));
+        break;
+      case 'terminal':
+        lines.push({ text: `terminal ${part.terminalId}`, tone: 'muted' });
+        break;
+    }
+  }
+  return cap(lines);
+}
+
+function blockLines(block: ContentBlock): ViewLine[] {
+  switch (block.type) {
+    case 'text':
+      return block.text
+        .split('\n')
+        .map((text) => ({ text: clip(text, MAX_LINE_CHARS), tone: 'muted' as Tone }));
+    case 'image':
+      return [{ text: '[image]', tone: 'muted' }];
+    case 'audio':
+      return [{ text: '[audio]', tone: 'muted' }];
+    case 'resource_link':
+      return [{ text: block.name || block.uri, tone: 'muted' }];
+    case 'resource':
+      return [{ text: block.resource.uri, tone: 'muted' }];
+  }
+}
+
+/**
+ * A whole-file before/after is what ACP hands us, so the change is recovered by
+ * trimming the parts that did not move. It is not a real diff — it is enough to
+ * show what an edit did without reprinting the file.
+ */
+function diffLines(diff: Diff, root: string): ViewLine[] {
+  const before = diff.oldText ? diff.oldText.split('\n') : [];
+  const after = diff.newText.split('\n');
+
+  let head = 0;
+  while (head < before.length && head < after.length && before[head] === after[head]) head++;
+  let tail = 0;
+  while (
+    tail < before.length - head &&
+    tail < after.length - head &&
+    before[before.length - 1 - tail] === after[after.length - 1 - tail]
+  ) {
+    tail++;
+  }
+
+  const removed = before.slice(head, before.length - tail);
+  const added = after.slice(head, after.length - tail);
+  const where = relative(diff.path, root);
+  const summary =
+    before.length === 0
+      ? `Wrote ${where} (${added.length} ${added.length === 1 ? 'line' : 'lines'})`
+      : `Updated ${where} (+${added.length} −${removed.length})`;
+
+  return [
+    { text: summary, tone: 'muted' },
+    ...removed.map((text) => ({ text: clip(`- ${text}`, MAX_LINE_CHARS), tone: 'bad' as Tone })),
+    ...added.map((text) => ({ text: clip(`+ ${text}`, MAX_LINE_CHARS), tone: 'good' as Tone })),
+  ];
+}
+
+function cap(lines: ViewLine[]): ViewLine[] {
+  const trimmed = trimBlank(lines);
+  if (trimmed.length <= MAX_DETAIL_LINES) return trimmed;
+  const hidden = trimmed.length - MAX_DETAIL_LINES;
+  return [
+    ...trimmed.slice(0, MAX_DETAIL_LINES),
+    { text: `… +${hidden} ${hidden === 1 ? 'line' : 'lines'}`, tone: 'muted' },
+  ];
+}
+
+function trimBlank(lines: ViewLine[]): ViewLine[] {
+  let end = lines.length;
+  while (end > 0 && lines[end - 1]!.text.trim() === '') end--;
+  let start = 0;
+  while (start < end && lines[start]!.text.trim() === '') start++;
+  return lines.slice(start, end);
+}
+
+function clip(text: string, max: number): string {
+  const flat = text.replace(/\t/g, '  ').replace(/\r/g, '');
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
 /** One-line rendering for non-interactive output. Returns nothing for noise. */
@@ -174,4 +587,10 @@ export function describeRecord(record: TranscriptRecord, workspaceDir: string): 
 function relative(file: string, root: string): string {
   const rel = path.relative(root, file);
   return rel === '' || rel.startsWith('..') ? file : rel;
+}
+
+/** Workspace paths anywhere in a sentence, cut down to what a reader needs. */
+function shorten(text: string, root: string): string {
+  if (!root) return text;
+  return text.split(`${root}/`).join('').split(root).join('.');
 }
