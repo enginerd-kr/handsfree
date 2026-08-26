@@ -1,72 +1,53 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { ConfigSchema } from './schema.js';
+import { ConfigSchema, assertLaunchArgsAllowed } from './schema.js';
 
-const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
-
-describe('config schema', () => {
-  it('applies safe defaults', () => {
-    const cfg = ConfigSchema.parse({});
-    expect(cfg.agents.claude.permissionMode).toBe('acceptEdits');
-    expect(cfg.agents.gemini.approvalMode).toBe('auto_edit');
-    expect(cfg.agents.codex.sandbox).toBe('workspace-write');
-    expect(cfg.llm.baseURL).toBe('http://localhost:1234/v1');
-  });
-
-  it('makes bypass modes unrepresentable in enums', () => {
-    expect(() =>
-      ConfigSchema.parse({ agents: { claude: { permissionMode: 'bypassPermissions' } } }),
-    ).toThrow();
-    expect(() => ConfigSchema.parse({ agents: { gemini: { approvalMode: 'yolo' } } })).toThrow();
-    expect(() =>
-      ConfigSchema.parse({ agents: { codex: { sandbox: 'danger-full-access' } } }),
-    ).toThrow();
-  });
-
+describe('launch arguments', () => {
   it.each([
-    ['claude', '--dangerously-skip-permissions'],
-    ['gemini', '--yolo'],
-    ['gemini', '-y'],
-    ['gemini', '--approval-mode=yolo'],
-    ['codex', '--dangerously-bypass-approvals-and-sandbox'],
-    ['codex', '--sandbox=danger-full-access'],
-  ])('rejects forbidden flag smuggled via %s extraArgs: %s', (agent, flag) => {
-    expect(() => ConfigSchema.parse({ agents: { [agent]: { extraArgs: [flag] } } })).toThrow(
-      /Forbidden flag/,
-    );
+    ['--dangerously-skip-permissions'],
+    ['--yolo'],
+    ['--sandbox=danger-full-access'],
+    ['--permission-mode'],
+    ['--approval-mode'],
+  ])('refuses %s', (arg) => {
+    expect(() => assertLaunchArgsAllowed([arg], 'test')).toThrow(/Refusing launch argument/);
   });
 
-  it('allows benign extraArgs', () => {
-    const cfg = ConfigSchema.parse({ agents: { claude: { extraArgs: ['--model', 'opus'] } } });
-    expect(cfg.agents.claude.extraArgs).toEqual(['--model', 'opus']);
+  it('refuses gemini yolo while leaving npx -y alone', () => {
+    expect(() => assertLaunchArgsAllowed(['-y'], 'test', 'gemini')).toThrow(/Refusing/);
+    expect(() => assertLaunchArgsAllowed(['-y', '@zed-industries/codex-acp'], 'test', 'npx'))
+      .not.toThrow();
   });
 
-  it.each([['Bash'], ['Bash(git:*)'], ['WebFetch'], ['WebSearch'], ['Task']])(
-    'refuses to widen claude beyond file tools via allowedTools: %s',
-    (tool) => {
-      expect(() =>
-        ConfigSchema.parse({ agents: { claude: { allowedTools: ['Read', tool] } } }),
-      ).toThrow(/Forbidden tool/);
-    },
-  );
-
-  it('allows narrowing the tool list', () => {
-    const cfg = ConfigSchema.parse({ agents: { claude: { allowedTools: ['Read', 'Write'] } } });
-    expect(cfg.agents.claude.allowedTools).toEqual(['Read', 'Write']);
+  it('allows ordinary adapter flags', () => {
+    expect(() => assertLaunchArgsAllowed(['--experimental-acp', '-m', 'gemini-3.5-flash'], 'test'))
+      .not.toThrow();
   });
 
-  it('defaults to a bounded LLM timeout and history window', () => {
-    const cfg = ConfigSchema.parse({});
-    expect(cfg.llm.timeoutMs).toBeGreaterThan(0);
-    expect(cfg.orchestrator.maxHistoryMessages).toBeGreaterThan(0);
+  it('refuses them through config too', () => {
+    const parsed = ConfigSchema.safeParse({
+      agents: { claude: { command: 'claude', args: ['--dangerously-skip-permissions'] } },
+    });
+    expect(parsed.success).toBe(false);
+  });
+});
+
+describe('defaults', () => {
+  it('ships the three known adapters', () => {
+    const config = ConfigSchema.parse({});
+    expect(Object.keys(config.agents)).toEqual(['claude', 'gemini', 'codex']);
+    expect(config.agents['gemini']?.args).toContain('--experimental-acp');
   });
 
-  it('accepts the example config shipped in the repo', () => {
-    const file = path.join(repoRoot, 'handsfree.config.example.json');
-    const cfg = ConfigSchema.parse(JSON.parse(fs.readFileSync(file, 'utf8')));
-    expect(cfg.llm.timeoutMs).toBe(120_000);
-    expect(cfg.orchestrator.maxHistoryMessages).toBe(40);
+  it('keeps command execution off until it is asked for', () => {
+    const config = ConfigSchema.parse({});
+    expect(config.capabilities.terminal).toBe(false);
+    expect(config.policy.exec.enabled).toBe(false);
+    expect(config.policy.fs.outside).toBe('deny');
+  });
+
+  it('replaces the agent list wholesale when one is given', () => {
+    const config = ConfigSchema.parse({ agents: { local: { command: 'my-agent' } } });
+    expect(Object.keys(config.agents)).toEqual(['local']);
+    expect(config.agents['local']?.enabled).toBe(true);
   });
 });

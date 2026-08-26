@@ -1,12 +1,82 @@
-import type { ParsedOutput, TaskStatus } from '../agents/types.js';
-import type { RunResult } from '../agents/runner.js';
+import type { StopReason } from '@agentclientprotocol/sdk';
+import { agentText, touchedFiles, type TranscriptRecord } from '../workspace/transcript.js';
 
-export function classifyOutcome(run: RunResult, parsed: ParsedOutput): TaskStatus {
-  if (run.aborted) return 'cancelled';
-  if (run.timedOut) return 'timeout';
-  // Structural denials are authoritative regardless of exit code.
-  if (parsed.denials.length > 0) return 'blocked_by_permissions';
-  if (parsed.denialHints.length > 0) return 'blocked_by_permissions';
-  if (run.exitCode !== 0 || parsed.isError) return 'error';
-  return 'success';
+export type TaskStatus = 'done' | 'incomplete' | 'refused' | 'cancelled' | 'error';
+
+export interface TaskOutcome {
+  taskId: number;
+  agentId: string;
+  task: string;
+  status: TaskStatus;
+  /** What the agent said at the end of the turn. */
+  message: string;
+  /** Absolute paths the agent reported touching. */
+  files: string[];
+  /** Everything handsfree refused during this task, in order. */
+  denials: string[];
+  durationMs: number;
+}
+
+/**
+ * The status comes from the protocol, not from reading the agent's prose. A turn
+ * that ended with `end_turn` finished; one that was refused says so. Denials are
+ * reported alongside rather than folded in, because an agent that was refused a
+ * shell and wrote the file instead did finish the job — and we know it did,
+ * since every refusal in the list is one we issued ourselves.
+ */
+export function summarise(
+  taskId: number,
+  agentId: string,
+  task: string,
+  stopReason: StopReason | 'unresponsive',
+  records: readonly TranscriptRecord[],
+  durationMs: number,
+): TaskOutcome {
+  const denials: string[] = [];
+  for (const record of records) {
+    if (record.type === 'decision' && record.entry.verdict === 'deny') {
+      denials.push(`${record.entry.summary}${record.entry.reason ? ` (${record.entry.reason})` : ''}`);
+    }
+  }
+
+  return {
+    taskId,
+    agentId,
+    task,
+    status: statusOf(stopReason),
+    message: agentText(records),
+    files: touchedFiles(records),
+    denials,
+    durationMs,
+  };
+}
+
+function statusOf(stopReason: StopReason | 'unresponsive'): TaskStatus {
+  switch (stopReason) {
+    case 'end_turn':
+      return 'done';
+    case 'refusal':
+      return 'refused';
+    case 'cancelled':
+      return 'cancelled';
+    case 'max_tokens':
+    case 'max_turn_requests':
+      return 'incomplete';
+    default:
+      return 'error';
+  }
+}
+
+export function renderOutcome(outcome: TaskOutcome, workspaceDir: string): string {
+  const parts = [`Task ${outcome.taskId} (${outcome.agentId}): ${outcome.status}`];
+  parts.push(`after ${Math.round(outcome.durationMs / 1000)}s`);
+  const files = outcome.files.map((file) => relative(file, workspaceDir));
+  if (files.length > 0) parts.push(`touched ${files.join(', ')}`);
+  if (outcome.denials.length > 0) parts.push(`refused: ${outcome.denials.join('; ')}`);
+  const head = parts.join(' — ');
+  return outcome.message ? `${head}\n${outcome.message}` : head;
+}
+
+function relative(file: string, root: string): string {
+  return file.startsWith(root) ? file.slice(root.length).replace(/^\//, '') : file;
 }

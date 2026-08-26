@@ -1,92 +1,126 @@
 # handsfree
 
-A chat TUI where a **local small LLM** orchestrates **frontier-model CLIs** — [Claude Code](https://claude.com/claude-code), [Gemini CLI](https://github.com/google-gemini/gemini-cli), and [Codex CLI](https://github.com/openai/codex) — running headless. You describe a task; the local model decides whether to answer or delegate it, writes a task brief to a shared workspace, runs the CLI with minimum-scope permissions, and feeds the result back into the conversation.
+A local model routes your work to frontier coding agents — Claude Code, Gemini CLI, Codex — and **handsfree owns every side effect they cause**.
+
+The agents run in their own default permission mode. No `--dangerously-skip-permissions`, no `--yolo`, no `danger-full-access`. Where those flags would put an approval, handsfree puts a policy engine, and where the policy engine cannot decide, it puts you.
+
+This works because all three agents speak the [Agent Client Protocol](https://agentclientprotocol.com). handsfree is an ACP **client**: it starts each agent as a child process, answers its `session/request_permission` calls, and — because it also *implements* `fs/*` and `terminal/*` — is the thing that actually reads the file, writes the file, and runs the command.
 
 ```
-you  › make a file called notes.txt saying hello world
-task   claude #1: success
-  hf  Done — notes.txt was created with "hello world".
+        you
+         │
+    local model ────── routes, summarises. Never decides permissions.
+         │
+    ┌────┴─────────────────────────────────────────┐
+    │  handsfree · ACP host                        │
+    │    session/request_permission  → policy      │
+    │    fs/read_text_file           → policy      │
+    │    fs/write_text_file          → policy      │
+    │    terminal/*                  → policy      │
+    └────┬──────────────┬──────────────┬───────────┘
+   claude-code-acp   gemini --acp   codex-acp
 ```
 
-## Why
-
-- Your conversation stays on a **local model** (LM Studio, Ollama, llama.cpp — any OpenAI-compatible endpoint).
-- Frontier models only see **self-contained task briefs**, and only when delegation is needed.
-- Tasks share context **through files** in a per-session workspace (`context.md`, `tasks/<n>/brief.md`, `tasks/<n>/result.md`) — not through anyone's context window.
-
-## Always reports back
-
-A turn that delegated work **always** ends with a summary of what the agents did — file by file, failure by failure. handsfree asks the local model to write it, but never depends on that: if the model is slow, unreachable, or answers with JSON instead of prose, handsfree falls back to a report composed from the recorded task outcomes. Silence is treated as a bug, not an edge case.
-
-## Permission model (no bypass, ever)
-
-handsfree is built for environments where permission bypass is not acceptable. It never uses
-`--dangerously-skip-permissions` (claude), `--yolo` (gemini), or
-`--dangerously-bypass-approvals-and-sandbox` (codex) — those values are unrepresentable in the
-config schema, and any attempt to smuggle one in via `extraArgs` fails config loading with an error.
-
-The same applies one level down: blocking bypass flags would be pointless if the tool allowlist
-could hand the agent a shell anyway, so `allowedTools` refuses shell, network and subagent tools
-(`Bash`, `WebFetch`, `WebSearch`, `Task`, …) at config load. You can narrow the list, never widen it.
-
-| Agent | Scope |
-|---|---|
-| claude | `--permission-mode acceptEdits`, `--allowedTools Read Write Edit Glob Grep` |
-| gemini | `--approval-mode auto_edit` (file edits only; shell is denied) |
-| codex | `-s workspace-write` OS sandbox, no network |
-
-In headless mode a tool call that would need interactive approval is **denied, not prompted**. handsfree detects blocked outcomes, retries once with the task rephrased to file-only operations, and otherwise reports exactly what was denied — it never widens scope on its own.
-
-## Setup
-
-Requirements: Node >= 22, pnpm, at least one of `claude` / `gemini` / `codex` installed and logged in, and a local OpenAI-compatible LLM server.
+## Install
 
 ```bash
-pnpm install
-pnpm build
-node dist/index.js doctor     # preflight: endpoint + CLI auth
-node dist/index.js            # chat TUI
+pnpm install && pnpm build
 ```
 
-The TUI takes over the screen: the prompt is parked on the bottom row and the transcript scrolls in the region above it (`PgUp`/`PgDn`, `shift+↑/↓` a line at a time, `Esc` jumps back to the newest output). New output keeps itself in view unless you have scrolled up, in which case a `↓ N more below` marker appears instead. Your shell's scrollback is left untouched — the session's own record lives in the run dir.
+You also need whichever agents you plan to use, each logged in with its own CLI:
 
-Configuration (all optional): `./handsfree.config.json` (see `handsfree.config.example.json`), `~/.config/handsfree/config.json`, or env vars `HANDSFREE_LLM_BASE_URL`, `HANDSFREE_LLM_MODEL`, `HANDSFREE_LLM_API_KEY`, `HANDSFREE_WORKSPACE_ROOT`.
+| agent | launched as | log in with |
+|---|---|---|
+| claude | `npx -y @zed-industries/claude-code-acp` | `claude /login` |
+| gemini | `gemini --experimental-acp` | `gemini` |
+| codex | `npx -y @zed-industries/codex-acp` | `codex login` |
 
-Headless / scripting:
+And a local OpenAI-compatible endpoint for the routing model (LM Studio, Ollama, llama.cpp), by default at `http://localhost:1234/v1`.
+
+Check the lot:
 
 ```bash
-node dist/index.js --headless -p "have claude create hi.txt saying hi"
-
-# JSONL, one event object per line — for parsing rather than reading
-node dist/index.js --headless --output-format json -p "..."
+handsfree doctor
 ```
 
-`--output-format text` (the default) prints readable `[task ...]` lines and abbreviates long
-values; `json` emits one complete event per line (`workspace`, `assistant`, `task_started`,
-`task_finished`, `error`, `turn_done`) with nothing truncated.
+```
+  ok    claude   @zed-industries/claude-code-acp 0.16.2
+        launch: npx -y @zed-industries/claude-code-acp
+        resume: session/load
+        prompt: image, embeddedContext
+        auth:   Log in with Claude Code
+```
+
+Adapters are third-party packages that move on their own schedule, so `doctor` performs a real handshake rather than a version check.
+
+## Use
+
+```bash
+handsfree                      # terminal UI
+handsfree run "add a test"     # one turn, no UI
+handsfree serve --acp          # be an ACP agent, for an editor to drive
+```
+
+## The three gates
+
+Every side effect an agent causes arrives through one of three calls, and each is judged by the same rules.
+
+**`session/request_permission`** — the agent wants to use one of its own tools. handsfree translates the tool call into the same terms as the other gates and applies the same policy. Two invariants:
+
+- only `allow_once` is ever selected. A standing approval is a decision about work nobody has seen yet;
+- if the agent offers no single-use option, the request is **cancelled**, not widened to fit.
+
+**`fs/read_text_file` and `fs/write_text_file`** — handsfree reads and writes on the agent's behalf, which is where the workspace boundary stops being a promise. Paths are checked after resolution, not as strings: `/ws/../etc/passwd` and a symlink pointing out of the workspace are both refused, and a write either lands whole or not at all.
+
+**`terminal/*`** — off by default. Turn it on and handsfree owns every command: it parses the argv, checks it against an allowlist, forces the working directory, strips `LD_PRELOAD`-style environment variables, caps the output, and kills the process group on timeout. A `sh -c` script is unwrapped and judged for what it would actually run; a pipe or a `$(…)` is a verdict of its own, not something to emulate.
+
+The point of turning it on is not convenience. An agent that cannot use our terminal falls back to its own shell, where all we ever see is the permission request — so the choice is between commands we mediate and commands we merely hear about.
+
+### How a decision is made
+
+```
+rules  →  human  →  deny
+```
+
+Rules are deterministic and run first. Anything they cannot settle is escalated. An escalation that nobody answers — no UI attached, no reply within the timeout, a prompt that throws — is a denial. There is no path through the policy engine that ends in an unrecorded yes.
+
+The local model is not in this path. It routes tasks and writes the summary; a small quantised model has no business deciding whether a command may run.
+
+## The transcript
+
+One run, one record:
+
+```
+~/.handsfree/runs/<id>/transcript.jsonl     every update, every decision
+~/.handsfree/runs/<id>/sessions.json        agent session ids, for resuming
+~/.handsfree/runs/<id>/workspace/           the jail — agents' cwd
+```
+
+The transcript sits *above* the workspace, because an audit log an agent can edit is not an audit log. The UI renders it, the summary is written from it, and tests replay it — there is no second copy of what happened anywhere in the system.
+
+## Configuration
+
+Drop a `handsfree.config.json` in the working directory or at `~/.config/handsfree/config.json`. See `handsfree.config.example.json`; everything has a default.
+
+Two things are deliberately absent: there is no `permissionMode`, `approvalMode` or `sandbox` setting per agent, and no way to express a bypass flag. Launch arguments are checked at config load and again immediately before `exec`.
+
+## Sessions
+
+handsfree keeps one session per agent for the whole run, so a follow-up task builds on the previous one instead of replaying context through files. Where an adapter supports `session/load`, a restart rejoins the conversation rather than starting over.
+
+## As an agent
+
+`handsfree serve --acp` turns the whole thing around: an editor drives handsfree, handsfree drives the agents, and an escalated permission request travels up to the editor. The routing, the boundary and the gates are unchanged — only the occupant of the human seat differs.
 
 ## Development
 
-The project is developed in a **develop → e2e → verify** loop. E2e tests use **no mocks**: they run the real built app against a real local LLM endpoint and the real frontier CLIs, asserting on semantic outcomes (files created in a temp workspace).
-
-CI runs `typecheck`, `test` and `build` on every push and pull request — never the e2e suite, which
-needs a live endpoint and authenticated CLIs that a runner does not have.
-
 ```bash
-pnpm test          # unit tests (fast; includes forbidden-flag guards)
-pnpm e2e:tui       # visual TUI e2e in a pty (no LLM needed)
-pnpm e2e:core      # local-LLM-only loop test (~seconds)
-pnpm e2e:claude    # one real claude delegation
-pnpm e2e:gemini
-pnpm e2e:codex
-pnpm e2e:smoke     # core + claude
-pnpm e2e           # full suite, sequential
+pnpm typecheck
+pnpm test
 ```
 
-E2e requires a live endpoint (default `http://localhost:1234/v1`); the suite fails fast with instructions if it's missing. See `.env.e2e.example`. The TUI-only run (`pnpm e2e:tui`) is the exception — it drives slash commands locally and needs no endpoint.
+The suite runs against a scripted in-process ACP agent (`test/fake-agent.ts`), because the interesting cases — a refused command, a path escape, a turn that never ends — are precisely the ones a real adapter will not perform on request.
 
-Every e2e run writes a Playwright-style HTML report to `e2e-report/index.html` (`pnpm e2e:report` opens it): pass/fail per test, `.webp` screenshots taken at key moments, a looping animated-`.webp` recording of the whole terminal session, the final screen as text, and headless tests' stdout. On failure, the screen at the moment of failure is captured automatically.
+## Licence
 
-## License
-
-MIT — see [LICENSE](LICENSE).
+MIT

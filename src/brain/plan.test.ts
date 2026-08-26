@@ -1,0 +1,48 @@
+import { describe, expect, it } from 'vitest';
+import { extractJsonObject } from './json.js';
+import { parseStep } from './plan.js';
+
+const agents = ['claude', 'gemini'];
+
+describe('extractJsonObject', () => {
+  it('finds an object wrapped in prose', () => {
+    expect(extractJsonObject('Sure! {"a":1} hope that helps')).toBe('{"a":1}');
+  });
+
+  it('handles nested objects and braces inside strings', () => {
+    expect(extractJsonObject('{"a":{"b":"}"},"c":2} trailing')).toBe('{"a":{"b":"}"},"c":2}');
+  });
+
+  it('returns nothing when there is no object', () => {
+    expect(extractJsonObject('no json here')).toBeUndefined();
+  });
+});
+
+describe('parseStep', () => {
+  it('reads an answer', () => {
+    const parsed = parseStep('{"action":"answer","message":"hi"}', agents);
+    expect(parsed).toEqual({ ok: true, step: { action: 'answer', message: 'hi' } });
+  });
+
+  it('reads a delegation wrapped in a code fence', () => {
+    const parsed = parseStep(
+      '```json\n{"action":"delegate","agent":"claude","task":"do it"}\n```',
+      agents,
+    );
+    expect(parsed.ok && parsed.step).toMatchObject({ action: 'delegate', agent: 'claude' });
+  });
+
+  it('refuses an agent that is not available', () => {
+    const parsed = parseStep('{"action":"delegate","agent":"codex","task":"do it"}', agents);
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) expect(parsed.error).toContain('claude, gemini');
+  });
+
+  it('refuses an empty task', () => {
+    expect(parseStep('{"action":"delegate","agent":"claude","task":""}', agents).ok).toBe(false);
+  });
+
+  it('refuses an unknown action', () => {
+    expect(parseStep('{"action":"sudo","message":"hi"}', agents).ok).toBe(false);
+  });
+});

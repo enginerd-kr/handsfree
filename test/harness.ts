@@ -1,0 +1,75 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { ConfigSchema, type Config } from '../src/config/schema.js';
+import { createRuntime, type Runtime } from '../src/runtime.js';
+import type { ChatClient, ChatMessage } from '../src/brain/client.js';
+import type { FakeAgent } from './fake-agent.js';
+
+export interface HarnessOptions {
+  agents: Record<string, FakeAgent>;
+  config?: Partial<{
+    capabilities: Partial<Config['capabilities']>;
+    policy: Record<string, unknown>;
+    limits: Partial<Config['limits']>;
+  }>;
+  llm?: ChatClient;
+}
+
+export interface Harness {
+  runtime: Runtime;
+  workspaceDir: string;
+  dispose(): Promise<void>;
+}
+
+export function harness(options: HarnessOptions): Harness {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'handsfree-test-'));
+  const config = ConfigSchema.parse({
+    workspaceRoot: root,
+    agents: Object.fromEntries(
+      Object.keys(options.agents).map((id) => [id, { command: 'unused', args: [] }]),
+    ),
+    capabilities: { terminal: true, ...(options.config?.capabilities ?? {}) },
+    policy: options.config?.policy ?? {},
+    limits: { turnTimeoutMs: 5_000, idleTimeoutMs: 5_000, cancelGraceMs: 500, ...(options.config?.limits ?? {}) },
+  });
+  config.workspaceRoot = root;
+
+  const runtime = createRuntime({
+    config,
+    llm: options.llm,
+    createTarget: (agentId) => {
+      const agent = options.agents[agentId];
+      if (!agent) throw new Error(`no fake agent registered for ${agentId}`);
+      return agent.target();
+    },
+  });
+
+  return {
+    runtime,
+    workspaceDir: runtime.workspace.dir,
+    async dispose() {
+      await runtime.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+/**
+ * A local model that reads from a fixed list of replies and fails once they run
+ * out. Running dry is treated as an endpoint failure rather than an implicit
+ * "done", so a test can never pass because of a reply it did not write.
+ */
+export function scriptedModel(replies: string[]): ChatClient & { seen: ChatMessage[][] } {
+  const seen: ChatMessage[][] = [];
+  let index = 0;
+  return {
+    seen,
+    async chat(messages) {
+      seen.push(messages);
+      const reply = replies[index++];
+      if (reply === undefined) throw new Error('scripted model has no reply left');
+      return reply;
+    },
+  };
+}

@@ -2,32 +2,58 @@
   "llm": {
     "baseURL": "http://localhost:1234/v1",
     "model": "google/gemma-3-12b",
-    "apiKey": "not-needed",
-    "temperature": 0.1,
-    "timeoutMs": 120000
+    "temperature": 0.1
   },
-  "orchestrator": {
-    "maxTurns": 6,
-    "maxDelegationsPerMessage": 3,
-    "maxHistoryMessages": 40
-  },
+
   "agents": {
     "claude": {
-      "enabled": true,
-      "permissionMode": "acceptEdits",
-      "allowedTools": ["Read", "Write", "Edit", "Glob", "Grep"],
-      "timeoutMs": 300000
+      "command": "npx",
+      "args": ["-y", "@zed-industries/claude-code-acp"],
+      "note": "general coding agent, strong at multi-file edits"
     },
     "gemini": {
-      "enabled": true,
-      "approvalMode": "auto_edit",
-      "model": "gemini-3.5-flash",
-      "timeoutMs": 300000
+      "command": "gemini",
+      "args": ["--experimental-acp"],
+      "note": "fast, good at bulk text and single-file work"
     },
     "codex": {
-      "enabled": true,
-      "sandbox": "workspace-write",
-      "timeoutMs": 300000
+      "enabled": false,
+      "command": "npx",
+      "args": ["-y", "@zed-industries/codex-acp"],
+      "note": "methodical coding agent, good at tests and refactors"
     }
+  },
+
+  "capabilities": {
+    "readTextFile": true,
+    "writeTextFile": true,
+    "terminal": false,
+    "elicitation": false
+  },
+
+  "policy": {
+    "workspaceOnly": true,
+    "fs": { "read": "allow", "write": "allow", "outside": "deny", "followSymlinks": false },
+    "exec": {
+      "enabled": false,
+      "mode": "allowlist",
+      "allow": ["git status", "git diff", "git log", "ls", "cat", "pnpm test", "pnpm build"],
+      "shellOperators": "deny",
+      "timeoutMs": 120000,
+      "outputByteLimit": 262144,
+      "env": ["PATH", "HOME", "LANG", "TERM", "TMPDIR"]
+    },
+    "escalation": ["user"],
+    "decisionTimeoutMs": 120000
+  },
+
+  "limits": {
+    "handshakeTimeoutMs": 90000,
+    "turnTimeoutMs": 600000,
+    "idleTimeoutMs": 180000,
+    "cancelGraceMs": 10000,
+    "maxDelegationsPerTurn": 3,
+    "maxPlanSteps": 6,
+    "maxResultChars": 4000
   }
 }
