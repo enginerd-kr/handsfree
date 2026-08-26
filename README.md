@@ -14,12 +14,20 @@ task   claude #1: success
 - Frontier models only see **self-contained task briefs**, and only when delegation is needed.
 - Tasks share context **through files** in a per-session workspace (`context.md`, `tasks/<n>/brief.md`, `tasks/<n>/result.md`) — not through anyone's context window.
 
+## Always reports back
+
+A turn that delegated work **always** ends with a summary of what the agents did — file by file, failure by failure. handsfree asks the local model to write it, but never depends on that: if the model is slow, unreachable, or answers with JSON instead of prose, handsfree falls back to a report composed from the recorded task outcomes. Silence is treated as a bug, not an edge case.
+
 ## Permission model (no bypass, ever)
 
 handsfree is built for environments where permission bypass is not acceptable. It never uses
 `--dangerously-skip-permissions` (claude), `--yolo` (gemini), or
 `--dangerously-bypass-approvals-and-sandbox` (codex) — those values are unrepresentable in the
 config schema, and any attempt to smuggle one in via `extraArgs` fails config loading with an error.
+
+The same applies one level down: blocking bypass flags would be pointless if the tool allowlist
+could hand the agent a shell anyway, so `allowedTools` refuses shell, network and subagent tools
+(`Bash`, `WebFetch`, `WebSearch`, `Task`, …) at config load. You can narrow the list, never widen it.
 
 | Agent | Scope |
 |---|---|
@@ -46,11 +54,21 @@ Headless / scripting:
 
 ```bash
 node dist/index.js --headless -p "have claude create hi.txt saying hi"
+
+# JSONL, one event object per line — for parsing rather than reading
+node dist/index.js --headless --output-format json -p "..."
 ```
+
+`--output-format text` (the default) prints readable `[task ...]` lines and abbreviates long
+values; `json` emits one complete event per line (`workspace`, `assistant`, `task_started`,
+`task_finished`, `error`, `turn_done`) with nothing truncated.
 
 ## Development
 
 The project is developed in a **develop → e2e → verify** loop. E2e tests use **no mocks**: they run the real built app against a real local LLM endpoint and the real frontier CLIs, asserting on semantic outcomes (files created in a temp workspace).
+
+CI runs `typecheck`, `test` and `build` on every push and pull request — never the e2e suite, which
+needs a live endpoint and authenticated CLIs that a runner does not have.
 
 ```bash
 pnpm test          # unit tests (fast; includes forbidden-flag guards)
@@ -69,4 +87,4 @@ Every e2e run writes a Playwright-style HTML report to `e2e-report/index.html` (
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

@@ -7,55 +7,23 @@ import { useOrchestrator, type ChatItem } from './useOrchestrator.js';
 import { formatAgents, formatHelp, formatStatus, formatTasks, matchCommands, resolveCommand } from './commands.js';
 import { CommandMenu } from './CommandMenu.js';
 import { TaskPanel } from './TaskPanel.js';
-
-const ITEM_COLORS: Record<ChatItem['kind'], string | undefined> = {
-  user: 'cyan',
-  assistant: undefined,
-  task: 'yellow',
-  error: 'red',
-  info: undefined,
-};
-
-const ITEM_PREFIX: Record<ChatItem['kind'], string> = {
-  user: 'you ',
-  assistant: '  hf',
-  task: 'task',
-  error: ' err',
-  info: '    ',
-};
+import { Message } from './Message.js';
+import { POINTER } from './figures.js';
 
 type StaticEntry = { banner: true } | ChatItem;
 
 function Banner({ config, runDir }: { config: Config; runDir: string }) {
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} marginBottom={1}>
-      <Text bold color="cyan">
-        handsfree
+    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1}>
+      <Text>
+        <Text color="cyan">✻ </Text>
+        <Text bold>handsfree</Text>
       </Text>
       <Text dimColor>
         {config.llm.model} @ {config.llm.baseURL}
       </Text>
       <Text dimColor>run dir: {runDir}</Text>
-      <Text dimColor>type / for commands · Esc cancels a running task</Text>
-    </Box>
-  );
-}
-
-function ChatLine({ item }: { item: ChatItem }) {
-  if (item.kind === 'info') {
-    return (
-      <Box paddingLeft={2}>
-        <Text dimColor>{item.text}</Text>
-      </Box>
-    );
-  }
-  const color = item.color ?? ITEM_COLORS[item.kind];
-  return (
-    <Box gap={1}>
-      <Text color={color} bold>
-        {ITEM_PREFIX[item.kind]}
-      </Text>
-      <Text color={color}>{item.text}</Text>
+      <Text dimColor>type / for commands · Esc cancels the running turn</Text>
     </Box>
   );
 }
@@ -65,25 +33,60 @@ export function App({ config }: { config: Config }) {
   const { state, send, cancel, addInfo, clear } = useOrchestrator(config);
   const [input, setInput] = useState('');
   const [selected, setSelected] = useState(0);
+  const [history, setHistory] = useState<string[]>([]);
+  /** Position in `history` while recalling, or null when editing a fresh line. */
+  const [recall, setRecall] = useState<number | null>(null);
+  /** The half-typed line stashed when recall started, restored on the way back. */
+  const [draft, setDraft] = useState('');
 
-  const menuOpen = state.phase === 'idle' && input.startsWith('/');
+  const menuOpen = input.startsWith('/');
   const suggestions = menuOpen ? matchCommands(input) : [];
 
   useEffect(() => {
     setSelected(0);
   }, [input]);
 
+  const recallHistory = (delta: number) => {
+    if (history.length === 0) return;
+    if (recall === null) {
+      if (delta > 0) return; // Nothing newer than the line being typed.
+      setDraft(input);
+      const index = history.length - 1;
+      setRecall(index);
+      setInput(history[index]);
+      return;
+    }
+    const index = recall + delta;
+    if (index >= history.length) {
+      setRecall(null);
+      setInput(draft);
+      return;
+    }
+    const clamped = Math.max(0, index);
+    setRecall(clamped);
+    setInput(history[clamped]);
+  };
+
   useInput((_input, key) => {
     if (key.escape) {
-      if (state.phase === 'delegating') cancel();
+      // Cancels the whole turn, including a local-LLM call that has not returned.
+      if (state.phase !== 'idle') cancel();
       else if (input !== '') setInput('');
       return;
     }
-    if (suggestions.length > 0) {
+    if (key.tab && suggestions.length > 0) {
+      setInput(`/${suggestions[Math.min(selected, suggestions.length - 1)].name}`);
+      return;
+    }
+    // Once you are browsing history, ↑/↓ stay in history — even though recalling a
+    // slash command pops the menu open underneath.
+    if (recall === null && suggestions.length > 0) {
       if (key.upArrow) setSelected((s) => (s + suggestions.length - 1) % suggestions.length);
       else if (key.downArrow) setSelected((s) => (s + 1) % suggestions.length);
-      else if (key.tab) setInput(`/${suggestions[Math.min(selected, suggestions.length - 1)].name}`);
+      return;
     }
+    if (key.upArrow) recallHistory(-1);
+    else if (key.downArrow) recallHistory(1);
   });
 
   const runCommand = (name: string) => {
@@ -113,6 +116,9 @@ export function App({ config }: { config: Config }) {
     const text = value.trim();
     if (text === '') return;
     setInput('');
+    setRecall(null);
+    setDraft('');
+    setHistory((h) => (h.at(-1) === text ? h : [...h, text]));
     if (text.startsWith('/')) {
       const command = resolveCommand(text) ?? suggestions[Math.min(selected, Math.max(0, suggestions.length - 1))];
       if (!command) {
@@ -133,7 +139,6 @@ export function App({ config }: { config: Config }) {
       }[state.activeTask.agent]
     : '';
 
-  const turnTasks = state.tasks.slice(-4);
   const doneCount = state.tasks.filter((t) => t.status !== 'running').length;
 
   const staticEntries: StaticEntry[] = [{ banner: true }, ...state.items];
@@ -145,41 +150,51 @@ export function App({ config }: { config: Config }) {
           'banner' in entry ? (
             <Banner key="banner" config={config} runDir={state.runDir} />
           ) : (
-            <ChatLine key={i} item={entry} />
+            <Message key={i} item={entry} />
           )
         }
       </Static>
 
-      {state.activeTask && <TaskPanel task={state.activeTask} scope={scope} turnTasks={turnTasks} />}
+      {state.activeTask && <TaskPanel task={state.activeTask} scope={scope} />}
 
       {state.phase === 'thinking' && (
-        <Box gap={1}>
+        <Box marginTop={1} gap={1}>
           <Spinner type="dots" />
-          <Text dimColor>thinking…</Text>
+          <Text dimColor>Thinking…</Text>
         </Box>
       )}
 
-      <Box gap={1}>
+      {/* The input stays live during a turn; what you type is queued, not dropped. */}
+      <Box marginTop={1} gap={1}>
         <Text color="cyan" bold>
-          ›
+          {POINTER}
         </Text>
-        {state.phase === 'idle' ? (
-          <TextInput
-            value={input}
-            onChange={setInput}
-            onSubmit={onSubmit}
-            placeholder="describe a task, or / for commands"
-          />
-        ) : (
-          <Text dimColor>working…</Text>
-        )}
+        <TextInput
+          value={input}
+          onChange={setInput}
+          onSubmit={onSubmit}
+          placeholder={
+            state.phase === 'idle'
+              ? 'describe a task, or / for commands'
+              : 'working… type ahead and it runs next'
+          }
+        />
       </Box>
+
+      {state.queued.map((text, i) => (
+        <Box key={i} paddingLeft={2} gap={1}>
+          <Text dimColor>queued</Text>
+          <Text dimColor wrap="truncate-end">
+            {text}
+          </Text>
+        </Box>
+      ))}
 
       {menuOpen ? (
         <CommandMenu commands={suggestions} selected={Math.min(selected, Math.max(0, suggestions.length - 1))} />
       ) : (
         <Box paddingLeft={2} gap={2}>
-          <Text dimColor>/ for commands</Text>
+          <Text dimColor>/ for commands · ↑ for history</Text>
           {state.tasks.length > 0 && (
             <Text dimColor>
               tasks: {doneCount}/{state.tasks.length} done

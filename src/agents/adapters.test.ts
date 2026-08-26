@@ -49,19 +49,73 @@ describe.each([claudeAdapter, geminiAdapter, codexAdapter])('$name adapter', (ad
 });
 
 describe('claude output parsing', () => {
+  const out = (stdout: string, stderr = '') => claudeAdapter.parseOutput({ stdout, stderr }, task);
+
   it('detects permission denials in structured output', () => {
-    const raw = JSON.stringify({
-      result: 'I could not finish',
-      is_error: false,
-      permission_denials: [{ tool_name: 'Bash' }],
-    });
-    const parsed = claudeAdapter.parseOutput(raw, task);
+    const parsed = out(
+      JSON.stringify({
+        result: 'I could not finish',
+        is_error: false,
+        permission_denials: [{ tool_name: 'Bash' }],
+      }),
+    );
     expect(parsed.denials.length).toBeGreaterThan(0);
   });
 
   it('extracts result text', () => {
-    const parsed = claudeAdapter.parseOutput(JSON.stringify({ result: 'done', is_error: false }), task);
+    const parsed = out(JSON.stringify({ result: 'done', is_error: false }));
     expect(parsed.finalMessage).toBe('done');
     expect(parsed.denials).toEqual([]);
+  });
+
+  it('is not corrupted by anything the CLI writes to stderr', () => {
+    const parsed = out(
+      JSON.stringify({ result: 'done', is_error: false }),
+      'warning: update available\nnode: ExperimentalWarning\n',
+    );
+    expect(parsed.finalMessage).toBe('done');
+    expect(parsed.isError).toBe(false);
+  });
+
+  it('tolerates a banner printed before the JSON payload', () => {
+    const parsed = out(`Update available!\n${JSON.stringify({ result: 'done', is_error: false })}`);
+    expect(parsed.finalMessage).toBe('done');
+  });
+
+  it('reports an error when the promised JSON never arrives', () => {
+    const parsed = out('', 'Error: not logged in\n');
+    expect(parsed.isError).toBe(true);
+    expect(parsed.finalMessage).toContain('not logged in');
+  });
+});
+
+describe('codex output parsing', () => {
+  it('takes the last agent message from the JSONL stream', () => {
+    const stdout = [
+      JSON.stringify({ msg: { type: 'agent_message', message: 'first' } }),
+      'not json at all',
+      JSON.stringify({ msg: { type: 'agent_message', message: 'second' } }),
+    ].join('\n');
+    const parsed = codexAdapter.parseOutput({ stdout, stderr: '' }, task);
+    expect(parsed.finalMessage).toBe('second');
+    expect(parsed.isError).toBe(false);
+  });
+
+  it('flags error events, and treats a denial named in one as structural', () => {
+    const stdout = JSON.stringify({
+      msg: { type: 'error', message: 'sandbox denied write outside the workspace' },
+    });
+    const parsed = codexAdapter.parseOutput({ stdout, stderr: '' }, task);
+    expect(parsed.isError).toBe(true);
+    expect(parsed.denials.length).toBeGreaterThan(0);
+  });
+});
+
+describe('gemini output parsing', () => {
+  it('surfaces a structured error as an error', () => {
+    const stdout = JSON.stringify({ error: { message: 'quota exceeded' } });
+    const parsed = geminiAdapter.parseOutput({ stdout, stderr: '' }, task);
+    expect(parsed.isError).toBe(true);
+    expect(parsed.finalMessage).toBe('quota exceeded');
   });
 });

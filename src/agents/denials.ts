@@ -9,12 +9,32 @@ const DENIAL_PATTERNS: RegExp[] = [
   /couldn'?t (run|execute)[^.\n]{0,40}(shell|command)/i,
 ];
 
-/** Best-effort detection of "blocked by permissions" evidence in CLI output. */
+/**
+ * Marks a denial the agent routed around. "I couldn't run the shell command, so I
+ * created the file directly" describes a *successful* task, and classifying it as
+ * blocked costs a needless rephrase retry — so a sentence carrying one of these is
+ * not counted as evidence.
+ */
+const WORKAROUND_MARKERS =
+  /\b(so I|instead|as an alternative|therefore I|I (then |have )?(created|wrote|added|edited|updated|generated))\b/i;
+
+function sentences(text: string): string[] {
+  return text.split(/(?<=[.!?\n])\s+/);
+}
+
+/**
+ * Best-effort detection of denial evidence in free-form CLI text. Matched per
+ * sentence so surrounding context can veto a hit; deduplicated because the same
+ * refusal is often phrased twice.
+ */
 export function findDenialPhrases(text: string): string[] {
-  const found: string[] = [];
-  for (const pattern of DENIAL_PATTERNS) {
-    const match = pattern.exec(text);
-    if (match) found.push(match[0]);
+  const found = new Set<string>();
+  for (const sentence of sentences(text)) {
+    if (WORKAROUND_MARKERS.test(sentence)) continue;
+    for (const pattern of DENIAL_PATTERNS) {
+      const match = pattern.exec(sentence);
+      if (match) found.add(match[0]);
+    }
   }
-  return found;
+  return [...found];
 }

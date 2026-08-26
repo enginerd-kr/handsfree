@@ -6,7 +6,8 @@ import { ConfigSchema, type Config } from '../config/schema.js';
 
 const ENTER = '\r';
 const TAB = '\t';
-const ARROW_DOWN = '[B';
+const ARROW_UP = '\u001B[A';
+const ARROW_DOWN = '\u001B[B';
 
 function makeConfig(): Config {
   return ConfigSchema.parse({ workspaceRoot: `${process.env.TMPDIR ?? '/tmp'}/handsfree-app-test` });
@@ -36,7 +37,7 @@ describe('App slash commands', () => {
     expect(lastFrame()).not.toContain('/help');
     stdin.write(TAB);
     await tick();
-    expect(lastFrame()).toContain('› /tasks');
+    expect(lastFrame()).toContain('❯ /tasks');
     unmount();
   });
 
@@ -71,7 +72,7 @@ describe('App slash commands', () => {
     await tick();
     stdin.write(TAB);
     await tick();
-    expect(lastFrame()).toContain('› /tasks');
+    expect(lastFrame()).toContain('❯ /tasks');
     unmount();
   });
 
@@ -83,6 +84,47 @@ describe('App slash commands', () => {
     stdin.write(ENTER);
     await tick();
     expect(frames.join('\n')).toContain('Unknown command: /zzz');
+    unmount();
+  });
+
+  it('recalls the previous message with the up arrow', async () => {
+    const { lastFrame, stdin, unmount } = render(<App config={makeConfig()} />);
+    await tick();
+    stdin.write('/help');
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+    expect(lastFrame()).not.toContain('❯ /help');
+
+    stdin.write(ARROW_UP);
+    await tick();
+    expect(lastFrame()).toContain('❯ /help');
+    unmount();
+  });
+
+  it('returns to the half-typed line when arrowing back down', async () => {
+    const { lastFrame, stdin, unmount } = render(<App config={makeConfig()} />);
+    await tick();
+    stdin.write('/help');
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+
+    stdin.write('draft');
+    await tick();
+    stdin.write(ARROW_UP);
+    await tick();
+    expect(lastFrame()).toContain('❯ /help');
+    stdin.write(ARROW_DOWN);
+    await tick();
+    expect(lastFrame()).toContain('❯ draft');
+    unmount();
+  });
+
+  it('keeps the input live so typing is never blocked', async () => {
+    const { lastFrame, unmount } = render(<App config={makeConfig()} />);
+    await tick();
+    expect(lastFrame()).toContain('describe a task, or / for commands');
     unmount();
   });
 

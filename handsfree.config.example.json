@@ -3,11 +3,13 @@
     "baseURL": "http://localhost:1234/v1",
     "model": "google/gemma-3-12b",
     "apiKey": "not-needed",
-    "temperature": 0.1
+    "temperature": 0.1,
+    "timeoutMs": 120000
   },
   "orchestrator": {
     "maxTurns": 6,
-    "maxDelegationsPerMessage": 3
+    "maxDelegationsPerMessage": 3,
+    "maxHistoryMessages": 40
   },
   "agents": {
     "claude": {

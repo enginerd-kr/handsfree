@@ -9,6 +9,7 @@ const { values, positionals } = parseArgs({
     config: { type: 'string' },
     'base-url': { type: 'string' },
     model: { type: 'string' },
+    'output-format': { type: 'string', default: 'text' },
     help: { type: 'boolean', short: 'h', default: false },
   },
   allowPositionals: true,
@@ -24,13 +25,20 @@ Usage:
   handsfree doctor                preflight: LLM endpoint + agent CLIs
 
 Options:
-  --workspace <dir>   workspace root (default ~/.handsfree/workspaces)
-  --config <file>     config file (default ./handsfree.config.json)
-  --base-url <url>    OpenAI-compatible endpoint (default http://localhost:1234/v1)
-  --model <name>      orchestrator model id
-  -p, --prompt <msg>  one-shot message (implies --headless)
+  --workspace <dir>       workspace root (default ~/.handsfree/workspaces)
+  --config <file>         config file (default ./handsfree.config.json)
+  --base-url <url>        OpenAI-compatible endpoint (default http://localhost:1234/v1)
+  --model <name>          orchestrator model id
+  --output-format <fmt>   headless output: text (default) or json (JSONL, one event per line)
+  -p, --prompt <msg>      one-shot message (implies --headless)
 `);
   process.exit(0);
+}
+
+const outputFormat = values['output-format'];
+if (outputFormat !== 'text' && outputFormat !== 'json') {
+  process.stderr.write(`Unknown --output-format "${outputFormat}". Use "text" or "json".\n`);
+  process.exit(2);
 }
 
 const config = loadConfig({
@@ -46,7 +54,7 @@ if (positionals[0] === 'doctor') {
   process.exit(ok ? 0 : 1);
 } else if (values.headless || values.prompt !== undefined) {
   const { runHeadless } = await import('./headless.js');
-  await runHeadless(config, values.prompt);
+  await runHeadless(config, values.prompt, outputFormat);
 } else {
   const { startTui } = await import('./tui/start.js');
   await startTui(config);

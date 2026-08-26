@@ -1,5 +1,6 @@
 import type { AgentName, Config } from '../config/schema.js';
 import type { TaskPaths } from '../workspace/session.js';
+import { renderTurnFacts, type TurnTask } from './turn.js';
 
 const AGENT_NOTES: Record<AgentName, string> = {
   claude: 'strong general coding agent; can read/write/edit files in the workspace',
@@ -21,6 +22,7 @@ Rules:
 - Agents work ONLY inside a workspace directory. They cannot install packages or access the network. Denied operations fail; they are never approved interactively.
 - Write tasks as short, self-contained imperative briefs. Include exact file names and exact content when the user specified them.
 - Delegate anything that involves creating or changing files or code. Answer directly for questions and conversation.
+- Once the tasks you delegated are done, respond with a summary of what each task actually did — files created or changed, and anything that failed. Never end a delegation with a bare "done".
 - If a task result has status "blocked_by_permissions", retry ONCE with the task rephrased to use only file create/edit operations. If blocked again, tell the user what was denied.
 - Reply with EXACTLY ONE JSON object and nothing else. Two forms:
 {"action":"respond","message":"<your reply to the user>"}
@@ -63,4 +65,37 @@ ${doneWhen ? `\nDone when: ${doneWhen}\n` : ''}
 
 export function buildDelegatePrompt(taskPaths: TaskPaths, runDir: string): string {
   return `Read the task brief at ${taskPaths.briefFile} and complete it. Work in the current directory (${runDir}). When finished, write a short summary of what you did to ${taskPaths.resultFile}`;
+}
+
+/**
+ * A separate persona from the orchestrator prompt above: this one writes prose to
+ * the user, not JSON actions, and is deliberately fenced off from the action
+ * schema so a small model does not answer a summary request with a delegation.
+ */
+export function buildSummarySystemPrompt(): string {
+  return `You are handsfree, reporting back to the user after delegated coding tasks have finished.
+
+Write plain prose. No JSON, no code fences, no preamble.
+
+Rules:
+- Report what was actually done, task by task, in the past tense.
+- Name the files that were created or changed, when the results mention them.
+- State failures, timeouts and permission blocks plainly. Never describe a task as done when its status says otherwise.
+- Use only the facts given to you. Do not invent work, file names or outcomes.
+- At most three sentences per task.`;
+}
+
+export function buildSummaryRequest(
+  userMessage: string,
+  tasks: TurnTask[],
+  notes: string[],
+): string {
+  return `The user asked:
+${userMessage}
+
+Here is exactly what happened:
+
+${renderTurnFacts(tasks, notes)}
+
+Report back to the user.`;
 }

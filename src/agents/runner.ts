@@ -4,8 +4,14 @@ import type { Invocation } from './types.js';
 
 export interface RunResult {
   exitCode: number | undefined;
+  /** stdout only — the channel CLIs put their structured output on. */
+  stdout: string;
+  /** stderr only — diagnostics, never parsed as the CLI's structured result. */
+  stderr: string;
+  /** stdout+stderr interleaved, kept for the raw log and live streaming. */
   output: string;
   timedOut: boolean;
+  aborted: boolean;
 }
 
 export interface RunOptions {
@@ -45,7 +51,10 @@ export async function runCli(inv: Invocation, opts: RunOptions): Promise<RunResu
   const result = await subprocess;
   return {
     exitCode: result.exitCode,
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
     output: result.all ?? '',
     timedOut: result.timedOut,
+    aborted: opts.signal?.aborted === true,
   };
 }

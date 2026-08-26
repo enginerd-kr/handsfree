@@ -43,9 +43,12 @@ export function formatHelp(): string {
     ...lines,
     '',
     'Shortcuts:',
-    '  ↑/↓ + Tab   navigate / complete the command menu',
+    '  ↑/↓         recall previous messages · navigate the command menu',
+    '  Tab         complete the selected command',
     '  Enter       run the selected command, or send the message',
-    '  Esc         cancel a running task · clear the input',
+    '  Esc         cancel the running turn · clear the input',
+    '',
+    'Typing during a running turn is fine — messages queue and run in order.',
   ].join('\n');
 }
 

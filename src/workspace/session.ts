@@ -12,6 +12,16 @@ export interface TaskPaths {
   lastMessageFile: string;
 }
 
+function highestTaskId(tasksDir: string): number {
+  let highest = 0;
+  for (const entry of fs.readdirSync(tasksDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const id = Number.parseInt(entry.name.split('-')[0] ?? '', 10);
+    if (Number.isInteger(id) && id > highest) highest = id;
+  }
+  return highest;
+}
+
 /**
  * Per chat session, a run directory holds all file-based shared context:
  *   <runDir>/context.md                   — accumulating one-entry-per-task log
@@ -31,7 +41,10 @@ export class Session {
       const id = `${new Date().toISOString().replace(/[:.]/g, '-')}-${process.pid}`;
       this.runDir = path.join(workspaceRoot, 'runs', id);
     }
-    fs.mkdirSync(path.join(this.runDir, 'tasks'), { recursive: true });
+    const tasksDir = path.join(this.runDir, 'tasks');
+    fs.mkdirSync(tasksDir, { recursive: true });
+    // Resume into an existing run dir without overwriting the tasks already in it.
+    this.taskCount = highestTaskId(tasksDir);
     const contextFile = this.contextFile;
     if (!fs.existsSync(contextFile)) {
       fs.writeFileSync(contextFile, '# Session context\n\n');
@@ -42,12 +55,12 @@ export class Session {
     return path.join(this.runDir, 'context.md');
   }
 
-  createTask(agent: AgentName, brief: string): TaskPaths {
+  createTask(agent: AgentName): TaskPaths {
     this.taskCount += 1;
     const id = this.taskCount;
     const dir = path.join(this.runDir, 'tasks', `${id}-${agent}`);
     fs.mkdirSync(dir, { recursive: true });
-    const paths: TaskPaths = {
+    return {
       id,
       agent,
       dir,
@@ -56,8 +69,6 @@ export class Session {
       rawFile: path.join(dir, 'raw.json'),
       lastMessageFile: path.join(dir, 'last-message.txt'),
     };
-    fs.writeFileSync(paths.briefFile, brief);
-    return paths;
   }
 
   relative(file: string): string {

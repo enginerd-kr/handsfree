@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { Box, Text } from 'ink';
-import Spinner from 'ink-spinner';
-import type { ActiveTask, TaskRecord } from './useOrchestrator.js';
-import { formatDuration, STATUS_COLOR, STATUS_ICON } from './format.js';
+import type { ActiveTask } from './useOrchestrator.js';
+import { formatDuration } from './format.js';
+import { Bullet, Response, TaskSignature } from './Message.js';
 
 /** Re-render once a second so elapsed times tick while a task runs. */
 function useNow(active: boolean): number {
@@ -16,37 +16,34 @@ function useNow(active: boolean): number {
   return now;
 }
 
-/** Live panel for the currently running delegation. */
-export function TaskPanel({ task, scope, turnTasks }: { task: ActiveTask; scope: string; turnTasks: TaskRecord[] }) {
+/**
+ * The delegation in flight. Rendered in the same bullet/elbow shape the finished
+ * ones settle into, so the transcript doesn't jump when the task lands — only
+ * the outcome line is replaced. Earlier tasks are already in the scrollback, so
+ * this shows the active one alone.
+ */
+export function TaskPanel({ task, scope }: { task: ActiveTask; scope: string }) {
   const now = useNow(true);
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
-      {turnTasks
-        .filter((t) => t.id !== task.id)
-        .map((t) => (
-          <Box key={t.id} gap={1}>
-            <Text color={STATUS_COLOR[t.status]}>{STATUS_ICON[t.status]}</Text>
-            <Text dimColor>
-              {t.agent} #{t.id} · {t.status} · {formatDuration((t.endedAt ?? now) - t.startedAt)}
-            </Text>
-          </Box>
+    <Box flexDirection="column" marginTop={1}>
+      <Bullet color="yellow">
+        <TaskSignature agent={task.agent} id={task.id} task={task.task} />
+      </Bullet>
+      <Response>
+        <Text>
+          <Text color="yellow">Running…</Text>
+          <Text dimColor> ({formatDuration(now - task.startedAt)} · esc to interrupt)</Text>
+        </Text>
+        <Text dimColor wrap="truncate-end">
+          {scope}
+        </Text>
+        {task.outputTail.map((line, i) => (
+          <Text key={i} dimColor wrap="truncate-end">
+            {line}
+          </Text>
         ))}
-      <Box gap={1}>
-        <Spinner type="dots" />
-        <Text bold>
-          {task.agent} #{task.id}
-        </Text>
-        <Text color="yellow">{formatDuration(now - task.startedAt)}</Text>
-        <Text dimColor>{scope}</Text>
-        <Text dimColor>(Esc to cancel)</Text>
-      </Box>
-      <Text wrap="truncate-end">{'  '}{task.task}</Text>
-      {task.outputTail.map((line, i) => (
-        <Text key={i} dimColor wrap="truncate-end">
-          {line}
-        </Text>
-      ))}
+      </Response>
     </Box>
   );
 }
