@@ -162,7 +162,9 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     const trimmed = text.trim();
     applyDraft(() => ({ value: '', cursor: 0 }));
     if (trimmed === '/quit' || trimmed === '/exit') {
-      runtime.conversation.cancel();
+      // Close, not cancel: cancel would still summarise the turn, and that
+      // request would keep the process alive after the UI is gone.
+      void runtime.conversation.close();
       exit();
       return;
     }
@@ -181,7 +183,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   // no way to stop Ink handing it a report it would type into the value.
   useInput((char, key) => {
     if (key.ctrl && char === 'c') {
-      runtime.conversation.cancel();
+      void runtime.conversation.close();
       exit();
       return;
     }

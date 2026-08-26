@@ -20,10 +20,14 @@ export function spawnTarget(profile: AgentProfile, options: SpawnOptions): Conne
   // Last gate before exec: a bypass flag must never reach an agent's argv.
   assertLaunchArgsAllowed(profile.args, `${profile.command} argv`, profile.command);
 
+  // Its own process group: adapters hide behind wrappers — npx execs its
+  // package, gemini relaunches itself — so the process that speaks ACP is a
+  // grandchild that a plain kill to the child never reaches.
   const child = spawn(profile.command, profile.args, {
     cwd: options.cwd,
     env: { ...process.env, ...profile.env, NO_COLOR: '1' },
     stdio: ['pipe', 'pipe', 'pipe'],
+    detached: true,
   });
 
   // Adapters explain themselves on stderr and then fail on stdout with a bare
@@ -65,13 +69,42 @@ export function spawnTarget(profile: AgentProfile, options: SpawnOptions): Conne
       return app.connect(stream);
     },
     async close(): Promise<void> {
-      if (settled || child.pid === undefined) return;
-      child.kill('SIGTERM');
+      // Whatever the tree below does, our ends of the stdio pipes close: a
+      // grandchild that outlives the child would otherwise keep them — and the
+      // event loop, and so the whole process — open for as long as it liked.
+      const releasePipes = () => {
+        child.stdin?.destroy();
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+      };
+      if (settled || child.pid === undefined) {
+        releasePipes();
+        return;
+      }
+      killGroup(child, 'SIGTERM');
       const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
-      const timer = setTimeout(() => child.kill('SIGKILL'), 2_000);
+      const timer = setTimeout(() => killGroup(child, 'SIGKILL'), 2_000);
       await exited.finally(() => clearTimeout(timer));
+      // The child's exit says nothing about the rest of its group; sweep it
+      // while the group id is still fresh rather than leave orphans behind.
+      killGroup(child, 'SIGKILL');
+      releasePipes();
     },
   };
+}
+
+/** Signals the whole adapter tree, falling back to the child alone. */
+function killGroup(child: ReturnType<typeof spawn>, signal: NodeJS.Signals): void {
+  if (child.pid === undefined) return;
+  try {
+    process.kill(-child.pid, signal);
+  } catch {
+    try {
+      child.kill(signal);
+    } catch {
+      // Already gone.
+    }
+  }
 }
 
 /**

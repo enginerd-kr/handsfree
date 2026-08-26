@@ -214,6 +214,61 @@ describe('Conversation', () => {
     expect(assistantText(h).at(-1)).toBe('claude created the file.');
   });
 
+  it('shuts down mid-turn without waiting on the model to summarise', async () => {
+    const agent = fakeAgent({ script: () => [{ do: 'stall', ms: 10_000 }] });
+    let calls = 0;
+    const llm: ChatClient = {
+      async chat() {
+        calls++;
+        if (calls === 1) return delegate('Sleep forever');
+        // What /quit used to hang on: a summary request nothing can abort.
+        return new Promise<never>(() => {});
+      },
+    };
+    const h = harness({ agents: { claude: agent }, llm });
+    open = h;
+
+    const turn = h.runtime.conversation.send('sleep');
+    while (!h.runtime.transcript.all().some((record) => record.type === 'delegation')) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    await h.runtime.close();
+    await turn;
+
+    // No summary was asked of the model, and none was written: a cancelled
+    // turn ends silently.
+    expect(calls).toBe(1);
+    expect(assistantText(h)).toEqual([]);
+  });
+
+  it('ends a cancelled turn silently, right where it stood', async () => {
+    const agent = fakeAgent({ script: () => [{ do: 'stall', ms: 10_000 }] });
+    let calls = 0;
+    const llm: ChatClient = {
+      async chat() {
+        calls++;
+        if (calls === 1) return delegate('Sleep forever');
+        throw new Error('a cancelled turn must not ask the model anything');
+      },
+    };
+    const h = harness({ agents: { claude: agent }, llm });
+    open = h;
+
+    const turn = h.runtime.conversation.send('sleep');
+    while (!h.runtime.transcript.all().some((record) => record.type === 'delegation')) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    h.runtime.conversation.cancel();
+    await turn;
+
+    // The stop is on the record; the user just isn't answered about it.
+    expect(calls).toBe(1);
+    expect(assistantText(h)).toEqual([]);
+    expect(h.runtime.transcript.all().map((record) => record.type)).toContain('stop');
+  });
+
   it('records the workspace path it gave the model', async () => {
     const agent = fakeAgent({ script: () => [] });
     const llm = scriptedModel([answer('ok')]);

@@ -101,10 +101,16 @@ export class HostSession {
       // bounded moment to close the turn properly. A turn that will not close is
       // reported as unresponsive so the caller can tear the process down.
       await this.transport.cancel(this.sessionId).catch(() => {});
+      // The grace timer must not outlive the race it loses: a live timer holds
+      // the event loop, which on /quit is ten more seconds of a process that
+      // looks hung.
+      let grace: NodeJS.Timeout | undefined;
       const settled = await Promise.race([
         pending.then((reason) => reason).catch(() => 'cancelled' as StopReason),
-        delay(options.cancelGraceMs).then(() => undefined),
-      ]);
+        new Promise<undefined>((resolve) => {
+          grace = setTimeout(() => resolve(undefined), options.cancelGraceMs);
+        }),
+      ]).finally(() => clearTimeout(grace));
       if (settled === undefined) {
         throw new SessionUnresponsiveError(
           `${this.agentId} did not end its turn ${options.cancelGraceMs}ms after being cancelled`,
@@ -124,8 +130,4 @@ export class HostSession {
 function onAbort(signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.resolve();
   return new Promise((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

@@ -76,7 +76,13 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     conversation,
     setEscalator: (escalator) => policy.setEscalator(escalator),
     async close() {
+      // The conversation goes first, and the agents are killed while it winds
+      // down so its pending requests reject instead of running out a grace
+      // period. Only once the turn has settled — nothing left that could
+      // append — is the transcript ended.
+      const conversationDone = conversation.close();
       await pool.closeAll();
+      await conversationDone;
       await transcript.close();
     },
   };

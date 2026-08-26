@@ -26,6 +26,7 @@ interface TranscriptEvents {
  */
 export class Transcript extends EventEmitter<TranscriptEvents> {
   private seq = 0;
+  private closed = false;
   private readonly records: TranscriptRecord[] = [];
   private readonly stream: fs.WriteStream | undefined;
 
@@ -38,7 +39,9 @@ export class Transcript extends EventEmitter<TranscriptEvents> {
   append(body: TranscriptBody): TranscriptRecord {
     const record: TranscriptRecord = { ...body, seq: ++this.seq, at: Date.now() };
     this.records.push(record);
-    this.stream?.write(`${JSON.stringify(record)}\n`);
+    // A write after end would throw; a turn still settling during shutdown may
+    // append after close, and losing its record beats crashing on the way out.
+    if (!this.closed) this.stream?.write(`${JSON.stringify(record)}\n`);
     this.emit('record', record);
     return record;
   }
@@ -64,7 +67,8 @@ export class Transcript extends EventEmitter<TranscriptEvents> {
 
   async close(): Promise<void> {
     const stream = this.stream;
-    if (!stream) return;
+    if (!stream || this.closed) return;
+    this.closed = true;
     await new Promise<void>((resolve) => stream.end(resolve));
   }
 }

@@ -20,14 +20,16 @@ export interface ConversationDeps {
 
 /**
  * One user turn: plan, delegate, report. Everything it learns goes into the
- * transcript as it happens, and the turn is only over once the user has been
- * told what became of the work — including when the planning model fails, the
- * agent dies, or the user cancels half way through.
+ * transcript as it happens, and a turn that runs its course ends with the user
+ * being told what became of the work — including when the planning model fails
+ * or the agent dies. A cancelled turn is the exception: Esc means stop, and
+ * answering it would be one more thing the user has to wait through.
  */
 export class Conversation {
   private messages: ChatMessage[] = [];
   private taskCounter = 0;
   private turn: AbortController | undefined;
+  private inflight: Promise<void> | undefined;
   private readonly briefed = new Set<string>();
 
   constructor(private readonly deps: ConversationDeps) {}
@@ -44,7 +46,27 @@ export class Conversation {
     this.messages = [];
   }
 
+  /**
+   * Ends the conversation for good: cancels the turn like cancel() does, then
+   * waits for it to settle — so the caller knows nothing will be appended
+   * after it, and no request is left holding the process open.
+   */
+  async close(): Promise<void> {
+    this.turn?.abort();
+    await this.inflight?.catch(() => {});
+  }
+
   async send(text: string): Promise<void> {
+    const work = this.run(text);
+    this.inflight = work;
+    try {
+      await work;
+    } finally {
+      if (this.inflight === work) this.inflight = undefined;
+    }
+  }
+
+  private async run(text: string): Promise<void> {
     const { config, transcript, workspace } = this.deps;
     transcript.append({ type: 'user', text });
 
@@ -99,23 +121,22 @@ export class Conversation {
           content: `TASK RESULT\n${renderOutcome(outcome, workspace.dir).slice(0, config.limits.maxResultChars)}`,
         });
 
-        if (outcome.status === 'cancelled') {
-          notes.push('You cancelled the task.');
-          break;
-        }
-        if (outcome.status === 'error') break;
+        if (outcome.status === 'cancelled' || outcome.status === 'error') break;
       }
     } catch (err) {
-      const message = turn.signal.aborted ? 'Cancelled.' : (err as Error).message;
-      notes.push(turn.signal.aborted ? 'You cancelled the turn.' : `The turn stopped: ${message}`);
+      if (!turn.signal.aborted) notes.push(`The turn stopped: ${(err as Error).message}`);
     } finally {
-      if (!answered) {
+      // A cancelled turn ends where it stood, silently: the delegation and
+      // stop records already say what ran, and the user asked for a stop, not
+      // a report about stopping. Skipping the summary is also what lets /quit
+      // end the process instead of waiting on one nobody would read.
+      if (!answered && !turn.signal.aborted) {
         const summary =
           outcomes.length > 0 || notes.length > 0
             ? await narrate(
                 this.deps.llm,
                 { userMessage: text, outcomes, notes, workspaceDir: workspace.dir },
-                turn.signal.aborted ? undefined : turn.signal,
+                turn.signal,
               )
             : 'Nothing to do.';
         this.push({ role: 'assistant', content: summary });
