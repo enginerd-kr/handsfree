@@ -45,7 +45,7 @@ it('runs /help, /status and /tasks via the command menu', { timeout: 60_000 }, a
 
   await tui.type('/he');
   await tui.press('tab');
-  await tui.waitForText('› /help');
+  await tui.waitForText('❯ /help');
   await tui.press('enter');
   await tui.waitForText('Shortcuts:');
   await tui.screenshot('01-help-output');
@@ -60,6 +60,36 @@ it('runs /help, /status and /tasks via the command menu', { timeout: 60_000 }, a
   await tui.press('enter');
   await tui.waitForText('No tasks yet this session.');
   await tui.screenshot('03-tasks-empty');
+});
+
+it('keeps the prompt on the bottom row and scrolls the transcript above it', { timeout: 60_000 }, async () => {
+  tui = launch();
+  await tui.waitForText('describe a task');
+
+  // Two help dumps overflow a 30-row screen, so the banner has to scroll away.
+  for (let i = 0; i < 2; i++) {
+    await tui.type('/help');
+    await tui.press('enter');
+    await tui.waitForText('Typing during a running turn');
+  }
+  await tui.waitForScreen((text) => !text.includes('✻ handsfree'), 'the banner to scroll off');
+  const lines = tui.screenText().split('\n');
+  expect(lines.at(-1)).toContain('/ for commands');
+  // The newest output sits right above the prompt, not off the top of the screen.
+  expect(lines.slice(-5).join('\n')).toContain('Typing during a running turn');
+  await tui.screenshot('01-prompt-pinned');
+
+  await tui.press('pageUp');
+  await tui.waitForText('✻ handsfree');
+  expect(tui.screenText()).toContain('more below');
+  // The prompt does not move when the transcript does.
+  expect(tui.screenText().split('\n').at(-2)).toContain('❯');
+  await tui.screenshot('02-scrolled-up');
+
+  await tui.press('escape');
+  await tui.waitForScreen((text) => !text.includes('✻ handsfree'), 'Esc to jump back to the bottom');
+  expect(tui.screenText()).not.toContain('more below');
+  await tui.screenshot('03-back-at-bottom');
 });
 
 it('exits cleanly via /exit', { timeout: 60_000 }, async () => {

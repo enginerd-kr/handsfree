@@ -44,9 +44,10 @@ export function formatHelp(): string {
     '',
     'Shortcuts:',
     '  ↑/↓         recall previous messages · navigate the command menu',
+    '  PgUp/PgDn   scroll the transcript · shift+↑/↓ moves a line at a time',
     '  Tab         complete the selected command',
     '  Enter       run the selected command, or send the message',
-    '  Esc         cancel the running turn · clear the input',
+    '  Esc         cancel the running turn · clear the input · jump to the newest output',
     '',
     'Typing during a running turn is fine — messages queue and run in order.',
   ].join('\n');

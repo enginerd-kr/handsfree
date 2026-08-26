@@ -48,6 +48,8 @@ node dist/index.js doctor     # preflight: endpoint + CLI auth
 node dist/index.js            # chat TUI
 ```
 
+The TUI takes over the screen: the prompt is parked on the bottom row and the transcript scrolls in the region above it (`PgUp`/`PgDn`, `shift+↑/↓` a line at a time, `Esc` jumps back to the newest output). New output keeps itself in view unless you have scrolled up, in which case a `↓ N more below` marker appears instead. Your shell's scrollback is left untouched — the session's own record lives in the run dir.
+
 Configuration (all optional): `./handsfree.config.json` (see `handsfree.config.example.json`), `~/.config/handsfree/config.json`, or env vars `HANDSFREE_LLM_BASE_URL`, `HANDSFREE_LLM_MODEL`, `HANDSFREE_LLM_API_KEY`, `HANDSFREE_WORKSPACE_ROOT`.
 
 Headless / scripting:

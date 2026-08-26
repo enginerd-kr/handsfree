@@ -1,16 +1,18 @@
 import React, { useEffect, useState } from 'react';
-import { Box, Static, Text, useApp, useInput } from 'ink';
+import { Box, Text, useApp, useInput, useWindowSize } from 'ink';
 import Spinner from 'ink-spinner';
 import TextInput from 'ink-text-input';
 import type { Config } from '../config/schema.js';
-import { useOrchestrator, type ChatItem } from './useOrchestrator.js';
+import { useOrchestrator } from './useOrchestrator.js';
 import { formatAgents, formatHelp, formatStatus, formatTasks, matchCommands, resolveCommand } from './commands.js';
 import { CommandMenu } from './CommandMenu.js';
 import { TaskPanel } from './TaskPanel.js';
 import { Message } from './Message.js';
+import { useScrollView } from './useScrollView.js';
 import { POINTER } from './figures.js';
 
-type StaticEntry = { banner: true } | ChatItem;
+/** Queued messages listed under the prompt before the rest are counted off. */
+const QUEUE_PREVIEW = 3;
 
 function Banner({ config, runDir }: { config: Config; runDir: string }) {
   return (
@@ -23,14 +25,16 @@ function Banner({ config, runDir }: { config: Config; runDir: string }) {
         {config.llm.model} @ {config.llm.baseURL}
       </Text>
       <Text dimColor>run dir: {runDir}</Text>
-      <Text dimColor>type / for commands · Esc cancels the running turn</Text>
+      <Text dimColor>type / for commands · PgUp/PgDn scrolls · Esc cancels the running turn</Text>
     </Box>
   );
 }
 
 export function App({ config }: { config: Config }) {
   const { exit } = useApp();
+  const { rows } = useWindowSize();
   const { state, send, cancel, addInfo, clear } = useOrchestrator(config);
+  const scroll = useScrollView();
   const [input, setInput] = useState('');
   const [selected, setSelected] = useState(0);
   const [history, setHistory] = useState<string[]>([]);
@@ -72,6 +76,21 @@ export function App({ config }: { config: Config }) {
       // Cancels the whole turn, including a local-LLM call that has not returned.
       if (state.phase !== 'idle') cancel();
       else if (input !== '') setInput('');
+      else scroll.scrollToBottom();
+      return;
+    }
+    // Scrolling the transcript is separate from ↑/↓, which the history and the
+    // command menu already own.
+    if (key.pageUp) {
+      scroll.scrollPage(-1);
+      return;
+    }
+    if (key.pageDown) {
+      scroll.scrollPage(1);
+      return;
+    }
+    if (key.shift && (key.upArrow || key.downArrow)) {
+      scroll.scrollBy(key.upArrow ? -1 : 1);
       return;
     }
     if (key.tab && suggestions.length > 0) {
@@ -115,6 +134,9 @@ export function App({ config }: { config: Config }) {
   const onSubmit = (value: string) => {
     const text = value.trim();
     if (text === '') return;
+    // Sending is a commitment to the newest output: whatever you were reading
+    // higher up, the answer lands at the bottom.
+    scroll.scrollToBottom();
     setInput('');
     setRecall(null);
     setDraft('');
@@ -141,67 +163,86 @@ export function App({ config }: { config: Config }) {
 
   const doneCount = state.tasks.filter((t) => t.status !== 'running').length;
 
-  const staticEntries: StaticEntry[] = [{ banner: true }, ...state.items];
-
   return (
-    <Box flexDirection="column">
-      <Static key={state.generation} items={staticEntries}>
-        {(entry, i) =>
-          'banner' in entry ? (
-            <Banner key="banner" config={config} runDir={state.runDir} />
-          ) : (
-            <Message key={i} item={entry} />
-          )
-        }
-      </Static>
-
-      {state.activeTask && <TaskPanel task={state.activeTask} scope={scope} />}
-
-      {state.phase === 'thinking' && (
-        <Box marginTop={1} gap={1}>
-          <Spinner type="dots" />
-          <Text dimColor>Thinking…</Text>
+    // The screen is the frame: the transcript scrolls inside the region above,
+    // and everything you interact with stays parked on the bottom rows.
+    <Box flexDirection="column" height={rows}>
+      <Box ref={scroll.viewportRef} flexDirection="column" flexGrow={1} flexShrink={1} overflowY="hidden">
+        <Box
+          key={state.generation}
+          ref={scroll.contentRef}
+          flexDirection="column"
+          flexShrink={0}
+          marginTop={-scroll.offset}
+        >
+          <Banner config={config} runDir={state.runDir} />
+          {state.items.map((item, i) => (
+            <Message key={i} item={item} />
+          ))}
         </Box>
-      )}
-
-      {/* The input stays live during a turn; what you type is queued, not dropped. */}
-      <Box marginTop={1} gap={1}>
-        <Text color="cyan" bold>
-          {POINTER}
-        </Text>
-        <TextInput
-          value={input}
-          onChange={setInput}
-          onSubmit={onSubmit}
-          placeholder={
-            state.phase === 'idle'
-              ? 'describe a task, or / for commands'
-              : 'working… type ahead and it runs next'
-          }
-        />
       </Box>
 
-      {state.queued.map((text, i) => (
-        <Box key={i} paddingLeft={2} gap={1}>
-          <Text dimColor>queued</Text>
-          <Text dimColor wrap="truncate-end">
-            {text}
-          </Text>
-        </Box>
-      ))}
+      <Box flexDirection="column" flexShrink={0}>
+        {state.activeTask && <TaskPanel task={state.activeTask} scope={scope} />}
 
-      {menuOpen ? (
-        <CommandMenu commands={suggestions} selected={Math.min(selected, Math.max(0, suggestions.length - 1))} />
-      ) : (
-        <Box paddingLeft={2} gap={2}>
-          <Text dimColor>/ for commands · ↑ for history</Text>
-          {state.tasks.length > 0 && (
-            <Text dimColor>
-              tasks: {doneCount}/{state.tasks.length} done
-            </Text>
-          )}
+        {state.phase === 'thinking' && (
+          <Box marginTop={1} gap={1}>
+            <Spinner type="dots" />
+            <Text dimColor>Thinking…</Text>
+          </Box>
+        )}
+
+        {/* The input stays live during a turn; what you type is queued, not dropped. */}
+        <Box marginTop={1} gap={1}>
+          <Text color="cyan" bold>
+            {POINTER}
+          </Text>
+          <TextInput
+            value={input}
+            onChange={setInput}
+            onSubmit={onSubmit}
+            placeholder={
+              state.phase === 'idle'
+                ? 'describe a task, or / for commands'
+                : 'working… type ahead and it runs next'
+            }
+          />
         </Box>
-      )}
+
+        {/* Capped: the bottom slot now eats into a fixed-height screen, and a long
+            queue must not push the prompt off it. */}
+        {state.queued.slice(0, QUEUE_PREVIEW).map((text, i) => (
+          <Box key={i} paddingLeft={2} gap={1}>
+            <Text dimColor>queued</Text>
+            <Text dimColor wrap="truncate-end">
+              {text}
+            </Text>
+          </Box>
+        ))}
+        {state.queued.length > QUEUE_PREVIEW && (
+          <Box paddingLeft={2}>
+            <Text dimColor>+{state.queued.length - QUEUE_PREVIEW} more queued</Text>
+          </Box>
+        )}
+
+        {menuOpen ? (
+          <CommandMenu commands={suggestions} selected={Math.min(selected, Math.max(0, suggestions.length - 1))} />
+        ) : (
+          <Box paddingLeft={2} gap={2}>
+            {scroll.atBottom ? (
+              <Text dimColor>/ for commands · ↑ for history</Text>
+            ) : (
+              // Only worth saying while it's true — you can't see the newest output.
+              <Text color="yellow">↓ {scroll.hiddenBelow} more below · PgDn or Esc</Text>
+            )}
+            {state.tasks.length > 0 && (
+              <Text dimColor>
+                tasks: {doneCount}/{state.tasks.length} done
+              </Text>
+            )}
+          </Box>
+        )}
+      </Box>
     </Box>
   );
 }

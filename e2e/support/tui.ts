@@ -29,6 +29,8 @@ const KEYS = {
   escape: '\x1b',
   up: '\x1b[A',
   down: '\x1b[B',
+  pageUp: '\x1b[5~',
+  pageDown: '\x1b[6~',
 } as const;
 export type KeyName = keyof typeof KEYS;
 
@@ -108,13 +110,28 @@ export class TuiSession {
   }
 
   async waitForText(needle: string | RegExp, timeoutMs = 8000): Promise<void> {
+    await this.waitForScreen(
+      (text) => (typeof needle === 'string' ? text.includes(needle) : needle.test(text)),
+      String(needle),
+      timeoutMs,
+    );
+  }
+
+  /**
+   * Waits on an arbitrary predicate over the screen — for the things
+   * `waitForText` can't express, like text having gone away.
+   */
+  async waitForScreen(
+    predicate: (text: string) => boolean,
+    what: string,
+    timeoutMs = 8000,
+  ): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const text = this.screenText();
-      if (typeof needle === 'string' ? text.includes(needle) : needle.test(text)) return;
+      if (predicate(this.screenText())) return;
       await sleep(50);
     }
-    throw new Error(`Timed out waiting for ${String(needle)}. Screen was:\n${this.screenText()}`);
+    throw new Error(`Timed out waiting for ${what}. Screen was:\n${this.screenText()}`);
   }
 
   /** Capture the current screen as a .webp screenshot attached to the report. */

@@ -49,7 +49,7 @@ export interface TuiState {
   /** Messages typed while a turn was running, waiting their turn. */
   queued: string[];
   runDir: string;
-  /** Bumped on /clear so <Static> remounts with a fresh item index. */
+  /** Bumped on /clear so the transcript remounts with a fresh item index. */
   generation: number;
 }
 

@@ -48,10 +48,15 @@ export function TaskSignature({ agent, id, task }: { agent: string; id: number; 
   );
 }
 
-/** One scrollback entry. Every entry is preceded by a blank line, so blocks stay separable. */
-export function Message({ item }: { item: ChatItem }) {
+/**
+ * One scrollback entry. Every entry is preceded by a blank line, so blocks stay
+ * separable. Memoized because the transcript is now re-rendered on every frame
+ * rather than handed off to the terminal — items are frozen once appended, so a
+ * spinner tick shouldn't walk the whole history.
+ */
+export const Message = React.memo(function Message({ item }: { item: ChatItem }) {
   return <Box flexDirection="column" marginTop={1}>{renderBody(item)}</Box>;
-}
+});
 
 function renderBody(item: ChatItem) {
   switch (item.kind) {
