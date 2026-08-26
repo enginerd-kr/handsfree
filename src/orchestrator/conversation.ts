@@ -8,7 +8,7 @@ import type { AgentPool } from '../host/pool.js';
 import type { Transcript } from '../workspace/transcript.js';
 import type { Workspace } from '../workspace/workspace.js';
 import { summarise, renderOutcome, type TaskOutcome } from './outcome.js';
-import { buildBrief } from './prompts.js';
+import { buildBrief, type TaskKind } from './prompts.js';
 
 export interface ConversationDeps {
   config: Config;
@@ -88,6 +88,7 @@ export class Conversation {
 
         const outcome = await this.delegate(
           planned.step.agent,
+          planned.step.kind,
           planned.step.task,
           planned.step.done_when,
           turn.signal,
@@ -137,6 +138,7 @@ export class Conversation {
 
   private async delegate(
     agentId: string,
+    kind: TaskKind,
     task: string,
     doneWhen: string | undefined,
     signal: AbortSignal,
@@ -164,7 +166,7 @@ export class Conversation {
 
     const first = !this.briefed.has(agentId);
     this.briefed.add(agentId);
-    const brief = buildBrief({ task, doneWhen, workspaceDir: workspace.dir, first });
+    const brief = buildBrief({ task, kind, doneWhen, workspaceDir: workspace.dir, first });
 
     let stopReason: StopReason | 'unresponsive';
     try {

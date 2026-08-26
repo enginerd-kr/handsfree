@@ -55,6 +55,28 @@ describe('Conversation', () => {
     expect(kinds).toContain('stop');
   });
 
+  it('asks an agent a question without asking it to build anything', async () => {
+    const agent = fakeAgent({ script: () => [{ do: 'say', text: '안녕하세요!' }] });
+    const llm = scriptedModel([
+      JSON.stringify({ action: 'delegate', agent: 'claude', kind: 'answer', task: '안녕?' }),
+      answer('claude says 안녕하세요!'),
+    ]);
+    const h = harness({ agents: { claude: agent }, llm });
+    open = h;
+
+    await h.runtime.conversation.send('claude한테 안녕?이라고 물어봐');
+
+    expect(agent.prompts[0]).toContain('안녕?');
+    expect(agent.prompts[0]).toContain('Do not create, modify or delete any file');
+    expect(assistantText(h)).toEqual(['claude says 안녕하세요!']);
+
+    // The point of the answer kind: nothing was written to say it.
+    const notes = h.runtime.transcript.all().filter((record) => record.type === 'note');
+    expect(notes.map((note) => (note.type === 'note' ? note.text : ''))).not.toContainEqual(
+      expect.stringContaining('wrote'),
+    );
+  });
+
   it('tells the agent the ground rules once, not on every task', async () => {
     const agent = fakeAgent({ script: () => [{ do: 'say', text: 'ok' }] });
     const llm = scriptedModel([

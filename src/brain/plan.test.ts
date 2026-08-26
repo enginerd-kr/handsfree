@@ -38,6 +38,25 @@ describe('parseStep', () => {
     if (!parsed.ok) expect(parsed.error).toContain('claude, gemini');
   });
 
+  it('treats a delegation without a kind as a change', () => {
+    const parsed = parseStep('{"action":"delegate","agent":"claude","task":"do it"}', agents);
+    expect(parsed.ok && parsed.step).toMatchObject({ kind: 'change' });
+  });
+
+  it('reads a delegation that asks for an answer rather than a change', () => {
+    const parsed = parseStep(
+      '{"action":"delegate","agent":"claude","kind":"answer","task":"안녕?"}',
+      agents,
+    );
+    expect(parsed.ok && parsed.step).toMatchObject({ kind: 'answer', task: '안녕?' });
+  });
+
+  it('refuses a kind that is neither', () => {
+    expect(
+      parseStep('{"action":"delegate","agent":"claude","kind":"ponder","task":"x"}', agents).ok,
+    ).toBe(false);
+  });
+
   it('refuses an empty task', () => {
     expect(parseStep('{"action":"delegate","agent":"claude","task":""}', agents).ok).toBe(false);
   });
