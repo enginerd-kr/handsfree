@@ -73,6 +73,15 @@ export const BAND = '#3a3a3a';
 export const PROMPT_BAND = '#454545';
 
 /**
+ * The wash behind the cells a drag has picked up. Blue where the task band is
+ * gray, because the two answer different questions: the band says what belongs
+ * together, the selection says what is about to be copied. It goes under the
+ * characters as a background of its own, so each keeps its colour — inverse
+ * video over highlighted code turns every foreground into a different stripe.
+ */
+export const SELECTION = '#264f78';
+
+/**
  * The welcome mark's second ink. The terminal's own `gray` sits too far under
  * the mascot and the agent names to belong with them — this is the header's
  * quiet text, still quiet but in the same light as what it sits beside.

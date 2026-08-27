@@ -2,9 +2,9 @@ import wrapAnsi from 'wrap-ansi';
 import type { ViewItem } from '../view-model.js';
 
 /** Width of the gutter column every row reserves for its glyph. */
-const GUTTER = 2;
+export const GUTTER = 2;
 /** Extra indent the continuation rows sit at, inside the item's own indent. */
-const DETAIL_INDENT = 2;
+export const DETAIL_INDENT = 2;
 
 /** Where one item ends up on screen, so a click can be traced back to it. */
 export interface Placement {
@@ -15,30 +15,93 @@ export interface Placement {
   bottom: number;
 }
 
+/** Where an item's blocks sit inside it, counted in rows from its first row. */
+export interface ItemRows {
+  /** Row of the headline's first line — past the gap, when there is one. */
+  headline: number;
+  /** Row each continuation line starts on; one entry per `item.lines`. */
+  details: number[];
+  /** All of it: the height `heightOf` reports. */
+  height: number;
+}
+
 /**
- * Measured heights, kept per item. Wrapping is the expensive part of layout —
+ * Measured layouts, kept per item. Wrapping is the expensive part of layout —
  * `wrap-ansi` walks every escape and code point — and every scroll step asks
  * for the same items again, which without this re-wraps the whole transcript
  * per turn of the wheel. The items are rebuilt whenever the transcript or the
  * markdown changes, and that is exactly what drops a stale entry.
  */
-const measured = new WeakMap<ViewItem, { columns: number; rows: number }>();
+const measured = new WeakMap<ViewItem, { columns: number; rows: ItemRows }>();
 
 /**
- * How many terminal rows an item takes. Ink wraps with `wrap-ansi` under
- * `{trim: false, hard: true}`, so the same call is used here rather than a
- * character count: word breaks and double-width CJK both move a line, and a
- * click that is one row off lands on the wrong task.
+ * How many terminal rows an item takes, and where each of its blocks lands.
+ * Ink wraps with `wrap-ansi` under `{trim: false, hard: true}`, so the same
+ * call is used here rather than a character count: word breaks and
+ * double-width CJK both move a line, and a click that is one row off lands on
+ * the wrong task — as would a selection.
  */
-export function heightOf(item: ViewItem, columns: number): number {
+export function itemRows(item: ViewItem, columns: number): ItemRows {
   const hit = measured.get(item);
   if (hit?.columns === columns) return hit.rows;
   const indent = item.depth * 2;
-  let rows = item.gap ? 1 : 0;
-  rows += lines(headline(item), width(columns, indent));
+  let row = item.gap ? 1 : 0;
+  const head = row;
+  row += lines(headline(item), width(columns, indent));
+  const details: number[] = [];
   const detail = width(columns, indent + DETAIL_INDENT);
-  for (const line of item.lines) rows += lines(line.text, detail);
+  for (const line of item.lines) {
+    details.push(row);
+    row += lines(line.text, detail);
+  }
+  const rows = { headline: head, details, height: row };
   measured.set(item, { columns, rows });
+  return rows;
+}
+
+/** How many terminal rows an item takes. */
+export function heightOf(item: ViewItem, columns: number): number {
+  return itemRows(item, columns).height;
+}
+
+/**
+ * One terminal row of an item's text, as a selection sees it: the wrapped
+ * segment (still styled), the column its first cell sits at, and whether it
+ * only exists because the line above it ran out of room — a soft wrap, whose
+ * break a copy should heal rather than keep.
+ */
+export interface VisualRow {
+  text: string;
+  left: number;
+  wrapped: boolean;
+}
+
+/**
+ * Every row of the transcript, in the exact wrapping the terminal shows. The
+ * gutter and indent are left out: like the glyph column of any editor, they
+ * are furniture rather than text, so a selection neither highlights nor
+ * copies them. A gap row is an empty line.
+ */
+export function visualRows(items: readonly ViewItem[], columns: number): VisualRow[] {
+  const rows: VisualRow[] = [];
+  const wrap = (text: string, max: number, left: number) => {
+    for (const [index, line] of wrapAnsi(text, max, { trim: false, hard: true })
+      .split('\n')
+      .entries()) {
+      rows.push({ text: line, left, wrapped: index > 0 });
+    }
+  };
+  for (const item of items) {
+    const indent = item.depth * 2;
+    if (item.gap) rows.push({ text: '', left: 0, wrapped: false });
+    // The user's line carries no gutter — its text starts where the marks
+    // do — while every other headline sits one gutter in.
+    const head = indent + (item.marker === 'prompt' ? 0 : GUTTER);
+    wrap(headline(item), width(columns, indent), head);
+    for (const line of item.lines) {
+      wrap(line.text, width(columns, indent + DETAIL_INDENT), indent + DETAIL_INDENT + GUTTER);
+    }
+  }
   return rows;
 }
 

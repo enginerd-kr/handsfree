@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { heightOf, itemAt, placeItems, totalHeight, windowAt } from './layout.js';
+import { heightOf, itemAt, itemRows, placeItems, totalHeight, visualRows, windowAt } from './layout.js';
 import type { ViewItem } from '../view-model.js';
 
 function item(text: string, extra: Partial<ViewItem> = {}): ViewItem {
@@ -25,6 +25,45 @@ describe('totalHeight', () => {
     expect(totalHeight(rows, 80)).toBe(10);
     const tall = item('x'.repeat(200), { gap: true });
     expect(totalHeight([...rows, tall], 80)).toBe(10 + heightOf(tall, 80));
+  });
+});
+
+describe('itemRows', () => {
+  it('places the headline past the gap and each detail line under the last', () => {
+    const tall = item('x'.repeat(150), {
+      gap: true,
+      lines: [
+        { text: 'one', tone: 'muted' },
+        { text: 'y'.repeat(150), tone: 'muted' },
+      ],
+    });
+    // The gap, two wrapped headline rows, then the details: one row and two.
+    const rows = itemRows(tall, 80);
+    expect(rows.headline).toBe(1);
+    expect(rows.details).toEqual([3, 4]);
+    expect(rows.height).toBe(heightOf(tall, 80));
+  });
+});
+
+describe('visualRows', () => {
+  it('mirrors heightOf row for row, wrapping and gaps included', () => {
+    const tall = item('x'.repeat(150), { gap: true, lines: [{ text: 'done', tone: 'muted' }] });
+    const all = [...rows.slice(0, 2), tall];
+    expect(visualRows(all, 80)).toHaveLength(totalHeight(all, 80));
+  });
+
+  it('marks a row made by wrapping, and says where its cells start', () => {
+    const wide = item('x'.repeat(100));
+    const [first, second] = visualRows([wide], 80);
+    expect(first).toMatchObject({ left: 2, wrapped: false });
+    // 78 columns fit beside the gutter; the rest fall to the next row.
+    expect(second).toMatchObject({ text: 'x'.repeat(22), left: 2, wrapped: true });
+  });
+
+  it('leaves the gutter and indent out of a detail row', () => {
+    const detailed = item('call', { depth: 1, lines: [{ text: 'output', tone: 'muted' }] });
+    const [, detail] = visualRows([detailed], 80);
+    expect(detail).toMatchObject({ text: 'output', left: 6 });
   });
 });
 

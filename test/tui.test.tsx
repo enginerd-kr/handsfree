@@ -1,12 +1,20 @@
 import React from 'react';
 import { render } from 'ink-testing-library';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { disableDebug, enableDebug } from '../src/debug.js';
 import { App } from '../src/ui/tui/app.js';
+import { copyToClipboard } from '../src/ui/tui/clipboard.js';
 import { PROMPT_CHAR } from '../src/ui/tui/theme.js';
 import { fakeAgent } from './fake-agent.js';
 import { harness, scriptedModel, type Harness } from './harness.js';
 import type { ChatClient } from '../src/brain/client.js';
+
+// The one road out of the process a drag takes: a test must watch it, and must
+// never put its scraps on the machine's real clipboard.
+vi.mock('../src/ui/tui/clipboard.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/ui/tui/clipboard.js')>()),
+  copyToClipboard: vi.fn(),
+}));
 
 let open: Harness | undefined;
 
@@ -153,6 +161,44 @@ describe('terminal UI', () => {
       const frame = await waitFor(() => app.lastFrame(), 'the long agent answer');
       expect(frame).toContain('half typed');
       expect(frame).not.toContain('[<0;3;');
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('copies what a drag crossed, and says so under the prompt', async () => {
+    const h = harness({
+      agents: { claude: fakeAgent({ script: () => [] }) },
+      llm: scriptedModel([JSON.stringify({ action: 'answer', message: 'Hello there.' })]),
+    });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      await h.runtime.conversation.send('hi');
+      await waitFor(() => app.lastFrame(), 'Hello there.');
+
+      // The user's line has no gutter, so its text sits in the first column.
+      const lines = (app.lastFrame() ?? '').split('\n');
+      const from = lines.findIndex((line) => line.includes('hi') && !line.includes('Hello'));
+      const to = lines.findIndex((line) => line.includes('Hello there.'));
+      expect(from).toBeGreaterThan(0);
+      expect(to).toBeGreaterThan(from);
+
+      // Down on the h of hi, across to past the end of the answer.
+      app.stdin.write(`\u001B[<0;1;${from + 1}M`); // press
+      app.stdin.write(`\u001B[<32;15;${to + 1}M`); // drag
+      // The crossed cells wear the selection wash while the button is down.
+      await waitFor(() => app.lastFrame(), '48;2;38;79;120');
+      app.stdin.write(`\u001B[<0;15;${to + 1}m`); // release
+      // The blank row between the two is on screen, so the copy keeps it.
+      const frame = await waitFor(() => app.lastFrame(), 'copied 3 lines to the clipboard');
+      expect(frame).not.toContain('48;2;38;79;120');
+
+      const copy = vi.mocked(copyToClipboard);
+      expect(copy).toHaveBeenCalledTimes(1);
+      expect(copy.mock.calls[0]?.[0]).toBe('hi\n\nHello there.');
     } finally {
       app.unmount();
     }

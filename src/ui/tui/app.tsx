@@ -1,6 +1,6 @@
 import os from 'node:os';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Box, Text, useApp, useInput, useStdout } from 'ink';
+import { Box, Text, Transform, useApp, useInput, useStdout } from 'ink';
 import type { Runtime } from '../../runtime.js';
 import { debugDestination } from '../../debug.js';
 import { buildView, type Tone, type ViewItem } from '../view-model.js';
@@ -12,9 +12,20 @@ import {
   type Command,
 } from '../../slash/command.js';
 import { completeMention, mentionSpans, suggestAgents } from '../../mention/mention.js';
-import { itemAt, placeItems, totalHeight, windowAt } from './layout.js';
+import { copyToClipboard } from './clipboard.js';
+import {
+  DETAIL_INDENT,
+  GUTTER,
+  itemAt,
+  itemRows,
+  placeItems,
+  totalHeight,
+  visualRows,
+  windowAt,
+} from './layout.js';
 import { type Highlighter, loadHighlighter, renderMarkdown } from './markdown.js';
 import { CURSOR_QUERY, isMouseReport, parseCursorReport, parseMouseEvent, trackMouse } from './mouse.js';
+import { type Bounds, highlightFor, order, type Point, selectedText } from './selection.js';
 import {
   agentColour,
   BAND,
@@ -166,6 +177,27 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   const pending = useRef<PendingAsk[]>([]);
   const busy = startedAt !== undefined;
 
+  // A drag in flight: the cell the button went down on, and whether the
+  // pointer has moved since. Press and release in place is the click it always
+  // was; anything that moved is a selection.
+  const dragRef = useRef<{ anchor: Point; moved: boolean } | undefined>(undefined);
+  // The selection's two ends, as cells of the transcript — rows counted down
+  // the whole transcript rather than down the screen, so the selection keeps
+  // holding the characters it grabbed while the transcript scrolls or grows
+  // under the drag. The ref mirrors it for the input handler, which can run
+  // several times before a render.
+  const [selection, setSelection] = useState<{ anchor: Point; focus: Point } | undefined>();
+  const selectionRef = useRef(selection);
+  const applySelection = (next: { anchor: Point; focus: Point } | undefined) => {
+    selectionRef.current = next;
+    setSelection(next);
+  };
+  // How many lines the last drag put on the clipboard, for as long as the hint
+  // line says so.
+  const [copied, setCopied] = useState<number | undefined>();
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(copiedTimer.current), []);
+
   // Reporting has to be turned back off, or the terminal keeps sending drags
   // here instead of selecting text long after handsfree has exited.
   useEffect(() => trackMouse(stdout), [stdout]);
@@ -301,8 +333,8 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   // What a scroll is measured against, for the handler below: several wheel
   // reports can arrive in one stdin chunk and all be handled before a render,
   // so the bounds are read from here rather than from the closure.
-  const bounds = useRef({ furthest, viewport });
-  bounds.current = { furthest, viewport };
+  const bounds = useRef({ furthest, viewport, from, height });
+  bounds.current = { furthest, viewport, from, height };
   /** Moves the viewport by `delta` rows, and re-pins it at the end. */
   const moveBy = (delta: number) =>
     setScrolled((current) => {
@@ -378,6 +410,33 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   // Ink's `readable` listener, which can freeze keyboard input after a render.
   const layout = useRef(placements);
   layout.current = placements;
+
+  /**
+   * Ends the selection: the characters it crossed go to the clipboard,
+   * counted. A selection holding nothing but air — a drag across a gap — is
+   * let go without a word.
+   */
+  const copySelection = () => {
+    const held = selectionRef.current;
+    applySelection(undefined);
+    if (!held) return;
+    const text = selectedText(visualRows(drawn, columns), order(held.anchor, held.focus));
+    if (text.trim() === '') return;
+    copyToClipboard(text, stdout);
+    clearTimeout(copiedTimer.current);
+    setCopied(text.split('\n').length);
+    copiedTimer.current = setTimeout(() => setCopied(undefined), 2500);
+  };
+
+  // The selection as the renderer needs it: put in reading order, and moved
+  // from transcript rows to screen rows — the coordinates every placement and
+  // every repainted line is measured in.
+  const shownSelection = useMemo(() => {
+    if (!selection) return undefined;
+    const { start, end } = order(selection.anchor, selection.focus);
+    const shift = (point: Point): Point => ({ row: point.row - from + HEADER_ROWS, col: point.col });
+    return { start: shift(start), end: shift(end) };
+  }, [selection, from]);
 
   const start = (text: string) => {
     setStartedAt(Date.now());
@@ -477,12 +536,53 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       // clickable, and the item hanging over their edge must not be either.
       const row = mouse.row - (frameTop.current ?? (stdout?.isTTY ? 1 : 0));
       const inside = row >= HEADER_ROWS && row < HEADER_ROWS + bounds.current.viewport;
-      const taskId = inside ? itemAt(layout.current, row)?.taskId : undefined;
       if (mouse.type === 'hover') {
-        setHoveredTask(taskId);
-      } else if (taskId !== undefined) {
-        toggleTask(taskId);
+        setHoveredTask(inside ? itemAt(layout.current, row)?.taskId : undefined);
+        return;
       }
+      // A mouse row, taken into the transcript: clamped into the pane first —
+      // a drag that wanders over the header or the prompt keeps its grip on
+      // the nearest row — and then onto a row the transcript actually has.
+      const cellAt = (at: number, column: number): Point | undefined => {
+        const { viewport: rows_, from: from_, height: height_ } = bounds.current;
+        if (height_ === 0) return undefined;
+        const pane = Math.min(Math.max(at, HEADER_ROWS), HEADER_ROWS + rows_ - 1);
+        return {
+          row: Math.min(Math.max(pane - HEADER_ROWS + from_, 0), height_ - 1),
+          col: column,
+        };
+      };
+      if (mouse.type === 'press') {
+        applySelection(undefined);
+        const anchor = inside ? cellAt(row, mouse.column) : undefined;
+        dragRef.current = anchor && { anchor, moved: false };
+        return;
+      }
+      if (mouse.type === 'drag') {
+        const drag = dragRef.current;
+        if (!drag) return;
+        const focus = cellAt(row, mouse.column);
+        if (!focus) return;
+        // Terminals in drag mode can report a motion that never left the
+        // anchor's cell; taking it would turn a plain click into a one-cell
+        // selection. Once the drag is real, motion back over the anchor still
+        // counts — that is how a selection is pulled back in.
+        if (!drag.moved && focus.row === drag.anchor.row && focus.col === drag.anchor.col) return;
+        drag.moved = true;
+        applySelection({ anchor: drag.anchor, focus });
+        return;
+      }
+      // The release: a drag that moved is a selection, finished by copying it;
+      // one that never moved is the click it always was, and folds or unfolds
+      // the task it landed on.
+      const drag = dragRef.current;
+      dragRef.current = undefined;
+      if (drag?.moved) {
+        copySelection();
+        return;
+      }
+      const taskId = inside ? itemAt(layout.current, row)?.taskId : undefined;
+      if (taskId !== undefined) toggleTask(taskId);
       return;
     }
     // Folded tasks are still in the transcript; this is the way back to all of
@@ -645,6 +745,9 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
                 hovered={hovered}
                 bridged={band !== undefined && shown[index - 1]?.taskId === item.taskId}
                 agents={agents}
+                top={placements[index]?.top ?? 0}
+                columns={columns}
+                selection={shownSelection}
               />
             );
           })}
@@ -663,6 +766,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
           queued={queued.length}
           allOpen={allOpen}
           following={scrolled === undefined}
+          copied={copied}
         />
       )}
     </Box>
@@ -768,23 +872,51 @@ function Entry({
   hovered,
   bridged,
   agents,
+  top,
+  columns,
+  selection,
 }: {
   item: ViewItem;
   band: string | undefined;
   hovered: boolean;
   bridged: boolean;
   agents: readonly string[];
+  /** The item's first screen row, from the same placement a click is aimed by. */
+  top: number;
+  columns: number;
+  /** The selection in screen rows, already in reading order. */
+  selection: Bounds | undefined;
 }): React.JSX.Element {
   const accent = item.agentId ? agentColour(item.agentId) : undefined;
   // The user's own line wears its faint wash whether or not anything else is
   // going on; a task's band and the hover still win, because they only exist
   // on rows that are not the user's.
   const wash = band ?? (item.marker === 'prompt' ? PROMPT_BAND : undefined);
+  const indent = item.depth * 2;
+  const rows = itemRows(item, columns);
+  const gutter = GLYPH[item.marker];
+  // Where a block's first *rendered* line sits. The pane clips an item
+  // straddling its top edge before Ink hands the surviving lines to a
+  // transform, so a block reaching above the pane starts, as far as its
+  // repainter can see, at the pane's own first row.
+  const at = (row: number) => Math.max(top + row, HEADER_ROWS);
   return (
     <Box flexDirection="column">
       {item.gap ? <Box height={1} backgroundColor={bridged ? band : undefined} /> : null}
-      <Box flexDirection="column" paddingLeft={item.depth * 2} backgroundColor={wash}>
-        <Row gutter={GLYPH[item.marker]} tone={item.markerTone} accent={accent} hovered={hovered}>
+      <Box flexDirection="column" paddingLeft={indent} backgroundColor={wash}>
+        <Row
+          gutter={gutter}
+          tone={item.markerTone}
+          accent={accent}
+          hovered={hovered}
+          // A gutterless row's text starts where the marks do, so its cells
+          // are measured from there.
+          highlight={highlightFor(
+            selection,
+            at(rows.headline),
+            indent + (gutter === '' ? 0 : GUTTER),
+          )}
+        >
           {item.label ? (
             <Text {...paint(accent ? 'brand' : 'muted', hovered, accent)}>{`${item.label}  `}</Text>
           ) : null}
@@ -797,10 +929,15 @@ function Entry({
         {item.lines.map((line, index) => (
           <Row
             key={index}
-            indent={2}
+            indent={DETAIL_INDENT}
             gutter={index === 0 ? RESULT_GUTTER : RESULT_INDENT}
             tone="muted"
             hovered={hovered}
+            highlight={highlightFor(
+              selection,
+              at(rows.details[index] ?? 0),
+              indent + DETAIL_INDENT + GUTTER,
+            )}
           >
             <Text {...paint(line.tone, hovered)}>{line.text}</Text>
           </Row>
@@ -885,6 +1022,7 @@ function Row({
   hovered,
   accent,
   indent = 0,
+  highlight,
   children,
 }: {
   gutter: string;
@@ -892,6 +1030,12 @@ function Row({
   hovered: boolean;
   accent?: string;
   indent?: number;
+  /**
+   * Repaints the selection's wash onto each wrapped line of the text. The
+   * gutter stays outside it, the way an editor's glyph column stays outside a
+   * selection — it is furniture, and the copy will not carry it either.
+   */
+  highlight?: (line: string, index: number) => string;
   children: React.ReactNode;
 }): React.JSX.Element {
   return (
@@ -903,7 +1047,13 @@ function Row({
         </Box>
       )}
       <Box flexGrow={1}>
-        <Text wrap="wrap">{children}</Text>
+        {highlight ? (
+          <Transform transform={highlight}>
+            <Text wrap="wrap">{children}</Text>
+          </Transform>
+        ) : (
+          <Text wrap="wrap">{children}</Text>
+        )}
       </Box>
     </Box>
   );
@@ -923,7 +1073,8 @@ function Row({
  * reflows the moment one starts.
  *
  * The hint line is also where the transcript says it has stopped following the
- * end — scrolled up, what arrives next lands off screen, and only this says so.
+ * end — scrolled up, what arrives next lands off screen, and only this says so
+ * — and where a finished drag says how much of the transcript it copied.
  */
 function Prompt({
   draft,
@@ -932,6 +1083,7 @@ function Prompt({
   queued,
   allOpen,
   following,
+  copied,
 }: {
   draft: Draft;
   agents: readonly string[];
@@ -939,6 +1091,7 @@ function Prompt({
   queued: number;
   allOpen: boolean;
   following: boolean;
+  copied: number | undefined;
 }): React.JSX.Element {
   // Where debug lines are going, when they are going anywhere. It cannot
   // change while the UI is up, so reading it at render is enough.
@@ -969,11 +1122,13 @@ function Prompt({
       </Box>
       <Box paddingLeft={2} paddingRight={1} justifyContent="space-between" gap={2}>
         <Text color="gray" dimColor wrap="truncate">
-          {!following
-            ? 'scrolled up · page down or the wheel to follow again'
-            : busy
-              ? `esc to interrupt · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all`
-              : `/ for commands · @ for agents · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all · /exit`}
+          {copied !== undefined
+            ? `copied ${copied} line${copied === 1 ? '' : 's'} to the clipboard`
+            : !following
+              ? 'scrolled up · page down or the wheel to follow again'
+              : busy
+                ? `esc to interrupt · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all`
+                : `/ for commands · @ for agents · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all · /exit`}
         </Text>
         {debugTo ? (
           <Text color="yellow" wrap="truncate-start">

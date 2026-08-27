@@ -12,8 +12,13 @@ function fakeStdout(isTTY: boolean) {
 }
 
 describe('parseMouseEvent', () => {
-  it('decodes a left-button release as a click', () => {
-    expect(parseMouseEvent('[<0;12;5m')).toEqual({ type: 'click', column: 11, row: 4 });
+  it('decodes the left button going down and coming up', () => {
+    expect(parseMouseEvent('[<0;12;5M')).toEqual({ type: 'press', column: 11, row: 4 });
+    expect(parseMouseEvent('[<0;12;5m')).toEqual({ type: 'release', column: 11, row: 4 });
+  });
+
+  it('decodes motion with the left button held as a drag', () => {
+    expect(parseMouseEvent('[<32;12;5M')).toEqual({ type: 'drag', column: 11, row: 4 });
   });
 
   it('decodes all-motion reports with no button held as hover', () => {
@@ -37,11 +42,11 @@ describe('parseMouseEvent', () => {
     expect(parseMouseEvent('[<68;12;5M')).toMatchObject({ type: 'wheel', direction: 'up' });
   });
 
-  it('ignores presses, drags, sideways wheels and other buttons', () => {
-    expect(parseMouseEvent('[<0;12;5M')).toBeUndefined();
-    expect(parseMouseEvent('[<32;12;5M')).toBeUndefined();
+  it('ignores sideways wheels and every button but the left', () => {
     // 66 and 67 are the wheel tilting left and right; nothing scrolls sideways.
     expect(parseMouseEvent('[<66;12;5M')).toBeUndefined();
+    // The middle button dragging, and the right button coming up.
+    expect(parseMouseEvent('[<33;12;5M')).toBeUndefined();
     expect(parseMouseEvent('[<2;12;5m')).toBeUndefined();
   });
 });
