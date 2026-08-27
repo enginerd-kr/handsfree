@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import type { Config } from '../config/schema.js';
+import { debug } from '../debug.js';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -52,6 +53,11 @@ export class LocalModel implements ChatClient {
       timeout: config.timeoutMs,
       maxRetries: 1,
     });
+    debug(
+      'llm',
+      `local endpoint ${config.baseURL}, model ${config.model} ` +
+        '(reached with Node fetch, which ignores HTTP(S)_PROXY variables)',
+    );
   }
 
   async chat(messages: ChatMessage[], options: ChatOptions = {}): Promise<string> {
@@ -84,15 +90,26 @@ export class LocalModel implements ChatClient {
           ? { type: 'json_object' as const }
           : undefined;
 
-    const response = await this.client.chat.completions.create(
-      {
-        model: this.config.model,
-        temperature: this.config.temperature,
-        messages,
-        ...(response_format ? { response_format } : {}),
-      },
-      { signal },
-    );
+    let response;
+    try {
+      response = await this.client.chat.completions.create(
+        {
+          model: this.config.model,
+          temperature: this.config.temperature,
+          messages,
+          ...(response_format ? { response_format } : {}),
+        },
+        { signal },
+      );
+    } catch (err) {
+      const error = err as { status?: number; message?: string };
+      debug(
+        'llm',
+        `request to ${this.config.baseURL} failed` +
+          `${error.status !== undefined ? ` (HTTP ${error.status})` : ''}: ${error.message ?? String(err)}`,
+      );
+      throw err;
+    }
     return response.choices[0]?.message?.content ?? '';
   }
 }

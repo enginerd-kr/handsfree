@@ -12,6 +12,7 @@ import {
   type SessionUpdate,
 } from '@agentclientprotocol/sdk';
 import type { HostContext } from '../capabilities/context.js';
+import { debug } from '../debug.js';
 import { createFsHandlers } from '../capabilities/fs.js';
 import { createPermissionHandler } from '../capabilities/permission.js';
 import { TerminalRegistry } from '../capabilities/terminal.js';
@@ -113,6 +114,8 @@ export class AgentConnection {
     }
 
     const connection = target.connect(app);
+    debug(agentId, `initialize → ${target.description} (timeout ${host.config.limits.handshakeTimeoutMs}ms)`);
+    const started = Date.now();
     let initialized;
     try {
       initialized = await orBroken(
@@ -129,10 +132,22 @@ export class AgentConnection {
         `${agentId} did not answer initialize`,
       );
     } catch (err) {
+      debug(agentId, `initialize failed after ${Date.now() - started}ms: ${(err as Error).message}`);
+      const stderr = target.diagnostics?.();
+      if (stderr) debug(agentId, `recent adapter stderr: ${stderr}`);
       connection.close();
       await target.close();
       throw new Error(`${agentId} failed to initialize over ACP: ${(err as Error).message}`);
     }
+
+    const info = initialized.agentInfo;
+    debug(
+      agentId,
+      `initialize ok in ${Date.now() - started}ms: ` +
+        `${info ? `${info.name} ${info.version ?? ''}`.trim() : 'unnamed agent'}, ` +
+        `protocol v${initialized.protocolVersion}, ` +
+        `auth: ${(initialized.authMethods ?? []).map((m) => m.name || m.id).join(', ') || 'none advertised'}`,
+    );
 
     if (initialized.protocolVersion !== PROTOCOL_VERSION) {
       host.transcript.append({
@@ -246,6 +261,11 @@ export class AgentConnection {
     const message = error.message ?? String(err);
     const details = (error.data as { details?: string } | undefined)?.details;
     const stderr = this.target.diagnostics?.();
+    debug(
+      this.agentId,
+      `agent error${error.code !== undefined ? ` (code ${error.code})` : ''}: ${message}` +
+        (details ? ` — ${details}` : ''),
+    );
 
     if (error.code === -32000 || /auth/i.test(message)) {
       if (this.authMethods.length > 0 || /auth/i.test(message)) {

@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { Readable, Writable } from 'node:stream';
 import { ndJsonStream, type ClientApp, type ClientConnection } from '@agentclientprotocol/sdk';
 import { assertLaunchArgsAllowed, type AgentProfile } from '../config/schema.js';
+import { debug, debugEnabled, describeProxyEnv } from '../debug.js';
 import type { ConnectionTarget } from './connection.js';
 
 export interface SpawnOptions {
@@ -20,15 +21,24 @@ export function spawnTarget(profile: AgentProfile, options: SpawnOptions): Conne
   // Last gate before exec: a bypass flag must never reach an agent's argv.
   assertLaunchArgsAllowed(profile.args, `${profile.command} argv`, profile.command);
 
+  const env = { ...process.env, ...profile.env, NO_COLOR: '1' };
+  if (debugEnabled()) {
+    debug('spawn', `${[profile.command, ...profile.args].join(' ')} (cwd ${options.cwd})`);
+    debug('spawn', `child proxy env: ${describeProxyEnv(env)}`);
+    const overrides = Object.keys(profile.env);
+    if (overrides.length > 0) debug('spawn', `profile env overrides: ${overrides.join(', ')}`);
+  }
+
   // Its own process group: adapters hide behind wrappers — npx execs its
   // package, gemini relaunches itself — so the process that speaks ACP is a
   // grandchild that a plain kill to the child never reaches.
   const child = spawn(profile.command, profile.args, {
     cwd: options.cwd,
-    env: { ...process.env, ...profile.env, NO_COLOR: '1' },
+    env,
     stdio: ['pipe', 'pipe', 'pipe'],
     detached: true,
   });
+  child.once('spawn', () => debug('spawn', `${profile.command} started, pid ${child.pid}`));
 
   // Adapters explain themselves on stderr and then fail on stdout with a bare
   // "Internal error". Keeping the tail of it is the difference between a
@@ -37,6 +47,7 @@ export function spawnTarget(profile: AgentProfile, options: SpawnOptions): Conne
   child.stderr?.setEncoding('utf8');
   child.stderr?.on('data', (text: string) => {
     recent = `${recent}${text}`.slice(-4000);
+    if (text.trim() !== '') debug(`stderr ${profile.command}`, text.trimEnd());
     options.onStderr?.(text);
   });
 
@@ -44,10 +55,12 @@ export function spawnTarget(profile: AgentProfile, options: SpawnOptions): Conne
   const broken = new Promise<Error>((resolve) => {
     child.once('error', (err) => {
       settled = true;
+      debug('spawn', `${profile.command} failed to start: ${err.message}`);
       resolve(new Error(`could not start ${profile.command}: ${err.message}`));
     });
     child.once('exit', (code, signal) => {
       settled = true;
+      debug('spawn', `${profile.command} exited (${signal ? `signal ${signal}` : `code ${code}`})`);
       resolve(
         new Error(
           `${profile.command} exited before the session started ` +

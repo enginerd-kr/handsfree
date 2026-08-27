@@ -61,6 +61,18 @@ handsfree run "add a test"     # one turn, no UI
 handsfree serve --acp          # be an ACP agent, for an editor to drive
 ```
 
+## Debugging
+
+```bash
+handsfree --debug doctor       # diagnostics on stderr
+HANDSFREE_DEBUG=1 handsfree run "…"
+HANDSFREE_DEBUG=/tmp/hf.log handsfree
+```
+
+`--debug` (or a non-empty `HANDSFREE_DEBUG`) logs what the transcript cannot show: the exact command each agent is launched with, the environment it inherits, adapter stderr, handshake timing, and the orchestration endpoint. The TUI owns the terminal, so there it writes to a `handsfree-debug-<pid>.log` file and prints the path; set `HANDSFREE_DEBUG` to a path to choose the file yourself.
+
+One pitfall the log calls out explicitly, because it is invisible otherwise: agents are spawned directly, **not through a shell**, so aliases and functions from your rc files do not apply to them. An `alias claude="HTTP_PROXY= NO_PROXY= claude"` never fires — handsfree launches `npx @zed-industries/claude-code-acp`, which inherits handsfree's own environment. Behind a corporate proxy, set or clear the variables where handsfree can see them (in the shell that starts handsfree, or per agent via the profile's `env` in config), and note that `HTTP_PROXY=` sets the variable to an *empty string* rather than unsetting it, and that HTTPS traffic reads `HTTPS_PROXY`, not `HTTP_PROXY`. The debug log prints each variable as set, `<empty>`, or unset — with proxy credentials masked — so you can see exactly what the child saw.
+
 ## The three gates
 
 Every side effect an agent causes arrives through one of three calls, and each is judged by the same rules.

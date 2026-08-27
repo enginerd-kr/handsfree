@@ -1,6 +1,7 @@
 import { loadConfig } from './config/load.js';
 import { doctor } from './commands/doctor.js';
 import { run } from './commands/run.js';
+import { debug, debugTargetFromEnv, describeProxyEnv, enableDebug, fileSink } from './debug.js';
 import { VERSION } from './version.js';
 
 const USAGE = `handsfree — an ACP host for frontier coding agents
@@ -13,6 +14,9 @@ const USAGE = `handsfree — an ACP host for frontier coding agents
 Options
   --json                        with run: emit the transcript as NDJSON
   --run <id>                    reuse an existing run directory
+  --debug                       diagnostics on stderr: launches, environment, handshakes
+                                (also HANDSFREE_DEBUG=1, or =<path> to append to a file;
+                                the TUI logs to a file, since stderr would be drawn over)
   -h, --help                    this text
   -v, --version                 print the version
 `;
@@ -21,16 +25,18 @@ interface Args {
   command: 'tui' | 'run' | 'doctor' | 'serve' | 'help' | 'version';
   prompt: string;
   json: boolean;
+  debug: boolean;
   runId: string | undefined;
 }
 
 export function parseArgs(argv: string[]): Args {
-  const args: Args = { command: 'tui', prompt: '', json: false, runId: undefined };
+  const args: Args = { command: 'tui', prompt: '', json: false, debug: false, runId: undefined };
   const rest: string[] = [];
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === '--json') args.json = true;
+    else if (arg === '--debug') args.debug = true;
     else if (arg === '--acp') args.command = 'serve';
     else if (arg === '--run') args.runId = argv[++i];
     else if (arg === '-h' || arg === '--help') args.command = 'help';
@@ -57,6 +63,38 @@ export function parseArgs(argv: string[]): Args {
   return args;
 }
 
+/**
+ * Where debug lines land. stderr, except in the TUI, where ink owns the whole
+ * terminal and interleaved writes would be drawn over — there they go to a
+ * file, whose path is printed once before the UI takes the screen.
+ */
+function setUpDebug(args: Args): void {
+  const fromEnv = debugTargetFromEnv(process.env['HANDSFREE_DEBUG']);
+  const target = args.debug && fromEnv === 'off' ? 'stderr' : fromEnv;
+  if (target === 'off') return;
+
+  if (typeof target === 'object') {
+    enableDebug(fileSink(target.file));
+    if (args.command === 'tui') process.stderr.write(`debug log: ${target.file}\n`);
+  } else if (args.command === 'tui') {
+    const file = `handsfree-debug-${process.pid}.log`;
+    enableDebug(fileSink(file));
+    process.stderr.write(`debug log: ${file}\n`);
+  } else {
+    enableDebug();
+  }
+
+  debug('start', `handsfree ${VERSION}, node ${process.version} on ${process.platform}`);
+  debug('start', `argv: ${process.argv.slice(2).join(' ') || '(none)'}`);
+  debug('env', describeProxyEnv(process.env));
+  debug(
+    'env',
+    'agents are spawned directly, not through a shell: aliases and functions from ' +
+      'your rc files (e.g. `alias claude="HTTP_PROXY= claude"`) do not apply to them — ' +
+      'they inherit this process environment, plus the profile\'s `env` from config.',
+  );
+}
+
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
   if (args.command === 'help') {
@@ -68,7 +106,17 @@ async function main(): Promise<number> {
     return 0;
   }
 
+  setUpDebug(args);
+
   const { config, source } = loadConfig();
+  debug('config', source ? `loaded from ${source}` : 'no config file found, using defaults');
+  const orchestration = config.orchestration;
+  debug(
+    'config',
+    orchestration.provider === 'acp'
+      ? `orchestration: agent "${orchestration.acp.agent}" over ACP`
+      : `orchestration: ${orchestration.local.model} at ${orchestration.local.baseURL}`,
+  );
 
   if (args.command === 'serve') {
     // stdout belongs to the protocol from here on: nothing else may write to it.
