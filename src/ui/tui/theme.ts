@@ -111,3 +111,44 @@ export const PROMPT_CHAR = process.platform === 'win32' ? '>' : '❯';
  */
 const SPINNER_FRAMES = ['·', '✢', '✳', '✶', '✻', '✽'];
 export const SPINNER = [...SPINNER_FRAMES, ...[...SPINNER_FRAMES].reverse()];
+
+/**
+ * The shimmer's own ink: the brand orange lifted a few steps. The band that
+ * crosses the working line has to read as light passing over the word rather
+ * than as a second colour, so it is the same orange and not a new one.
+ */
+export const SHIMMER = '#f59575';
+
+/**
+ * How long the band sits on one column, and how many columns of nothing it
+ * travels through between passes. The gap is what makes it a glint instead of
+ * a barber's pole — most of a cycle is the word sitting still in one piece.
+ */
+export const SHIMMER_STEP_MS = 150;
+const SHIMMER_GAP = 20;
+
+/**
+ * A word split into the part ahead of the shimmer band, the columns under it,
+ * and the part behind. The band sweeps right to left, the way Claude Code's
+ * does, starting half a gap past the right edge and running to half a gap past
+ * the left one.
+ *
+ * Columns are counted in code points: the line this drives is Latin, and a
+ * band landing one cell off on a wide glyph is not worth a width table.
+ */
+export function shimmer(
+  text: string,
+  tick: number,
+): { before: string; band: string; after: string } {
+  const chars = [...text];
+  const centre = chars.length + SHIMMER_GAP / 2 - (tick % (chars.length + SHIMMER_GAP));
+  const first = centre - 1;
+  const last = centre + 1;
+  if (first >= chars.length || last < 0) return { before: text, band: '', after: '' };
+  const start = Math.max(0, first);
+  return {
+    before: chars.slice(0, start).join(''),
+    band: chars.slice(start, last + 1).join(''),
+    after: chars.slice(last + 1).join(''),
+  };
+}

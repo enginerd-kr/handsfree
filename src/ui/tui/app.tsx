@@ -19,6 +19,9 @@ import {
   RESULT_GUTTER,
   RESULT_INDENT,
   RULE_INK,
+  SHIMMER,
+  SHIMMER_STEP_MS,
+  shimmer,
   SPINNER,
 } from './theme.js';
 import { VERSION } from '../../version.js';
@@ -641,9 +644,14 @@ function DraftLine({ draft }: { draft: Draft }): React.JSX.Element {
 }
 
 /**
- * The line that says a turn is running: the spinner, how long it has been going
- * and how much is waiting behind it. The frame interval is also what advances
- * the clock, so it has to be well under a second.
+ * The line that says a turn is running: the spinner, the word with a glint
+ * travelling across it, how long it has been going and how much is waiting
+ * behind it. The frame interval is also what advances the clock, so it has to
+ * be well under a second.
+ *
+ * The shimmer runs off the wall clock rather than off the frame count, so its
+ * step and the spinner's stay independent of each other; one timer is enough
+ * to redraw both because it ticks faster than either of them moves.
  */
 function Working({ startedAt, queued }: { startedAt: number; queued: number }): React.JSX.Element {
   const [frame, setFrame] = useState(0);
@@ -651,11 +659,15 @@ function Working({ startedAt, queued }: { startedAt: number; queued: number }): 
     const timer = setInterval(() => setFrame((n) => n + 1), 120);
     return () => clearInterval(timer);
   }, []);
-  const facts = [elapsed(Date.now() - startedAt), ...(queued > 0 ? [`${queued} queued`] : [])];
+  const now = Date.now();
+  const facts = [elapsed(now - startedAt), ...(queued > 0 ? [`${queued} queued`] : [])];
+  const { before, band, after } = shimmer('Working…', Math.floor(now / SHIMMER_STEP_MS));
   return (
     <Text wrap="truncate">
       <Text color={BRAND}>{SPINNER[frame % SPINNER.length]}</Text>
-      <Text bold> Working…</Text>
+      <Text color={BRAND}>{` ${before}`}</Text>
+      <Text color={SHIMMER}>{band}</Text>
+      <Text color={BRAND}>{after}</Text>
       <Text color="gray" dimColor>{` (${facts.join(' · ')})`}</Text>
     </Text>
   );

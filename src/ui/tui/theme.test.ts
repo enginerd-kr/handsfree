@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AGENT_COLOUR, agentColour, BRAND, MASCOT, MASCOT_BLINK } from './theme.js';
+import { AGENT_COLOUR, agentColour, BRAND, MASCOT, MASCOT_BLINK, shimmer } from './theme.js';
 
 describe('the welcome mark', () => {
   // The header is a fixed number of rows of a fixed width — that is what a
@@ -24,5 +24,37 @@ describe('an agent colour', () => {
 
   it('falls back to the house accent for an agent it has no colour for', () => {
     expect(agentColour('some-other-agent')).toBe(BRAND);
+  });
+});
+
+describe('the shimmer band', () => {
+  const WORD = 'Working…';
+  const CYCLE = [...WORD].length + 20;
+  const ticks = Array.from({ length: CYCLE }, (_, tick) => shimmer(WORD, tick));
+
+  // The band only recolours the word; a split that dropped or duplicated a
+  // code point would show up on screen as the word changing shape mid-sweep.
+  it('never alters the word it crosses', () => {
+    for (const { before, band, after } of ticks) {
+      expect(before + band + after).toBe(WORD);
+    }
+  });
+
+  it('stays a glint rather than a highlight', () => {
+    for (const { band } of ticks) expect([...band].length).toBeLessThanOrEqual(3);
+  });
+
+  // Most of a cycle is the gap between passes, and the word has to sit in one
+  // piece through it.
+  it('leaves the word whole between passes', () => {
+    expect(ticks.filter(({ band }) => band === '').length).toBeGreaterThan(CYCLE / 2);
+  });
+
+  it('sweeps right to left', () => {
+    const positions = ticks.map(({ before, band }) => (band ? [...before].length : -1));
+    const passing = positions.filter((position) => position >= 0);
+    expect(passing).toEqual([...passing].sort((a, b) => b - a));
+    expect(passing.at(0)).toBe([...WORD].length - 1);
+    expect(passing.at(-1)).toBe(0);
   });
 });
