@@ -12,6 +12,7 @@ import {
   COLOUR,
   GLYPH,
   MASCOT,
+  MASCOT_BLINK,
   PROMPT_CHAR,
   RESULT_GUTTER,
   RESULT_INDENT,
@@ -22,14 +23,26 @@ import { VERSION } from '../../version.js';
 const EXPAND_HINT = 'click or ctrl+o to expand';
 
 /**
- * Rows above the transcript: the welcome box — its title border, eight content
- * rows, its bottom border — and the blank row under it. The box never wraps,
- * so this stays a constant a click's row can be measured against.
+ * The blink: how long the eyes stay shut, the range the beat between the two
+ * halves of a double blink is drawn from, and the range of the long wait
+ * between blinks. Nothing here is a fixed number — a mark that blinks on a
+ * metronome reads as a progress indicator rather than as something alive.
  */
-const HEADER_ROWS = 11;
+const BLINK_SHUT_MS = 140;
+const BLINK_AGAIN_MS = [140, 1000] as const;
+const BLINK_WAIT_MS = [4000, 6500] as const;
 
-/** Below this many columns the box drops its tips column and keeps only the mark. */
-const WIDE_HEADER = 70;
+/** A millisecond count drawn from one of the ranges above. */
+function between([low, high]: readonly [number, number]): number {
+  return low + Math.random() * (high - low);
+}
+
+/**
+ * Rows above the transcript: the welcome mark's three rows and the blank row
+ * on either side of it. The mark never wraps, so this stays a constant a
+ * click's row can be measured against.
+ */
+const HEADER_ROWS = 5;
 
 /**
  * Rows below it: the status line, the prompt's two rules with its input between
@@ -326,10 +339,10 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
 
   // The frame takes the whole window minus the line Ink keeps the cursor on:
   // the spacer below the transcript is what pushes the prompt to the bottom,
-  // the way Claude Code's chat sits under its welcome box.
+  // the way Claude Code's chat sits under its welcome mark.
   return (
     <Box flexDirection="column" height={rows - 1}>
-      <Header runtime={runtime} columns={columns} />
+      <Header runtime={runtime} />
 
       <Box flexDirection="column">
         {shown.map((item, index) => {
@@ -360,17 +373,45 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
 }
 
 /**
- * The welcome box, in the shape of Claude Code's full logo: the name and
- * version worked into the top border, the mark and its facts centred on the
- * left, and — when the terminal is wide enough — a tips column across a faint
- * rule. Ink cannot put text in a border, so the top edge is drawn by hand and
- * the box below it goes without one.
+ * Whether the mark's eyes are shut this frame. One timer at a time, chained:
+ * a long random wait, a blink, and now and then a second blink a beat later.
+ * Nothing here runs while a turn does — it is a couple of renders a minute.
+ */
+function useBlink(): boolean {
+  const [shut, setShut] = useState(false);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    // `again` counts the blinks still owed after this one, so a pair never
+    // grows into a chain.
+    const close = (again: number) => {
+      setShut(true);
+      timer = setTimeout(() => open(again), BLINK_SHUT_MS);
+    };
+    const open = (again: number) => {
+      setShut(false);
+      timer =
+        again > 0
+          ? setTimeout(() => close(again - 1), between(BLINK_AGAIN_MS))
+          : setTimeout(() => close(Math.random() < 0.5 ? 1 : 0), between(BLINK_WAIT_MS));
+    };
+    open(0);
+    return () => clearTimeout(timer);
+  }, []);
+  return shut;
+}
+
+/**
+ * The welcome mark, in the shape Claude Code opens with: the condensed logo on
+ * the left and three facts beside it — what this is, what is answering, and
+ * where it is running. No box and no tips column; the shortcuts already live
+ * under the prompt. A blank row and a column of air sit on every side of it.
  *
  * Kept to exactly HEADER_ROWS rows — that constant is what a click's row is
  * measured against — so every line truncates rather than wraps, and the tail
  * of the path is the part worth keeping.
  */
-function Header({ runtime, columns }: { runtime: Runtime; columns: number }): React.JSX.Element {
+function Header({ runtime }: { runtime: Runtime }): React.JSX.Element {
+  const mascot = useBlink() ? MASCOT_BLINK : MASCOT;
   const agents = Object.entries(runtime.config.agents)
     .filter(([, profile]) => profile.enabled)
     .map(([id]) => id)
@@ -380,69 +421,26 @@ function Header({ runtime, columns }: { runtime: Runtime; columns: number }): Re
     orchestration.provider === 'acp'
       ? `${orchestration.acp.agent} (acp)`
       : orchestration.local.model;
-  const model = `${brain} · ${agents}`;
-  const welcome = 'Welcome back!';
-  const title = ` handsfree v${VERSION} `;
-  const border = `╭─${title}${'─'.repeat(Math.max(0, columns - 3 - title.length))}╮`;
-  const wide = columns >= WIDE_HEADER;
   return (
-    <Box flexDirection="column" marginBottom={1}>
-      <Text color={BRAND} wrap="truncate">
-        {border}
-      </Text>
-      <Box borderStyle="round" borderColor={BRAND} borderTop={false} paddingX={1} gap={2}>
-        <Box
-          flexDirection="column"
-          alignItems="center"
-          flexShrink={0}
-          flexGrow={wide ? 0 : 1}
-          width={wide ? Math.min(50, Math.max(24, welcome.length + 4, model.length + 4)) : undefined}
-        >
-          <Text bold wrap="truncate">
-            {welcome}
+    <Box margin={1} gap={2}>
+      <Box flexDirection="column" flexShrink={0}>
+        {mascot.map((line, index) => (
+          <Text key={index} color={BRAND}>
+            {line}
           </Text>
-          <Box height={1} />
-          {MASCOT.map((line, index) => (
-            <Text key={index} color={BRAND}>
-              {line}
-            </Text>
-          ))}
-          <Box height={1} />
-          <Text color="gray" wrap="truncate">
-            {model}
-          </Text>
-          <Text color="gray" wrap="truncate-start">
-            {tildify(runtime.workspace.dir)}
-          </Text>
-        </Box>
-        {wide ? (
-          <Box
-            borderStyle="single"
-            borderColor={BRAND}
-            borderDimColor
-            borderTop={false}
-            borderBottom={false}
-            borderLeft={false}
-          />
-        ) : null}
-        {wide ? (
-          <Box flexDirection="column" flexShrink={1}>
-            <Text color={BRAND} bold wrap="truncate">
-              Tips for getting started
-            </Text>
-            <Text wrap="truncate">Describe a task and handsfree delegates it to an agent</Text>
-            <Box height={1} />
-            <Text color="gray" dimColor>
-              ────────
-            </Text>
-            <Box height={1} />
-            <Text color={BRAND} bold wrap="truncate">
-              Shortcuts
-            </Text>
-            <Text wrap="truncate">click a task · ctrl+o to expand all · esc to interrupt</Text>
-            <Text wrap="truncate">/reset to start over · /quit to leave</Text>
-          </Box>
-        ) : null}
+        ))}
+      </Box>
+      <Box flexDirection="column" flexShrink={1}>
+        <Text wrap="truncate">
+          <Text bold>handsfree</Text>
+          <Text color="gray">{` v${VERSION}`}</Text>
+        </Text>
+        <Text color="gray" wrap="truncate">
+          {`${brain} · ${agents}`}
+        </Text>
+        <Text color="gray" wrap="truncate-start">
+          {tildify(runtime.workspace.dir)}
+        </Text>
       </Box>
     </Box>
   );

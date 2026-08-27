@@ -44,6 +44,15 @@ export const RESULT_INDENT = ' ';
 export const MASCOT = [' ▐▛███▜▌ ', '▝▜█████▛▘', '  ▘▘ ▝▝  '] as const;
 
 /**
+ * The same mark with its eyes shut: the two small holes the top row carries —
+ * the corner missing from each of ▛ and ▜ — filled in. Only that row changes
+ * and it keeps the same nine cells, so a blink can never shift what sits
+ * beside or below the mark; the header's row count is what a click is
+ * measured against.
+ */
+export const MASCOT_BLINK = [' ▐█████▌ ', MASCOT[1], MASCOT[2]] as const;
+
+/**
  * The prompt's own glyph, the way Claude Code opens its input line. Windows
  * consoles have no reliable glyph for it, so they get the shell's own mark.
  */
