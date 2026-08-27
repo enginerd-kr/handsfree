@@ -326,6 +326,29 @@ describe('turn lifecycle', () => {
     expect(stopReason).toBe('cancelled');
   });
 
+  it('cancels a turn whose caller gave up before it started', async () => {
+    const agent = fakeAgent({ script: () => [{ do: 'stall', ms: 10_000 }] });
+    const h = harness({ agents: { claude: agent } });
+    open = h;
+
+    // Esc lands while the session is still being opened: by the time the
+    // prompt goes out the signal has already fired, and a listener added now
+    // would never hear it.
+    const session = await h.runtime.pool.session('claude');
+    const controller = new AbortController();
+    controller.abort();
+    const startedAt = Date.now();
+    const stopReason = await session.prompt('go', {
+      turnTimeoutMs: 10_000,
+      idleTimeoutMs: 10_000,
+      cancelGraceMs: 1_000,
+      signal: controller.signal,
+    });
+    expect(stopReason).toBe('cancelled');
+    // Stopped because it was asked to, not because a timer ran out.
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+  });
+
   it('keeps one session across tasks so the agent remembers', async () => {
     const agent = fakeAgent({ script: () => [{ do: 'say', text: 'ok' }] });
     const h = harness({ agents: { claude: agent } });

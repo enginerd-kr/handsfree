@@ -81,8 +81,12 @@ export class HostSession {
       return response.stopReason;
     };
 
+    // A signal that fired before we got here — Esc pressed while the process
+    // was still starting or the session still opening — carries no event to
+    // subscribe to, and a listener added now would never hear a thing.
     const abortOnCaller = () => turn.abort();
-    options.signal?.addEventListener('abort', abortOnCaller, { once: true });
+    if (options.signal?.aborted) turn.abort();
+    else options.signal?.addEventListener('abort', abortOnCaller, { once: true });
 
     const deadline = setTimeout(() => turn.abort(), options.turnTimeoutMs);
     const idle = setInterval(() => {
