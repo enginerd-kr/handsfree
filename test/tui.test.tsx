@@ -735,4 +735,78 @@ describe('terminal UI', () => {
     expect(decision.verdict).toBe('deny');
     expect(decision.reason).toContain('nobody available');
   });
+
+  it('draws an answer as markdown rather than as its source', async () => {
+    const h = harness({
+      agents: { claude: fakeAgent({ script: () => [] }) },
+      llm: scriptedModel([
+        JSON.stringify({
+          action: 'answer',
+          message: '## Findings\n\n- the first\n- the second\n\n```ts\nconst a = 1;\n```',
+        }),
+      ]),
+    });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      await h.runtime.conversation.send('what did you find');
+      const frame = await waitFor(() => app.lastFrame(), 'Findings');
+
+      // The heading and the fence are styling now, not characters on screen.
+      expect(frame).not.toContain('##');
+      expect(frame).not.toContain('```');
+      expect(frame).toContain('- the first');
+      expect(frame).toContain('const a = 1;');
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('still aims a click true when a markdown answer sits above the target', async () => {
+    // The whole point of rendering markdown into the row's own text is that
+    // `heightOf` keeps measuring what is drawn. A block that measures short by
+    // even one row sends every click below it to the wrong task.
+    const h = harness({
+      agents: {
+        claude: fakeAgent({
+          script: () => [
+            { do: 'say', text: '## Plan\n\n- read the file\n- change one line\n\nthe agent answer' },
+          ],
+        }),
+      },
+      llm: scriptedModel([
+        JSON.stringify({ action: 'delegate', agent: 'claude', kind: 'answer', task: 'go' }),
+        JSON.stringify({ action: 'answer', message: 'claude answered.' }),
+      ]),
+    });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      await h.runtime.conversation.send('who are you');
+      await waitFor(() => app.lastFrame(), 'claude answered.');
+
+      app.stdin.write('\x0f'); // ctrl+o, so the block has inner rows
+      await waitFor(() => app.lastFrame(), 'the agent answer');
+
+      // The click lands on the last line of a block whose earlier lines are
+      // markdown — so it only folds if those lines were measured correctly.
+      const row = (app.lastFrame() ?? '')
+        .split('\n')
+        .findIndex((line) => line.includes('the agent answer'));
+      expect(row).toBeGreaterThan(0);
+      app.stdin.write(`\u001B[<0;3;${row + 1}m`);
+
+      const deadline = Date.now() + 2_000;
+      while ((app.lastFrame() ?? '').includes('the agent answer')) {
+        if (Date.now() > deadline) throw new Error('the click never folded the task');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    } finally {
+      app.unmount();
+    }
+  });
 });

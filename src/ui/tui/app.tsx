@@ -12,6 +12,7 @@ import {
   type Command,
 } from '../../slash/command.js';
 import { itemAt, lastFitting, placeItems } from './layout.js';
+import { type Highlighter, loadHighlighter, renderMarkdown } from './markdown.js';
 import { CURSOR_QUERY, isMouseReport, parseCursorReport, parseMouseEvent, trackMouse } from './mouse.js';
 import {
   agentColour,
@@ -176,6 +177,20 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     return () => runtime.setEscalator(undefined);
   }, [runtime]);
 
+  // `cli-highlight` drags highlight.js behind it, so it is fetched in the
+  // background and code blocks render plain until it arrives — one extra
+  // render, a moment after launch.
+  const [highlighter, setHighlighter] = useState<Highlighter | null>(null);
+  useEffect(() => {
+    let live = true;
+    void loadHighlighter().then((loaded) => {
+      if (live) setHighlighter(loaded);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+
   const rows = stdout?.rows ?? 30;
   const columns = stdout?.columns ?? 80;
   // What the menu may claim before it starts eating the transcript's floor. On
@@ -192,14 +207,39 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   );
   // The menu's own rows, plus the blank line that keeps it off the transcript.
   const promptRows = PROMPT_ROWS + (menu.length > 0 ? menu.length + 1 : 0);
+  // An agent's own words arrive as markdown, so they are drawn as markdown.
+  // This sits above `lastFitting` rather than inside `Entry` because the rows a
+  // block occupies are what the budget below and every click are measured
+  // against — both have to see the same text the terminal will.
+  const drawn = useMemo(
+    () =>
+      items.map((item) =>
+        item.prose === true
+          ? {
+              ...item,
+              text: renderMarkdown(item.key, item.text, {
+                highlight: highlighter,
+                // A thought stays the quieter register, so its dim is baked
+                // into the styling rather than painted over it.
+                dim: item.tone === 'muted',
+              }),
+              // The ANSI carries every colour it needs; an outer one would end
+              // at the first reset inside it.
+              tone: 'normal' as Tone,
+            }
+          : item,
+      ),
+    [items, highlighter],
+  );
+
   // The first visible row sits against the header, so it keeps its own space
   // rather than inheriting the gap it would have had mid-scroll. Placement and
   // rendering share the result, or a click would be measured against a
   // different frame than the one on screen.
   const shown = useMemo(() => {
-    const fitting = lastFitting(items, Math.max(rows - 1 - HEADER_ROWS - promptRows, 8), columns);
+    const fitting = lastFitting(drawn, Math.max(rows - 1 - HEADER_ROWS - promptRows, 8), columns);
     return fitting.map((item, index) => (index === 0 && item.gap ? { ...item, gap: false } : item));
-  }, [items, rows, columns, promptRows]);
+  }, [drawn, rows, columns, promptRows]);
   const placements = useMemo(() => placeItems(shown, columns, HEADER_ROWS), [shown, columns]);
 
   const tasks = useMemo(

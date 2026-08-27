@@ -42,6 +42,13 @@ export interface ViewItem {
    */
   agentId?: string;
   /**
+   * Whether the text is an agent's own prose rather than something this file
+   * shaped. Only prose is markdown; a tool call's title and a decision's
+   * summary are already the finished sentence. Role alone cannot say — a tool
+   * call and an agent's answer are both `agent` rows wearing a bullet.
+   */
+  prose?: boolean;
+  /**
    * The delegated task this row belongs to, opening and closing rows included.
    * Every row of a task carries it, so hovering anywhere in the block lights
    * all of it and a click anywhere in it folds or unfolds the task.
@@ -173,7 +180,7 @@ export function buildView(
         }
         // A retraction whose block is already gone has nothing left to say.
         if (record.stream !== undefined && record.text === '') break;
-        add(row(`a${record.seq}`, 'handsfree', 0, 'bullet', 'brand', record.text, 'normal', true));
+        add(proseRow(`a${record.seq}`, 'handsfree', 0, 'bullet', 'brand', record.text, 'normal', true));
         break;
       }
 
@@ -187,7 +194,7 @@ export function buildView(
           openAssistant = {
             stream: record.stream,
             item: add(
-              row(`a${record.seq}`, 'handsfree', 0, 'bullet', 'brand', record.text, 'normal', true),
+              proseRow(`a${record.seq}`, 'handsfree', 0, 'bullet', 'brand', record.text, 'normal', true),
             ),
           };
         }
@@ -299,7 +306,7 @@ export function buildView(
             if (openText) openText.text += update.content.text;
             else {
               openText = add(
-                row(`m${record.seq}`, 'agent', depth, 'bullet', 'brand', update.content.text, 'normal', true),
+                proseRow(`m${record.seq}`, 'agent', depth, 'bullet', 'brand', update.content.text, 'normal', true),
               );
             }
             break;
@@ -312,7 +319,7 @@ export function buildView(
             if (openThought) openThought.text += update.content.text;
             else {
               openThought = add(
-                row(`h${record.seq}`, 'agent', depth, 'thought', 'muted', update.content.text, 'muted', true),
+                proseRow(`h${record.seq}`, 'agent', depth, 'thought', 'muted', update.content.text, 'muted', true),
               );
             }
             break;
@@ -409,6 +416,13 @@ export function buildView(
 
   for (const item of items) item.text = item.text.trim();
   return items;
+}
+
+/** A row carrying an agent's own words, which the renderer draws as markdown. */
+function proseRow(...args: Parameters<typeof row>): ViewItem {
+  const item = row(...args);
+  item.prose = true;
+  return item;
 }
 
 function row(
