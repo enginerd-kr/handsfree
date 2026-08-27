@@ -584,6 +584,35 @@ describe('terminal UI', () => {
     }
   });
 
+  it('pays a whole burst of wheel reports out, even fused into one chunk', async () => {
+    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
+    open = h;
+    for (let n = 1; n <= 40; n++) {
+      h.runtime.transcript.append({ type: 'user', text: `line-${String(n).padStart(2, '0')}` });
+    }
+
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      await waitFor(() => app.lastFrame(), 'line-40');
+
+      // A fast flick: the terminal fuses the reports into one stdin chunk.
+      // The rows pool and drain over frames rather than landing in one
+      // render, but every one of them lands — the flick still reaches the
+      // top, not most of the way to it.
+      app.stdin.write('\u001B[<64;3;10M'.repeat(30));
+      const top = await waitFor(() => app.lastFrame(), 'line-01');
+      expect(top).not.toContain('line-40');
+
+      // And a fused flick back down re-pins the view to the end.
+      app.stdin.write('\u001B[<65;3;10M'.repeat(30));
+      await waitFor(() => app.lastFrame(), 'line-40');
+      h.runtime.transcript.append({ type: 'user', text: 'line-41' });
+      await waitFor(() => app.lastFrame(), 'line-41');
+    } finally {
+      app.unmount();
+    }
+  });
+
   it('scrolls a page at a time from the keyboard, and a row at a time with shift', async () => {
     const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
     open = h;

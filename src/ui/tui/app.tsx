@@ -75,6 +75,20 @@ const PROMPT_ROWS = 5;
  */
 const WHEEL_ROWS = 3;
 
+/**
+ * The pace the owed scroll is paid out at. A flick of the wheel arrives as a
+ * burst of reports — often several fused into one stdin chunk — and paying
+ * them all in one render is the lurch the eye reads as jank. They pool
+ * instead, and every DRAIN_MS a frame takes three quarters of the debt:
+ * never fewer than SCROLL_STEP rows, so the tail comes to a stop rather
+ * than crawling, and never more than a viewport, which is as far as a jump
+ * can be followed. A single notch is under the step and lands whole. This
+ * is the shape of Claude Code's own scroll drain, run at React's cadence
+ * because a stock Ink render is the only frame there is.
+ */
+const DRAIN_MS = 16;
+const SCROLL_STEP = 4;
+
 interface PendingAsk {
   summary: string;
   detail: string;
@@ -261,12 +275,36 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   const bounds = useRef({ furthest, viewport });
   bounds.current = { furthest, viewport };
   /** Moves the viewport by `delta` rows, and re-pins it at the end. */
-  const scrollBy = (delta: number) =>
+  const moveBy = (delta: number) =>
     setScrolled((current) => {
       const { furthest: end } = bounds.current;
       const next = Math.min(Math.max((current ?? end) + delta, 0), end);
       return next >= end ? undefined : next;
     });
+  // Rows asked for but not yet shown, and the timer paying them off. Both are
+  // refs: the drain reads and writes them between renders, and a render owes
+  // nothing to either.
+  const owed = useRef(0);
+  const drainTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const drain = () => {
+    const debt = owed.current;
+    const size = Math.abs(debt);
+    const cap = Math.max(1, bounds.current.viewport - 1);
+    const step = Math.min(cap, Math.max(SCROLL_STEP, (size * 3) >> 2));
+    const paid = size <= step ? debt : Math.sign(debt) * step;
+    owed.current = debt - paid;
+    if (paid !== 0) moveBy(paid);
+    drainTimer.current = owed.current === 0 ? undefined : setTimeout(drain, DRAIN_MS);
+  };
+  /** Owes the viewport `delta` rows; the drain pays them out over frames. */
+  const scrollBy = (delta: number) => {
+    owed.current += delta;
+    // The first payment waits a beat rather than running here, so a burst
+    // fused into one stdin chunk pools in full before any of it is drawn.
+    drainTimer.current ??= setTimeout(drain, 0);
+  };
+  // A timer still owed rows must not outlive the component it scrolls.
+  useEffect(() => () => clearTimeout(drainTimer.current), []);
 
   // Placement and rendering share the window, or a click would be aimed at a
   // different frame than the one on screen.
@@ -324,7 +362,9 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     setDismissed(undefined);
     if (trimmed === '') return;
     // Whatever was being read further up, the answer to what was just sent is
-    // what matters now: sending follows the end again.
+    // what matters now: sending follows the end again — and forgives whatever
+    // scroll was still owed, or the drain would drag the view straight back.
+    owed.current = 0;
     setScrolled(undefined);
 
     const parsed = parseSlashCommand(trimmed);
