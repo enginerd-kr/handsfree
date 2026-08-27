@@ -1,0 +1,4 @@
+# grove worktree setup — https://github.com/enginerd-kr/grove
+[setup]
+copy = ["handsfree.config.json"]   # gitignored local config, taken from main's worktree
+run  = ["pnpm install", "pnpm build"]
