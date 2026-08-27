@@ -36,6 +36,12 @@ export interface ViewItem {
   /** Whether the row wants a blank line above it. */
   gap: boolean;
   /**
+   * Whose row this is, when it belongs to a delegated agent — the opening and
+   * closing rows of a task included. The renderer spends the agent's own
+   * colour on it; nothing about the row's shape depends on it.
+   */
+  agentId?: string;
+  /**
    * The delegated task this row belongs to, opening and closing rows included.
    * Every row of a task carries it, so hovering anywhere in the block lights
    * all of it and a click anywhere in it folds or unfolds the task.
@@ -107,6 +113,7 @@ export function buildView(
   // indented under the task the way a nested call reads.
   let depth = 0;
   let currentTask: number | undefined;
+  let currentAgent: string | undefined;
   let taskStartedAt = 0;
   let taskTools = 0;
   // Where the current task's rows begin, and which of them survive folding.
@@ -114,7 +121,10 @@ export function buildView(
   const loud = new Set<string>();
 
   const add = (item: ViewItem): ViewItem => {
-    if (depth === 1) item.taskId = currentTask;
+    if (depth === 1) {
+      item.taskId = currentTask;
+      item.agentId ??= currentAgent;
+    }
     items.push(item);
     byKey.set(item.key, item);
     return item;
@@ -190,9 +200,11 @@ export function buildView(
           row(`d${record.seq}`, 'system', 0, 'bullet', 'brand', record.task, 'normal', true),
         );
         item.label = record.agentId;
+        item.agentId = record.agentId;
         item.taskId = record.taskId;
         depth = 1;
         currentTask = record.taskId;
+        currentAgent = record.agentId;
         taskStartedAt = record.at;
         taskTools = 0;
         taskStart = items.length;
@@ -263,6 +275,7 @@ export function buildView(
         );
         depth = 0;
         currentTask = undefined;
+        currentAgent = undefined;
         taskStart = -1;
         break;
       }

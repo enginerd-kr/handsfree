@@ -7,15 +7,18 @@ import { buildView, type Tone, type ViewItem } from '../view-model.js';
 import { itemAt, lastFitting, placeItems } from './layout.js';
 import { CURSOR_QUERY, isMouseReport, parseCursorReport, parseMouseEvent, trackMouse } from './mouse.js';
 import {
+  agentColour,
   BAND,
   BRAND,
   COLOUR,
   GLYPH,
+  HEADER_INK,
   MASCOT,
   MASCOT_BLINK,
   PROMPT_CHAR,
   RESULT_GUTTER,
   RESULT_INDENT,
+  RULE_INK,
   SPINNER,
 } from './theme.js';
 import { VERSION } from '../../version.js';
@@ -414,8 +417,7 @@ function Header({ runtime }: { runtime: Runtime }): React.JSX.Element {
   const mascot = useBlink() ? MASCOT_BLINK : MASCOT;
   const agents = Object.entries(runtime.config.agents)
     .filter(([, profile]) => profile.enabled)
-    .map(([id]) => id)
-    .join(', ');
+    .map(([id]) => id);
   const orchestration = runtime.config.orchestration;
   const brain =
     orchestration.provider === 'acp'
@@ -433,12 +435,18 @@ function Header({ runtime }: { runtime: Runtime }): React.JSX.Element {
       <Box flexDirection="column" flexShrink={1}>
         <Text wrap="truncate">
           <Text bold>handsfree</Text>
-          <Text color="gray">{` v${VERSION}`}</Text>
+          <Text color={HEADER_INK}>{` v${VERSION}`}</Text>
         </Text>
-        <Text color="gray" wrap="truncate">
-          {`${brain} · ${agents}`}
+        <Text color={HEADER_INK} wrap="truncate">
+          {`${brain} · `}
+          {agents.map((id, index) => (
+            <Text key={id}>
+              {index > 0 ? ', ' : ''}
+              <Text color={agentColour(id)}>{id}</Text>
+            </Text>
+          ))}
         </Text>
-        <Text color="gray" wrap="truncate-start">
+        <Text color={HEADER_INK} wrap="truncate-start">
           {tildify(runtime.workspace.dir)}
         </Text>
       </Box>
@@ -455,6 +463,10 @@ function Header({ runtime }: { runtime: Runtime }): React.JSX.Element {
  * hovering it brightens the band. The blank line above an item belongs to the
  * band only when the row before it is part of the same task — `bridged` — so
  * the block never bleeds upward into whatever it was delegated from.
+ *
+ * A delegated row spends its agent's own colour wherever the house accent
+ * would otherwise go — the bullet and the name — so two tasks running one
+ * after the other are told apart by colour before either name is read.
  */
 function Entry({
   item,
@@ -467,12 +479,15 @@ function Entry({
   hovered: boolean;
   bridged: boolean;
 }): React.JSX.Element {
+  const accent = item.agentId ? agentColour(item.agentId) : undefined;
   return (
     <Box flexDirection="column">
       {item.gap ? <Box height={1} backgroundColor={bridged ? band : undefined} /> : null}
       <Box flexDirection="column" paddingLeft={item.depth * 2} backgroundColor={band}>
-        <Row gutter={GLYPH[item.marker]} tone={item.markerTone} hovered={hovered}>
-          {item.label ? <Text {...paint('muted', hovered)}>{`${item.label}  `}</Text> : null}
+        <Row gutter={GLYPH[item.marker]} tone={item.markerTone} accent={accent} hovered={hovered}>
+          {item.label ? (
+            <Text {...paint(accent ? 'brand' : 'muted', hovered, accent)}>{`${item.label}  `}</Text>
+          ) : null}
           <Text {...paint(item.tone, hovered)}>{item.text}</Text>
         </Row>
         {item.lines.map((line, index) => (
@@ -494,9 +509,17 @@ function Entry({
 /**
  * Gray text on the gray hover band would vanish, so a hovered row keeps its
  * muted lines readable by dimming the terminal's default ink instead.
+ *
+ * An accent stands in for the house brand only — everything a tone says about
+ * status stays exactly as loud as it was, so a failed call inside a Gemini
+ * task is still red.
  */
-function paint(tone: Tone, hovered: boolean): { color?: string; dimColor?: boolean } {
-  const colour = COLOUR[tone];
+function paint(
+  tone: Tone,
+  hovered: boolean,
+  accent?: string,
+): { color?: string; dimColor?: boolean } {
+  const colour = accent !== undefined && tone === 'brand' ? accent : COLOUR[tone];
   if (hovered && colour === 'gray') return { dimColor: true };
   return { color: colour };
 }
@@ -509,19 +532,21 @@ function Row({
   gutter,
   tone,
   hovered,
+  accent,
   indent = 0,
   children,
 }: {
   gutter: string;
   tone: Tone;
   hovered: boolean;
+  accent?: string;
   indent?: number;
   children: React.ReactNode;
 }): React.JSX.Element {
   return (
     <Box paddingLeft={indent}>
       <Box flexShrink={0} width={gutter.length + 1}>
-        <Text {...paint(tone, hovered)}>{gutter}</Text>
+        <Text {...paint(tone, hovered, accent)}>{gutter}</Text>
       </Box>
       <Box flexGrow={1}>
         <Text wrap="wrap">{children}</Text>
@@ -566,11 +591,13 @@ function Prompt({
       <Box
         width="100%"
         borderStyle="round"
-        borderColor={busy ? 'gray' : BRAND}
+        borderColor={RULE_INK}
         borderDimColor={busy}
         borderLeft={false}
         borderRight={false}
-        paddingX={1}
+        // The pointer opens the line: nothing sits to the left of it, so the
+        // draft starts where the rules above and below it start.
+        paddingRight={1}
       >
         <Text color="gray" dimColor={busy}>
           {`${PROMPT_CHAR} `}
@@ -645,7 +672,7 @@ function Ask({ ask }: { ask: PendingAsk }): React.JSX.Element {
   return (
     <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor="yellow" paddingX={1}>
       <Text>
-        <Text color="yellow" bold>
+        <Text color={agentColour(ask.agentId)} bold>
           {ask.agentId}
         </Text>{' '}
         wants to {ask.summary}
