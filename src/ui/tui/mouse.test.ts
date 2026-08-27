@@ -20,10 +20,28 @@ describe('parseMouseEvent', () => {
     expect(parseMouseEvent('[<35;12;5M')).toEqual({ type: 'hover', column: 11, row: 4 });
   });
 
-  it('ignores presses, drags, wheel and other buttons', () => {
+  it('decodes the wheel, whichever way it turns and whatever is held with it', () => {
+    expect(parseMouseEvent('[<64;12;5M')).toEqual({
+      type: 'wheel',
+      direction: 'up',
+      column: 11,
+      row: 4,
+    });
+    expect(parseMouseEvent('[<65;12;5M')).toEqual({
+      type: 'wheel',
+      direction: 'down',
+      column: 11,
+      row: 4,
+    });
+    // Shift is +4: a modifier changes who is asking, not which way it turned.
+    expect(parseMouseEvent('[<68;12;5M')).toMatchObject({ type: 'wheel', direction: 'up' });
+  });
+
+  it('ignores presses, drags, sideways wheels and other buttons', () => {
     expect(parseMouseEvent('[<0;12;5M')).toBeUndefined();
     expect(parseMouseEvent('[<32;12;5M')).toBeUndefined();
-    expect(parseMouseEvent('[<64;12;5m')).toBeUndefined();
+    // 66 and 67 are the wheel tilting left and right; nothing scrolls sideways.
+    expect(parseMouseEvent('[<66;12;5M')).toBeUndefined();
     expect(parseMouseEvent('[<2;12;5m')).toBeUndefined();
   });
 });

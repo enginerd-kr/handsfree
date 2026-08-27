@@ -545,6 +545,77 @@ describe('terminal UI', () => {
     }
   });
 
+  it('scrolls the transcript with the wheel while the prompt stays put', async () => {
+    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
+    open = h;
+    // Far more than one screen: each of these rows carries a blank line above
+    // it, so forty of them are eighty rows in a viewport nineteen tall.
+    for (let n = 1; n <= 40; n++) {
+      h.runtime.transcript.append({ type: 'user', text: `line-${String(n).padStart(2, '0')}` });
+    }
+
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      const start = await waitFor(() => app.lastFrame(), 'line-40');
+      expect(start).not.toContain('line-01');
+      const height = start.split('\n').length;
+
+      // Enough turns of the wheel to reach the top of the transcript.
+      for (let turn = 0; turn < 30; turn++) app.stdin.write('\u001B[<64;3;10M');
+      const top = await waitFor(() => app.lastFrame(), 'line-01');
+      expect(top).not.toContain('line-40');
+      // The prompt does not move, and neither does the mark above it — and the
+      // hint under it says the view has stopped following what arrives.
+      expect(top).toContain(PROMPT_CHAR);
+      expect(top).toContain('handsfree');
+      expect(top).toContain('scrolled up');
+      expect(top.split('\n')).toHaveLength(height);
+
+      // And back down to where it was.
+      for (let turn = 0; turn < 30; turn++) app.stdin.write('\u001B[<65;3;10M');
+      const end = await waitFor(() => app.lastFrame(), 'line-40');
+      expect(end).not.toContain('line-01');
+
+      // Once it is following the end again, whatever arrives next is on screen.
+      h.runtime.transcript.append({ type: 'user', text: 'line-41' });
+      await waitFor(() => app.lastFrame(), 'line-41');
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('scrolls a page at a time from the keyboard, and a row at a time with shift', async () => {
+    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
+    open = h;
+    for (let n = 1; n <= 40; n++) {
+      h.runtime.transcript.append({ type: 'user', text: `line-${String(n).padStart(2, '0')}` });
+    }
+
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      await waitFor(() => app.lastFrame(), 'line-40');
+
+      // A page is the viewport less the row it keeps for the eye to land on:
+      // nine of these two-row items.
+      app.stdin.write('\u001B[5~'); // page up
+      const paged = await waitFor(() => app.lastFrame(), 'line-22');
+      expect(paged).not.toContain('line-40');
+
+      // Shift and an arrow move a single row, which is half of one item: two
+      // of them bring the next one fully into view.
+      app.stdin.write('\u001B[1;2B'); // shift+down
+      app.stdin.write('\u001B[1;2B');
+      const nudged = await waitFor(() => app.lastFrame(), 'line-32');
+      expect(nudged).not.toContain('line-22');
+
+      app.stdin.write('\u001B[6~'); // page down, back to the end
+      const end = await waitFor(() => app.lastFrame(), 'line-40');
+      expect(end).not.toContain('line-23');
+    } finally {
+      app.unmount();
+    }
+  });
+
   it('does not highlight unrelated rows before a task is hovered', async () => {
     const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
     open = h;

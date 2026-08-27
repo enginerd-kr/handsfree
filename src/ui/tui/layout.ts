@@ -59,22 +59,51 @@ export function itemAt(placements: readonly Placement[], row: number): ViewItem 
   return placements.find((placement) => row >= placement.top && row < placement.bottom)?.item;
 }
 
+/** How many rows the whole transcript occupies. */
+export function totalHeight(items: readonly ViewItem[], columns: number): number {
+  let rows = 0;
+  for (const item of items) rows += heightOf(item, columns);
+  return rows;
+}
+
+/** The slice of the transcript on screen, and where its first row sits. */
+export interface Window {
+  /** The items with any rows inside the viewport. */
+  items: ViewItem[];
+  /**
+   * Rows of the first item that sit above the viewport, as a negative offset —
+   * what the drawn column is nudged up by, and what every placement below is
+   * measured from. Zero when the first visible item starts on the first row.
+   */
+  top: number;
+}
+
 /**
- * The tail of the transcript that fits in `budget` rows. Rows are measured, not
- * counted: one tool call with its output is worth several plain lines, and
- * slicing by item would push the newest work off the screen.
+ * The `budget` rows of the transcript starting `from` rows down it. Rows are
+ * measured, not counted: one tool call with its output is worth several plain
+ * lines, and slicing by item would let a single long answer swallow the
+ * viewport. An item straddling either edge is kept whole and clipped when
+ * drawn, so scrolling moves by rows rather than jumping by messages.
  */
-export function lastFitting(
+export function windowAt(
   items: readonly ViewItem[],
   budget: number,
   columns: number,
-): ViewItem[] {
-  let used = 0;
-  for (let index = items.length - 1; index >= 0; index--) {
-    used += heightOf(items[index]!, columns);
-    if (used > budget) return items.slice(Math.min(index + 1, items.length - 1));
+  from: number,
+): Window {
+  const end = from + budget;
+  const window: Window = { items: [], top: 0 };
+  let row = 0;
+  for (const item of items) {
+    if (row >= end) break;
+    const height = heightOf(item, columns);
+    if (row + height > from) {
+      if (window.items.length === 0) window.top = row - from;
+      window.items.push(item);
+    }
+    row += height;
   }
-  return [...items];
+  return window;
 }
 
 function width(columns: number, indent: number): number {

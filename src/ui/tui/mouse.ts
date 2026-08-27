@@ -26,7 +26,8 @@ export interface MouseClick {
 
 export type MouseEvent =
   | { type: 'click'; column: number; row: number }
-  | { type: 'hover'; column: number; row: number };
+  | { type: 'hover'; column: number; row: number }
+  | { type: 'wheel'; direction: 'up' | 'down'; column: number; row: number };
 
 /**
  * Turns mouse reporting on and returns the function that turns it off. The
@@ -77,10 +78,14 @@ export function parseMouseEvent(input: string): MouseEvent | undefined {
   const [, button, column, row, kind] = match;
   // Bit 5 marks motion and bit 6 the wheel; neither is a click. The low two
   // bits are the button. 35 (motion + button 3) is movement without a button
-  // held, which is exactly a hover report in DECSET 1003 mode.
+  // held, which is exactly a hover report in DECSET 1003 mode; 64 and 65 are
+  // the wheel turning away from and towards the hand.
   const code = Number(button);
   const point = { column: Number(column) - 1, row: Number(row) - 1 };
-  if ((code & 64) !== 0) return undefined;
+  if ((code & 64) !== 0) {
+    const direction = (code & 1) === 0 ? 'up' : 'down';
+    return (code & 2) === 0 ? { type: 'wheel', direction, ...point } : undefined;
+  }
   if ((code & 32) !== 0) {
     return (code & 3) === 3 ? { type: 'hover', ...point } : undefined;
   }

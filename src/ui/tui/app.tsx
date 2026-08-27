@@ -11,7 +11,7 @@ import {
   takesArguments,
   type Command,
 } from '../../slash/command.js';
-import { itemAt, lastFitting, placeItems } from './layout.js';
+import { itemAt, placeItems, totalHeight, windowAt } from './layout.js';
 import { type Highlighter, loadHighlighter, renderMarkdown } from './markdown.js';
 import { CURSOR_QUERY, isMouseReport, parseCursorReport, parseMouseEvent, trackMouse } from './mouse.js';
 import {
@@ -67,6 +67,13 @@ const MENU_ROWS = 6;
  * running — so the transcript's budget never changes as a turn starts.
  */
 const PROMPT_ROWS = 5;
+
+/**
+ * How far one turn of the wheel moves the transcript. Three rows is what a
+ * terminal sends per notch when it scrolls itself, so the frame moves at the
+ * speed the hand expects.
+ */
+const WHEEL_ROWS = 3;
 
 interface PendingAsk {
   summary: string;
@@ -208,39 +215,69 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   // The menu's own rows, plus the blank line that keeps it off the transcript.
   const promptRows = PROMPT_ROWS + (menu.length > 0 ? menu.length + 1 : 0);
   // An agent's own words arrive as markdown, so they are drawn as markdown.
-  // This sits above `lastFitting` rather than inside `Entry` because the rows a
-  // block occupies are what the budget below and every click are measured
+  // This sits above the windowing rather than inside `Entry` because the rows a
+  // block occupies are what the viewport below and every click are measured
   // against — both have to see the same text the terminal will.
   const drawn = useMemo(
     () =>
-      items.map((item) =>
-        item.prose === true
-          ? {
-              ...item,
-              text: renderMarkdown(item.key, item.text, {
-                highlight: highlighter,
-                // A thought stays the quieter register, so its dim is baked
-                // into the styling rather than painted over it.
-                dim: item.tone === 'muted',
-              }),
-              // The ANSI carries every colour it needs; an outer one would end
-              // at the first reset inside it.
-              tone: 'normal' as Tone,
-            }
-          : item,
-      ),
+      items.map((item, index) => {
+        // The transcript's first row sits against the header, which already
+        // ends in a blank line, so it gives up the gap it would have had
+        // anywhere further down.
+        const placed = index === 0 && item.gap ? { ...item, gap: false } : item;
+        if (placed.prose !== true) return placed;
+        return {
+          ...placed,
+          text: renderMarkdown(placed.key, placed.text, {
+            highlight: highlighter,
+            // A thought stays the quieter register, so its dim is baked into
+            // the styling rather than painted over it.
+            dim: placed.tone === 'muted',
+          }),
+          // The ANSI carries every colour it needs; an outer one would end at
+          // the first reset inside it.
+          tone: 'normal' as Tone,
+        };
+      }),
     [items, highlighter],
   );
 
-  // The first visible row sits against the header, so it keeps its own space
-  // rather than inheriting the gap it would have had mid-scroll. Placement and
-  // rendering share the result, or a click would be measured against a
+  // The rows the transcript gets: everything the header and the prompt leave,
+  // the menu's rows included — an open menu shortens the pane rather than
+  // spilling over it. A window too small to hold either still gets eight rows,
+  // and the frame spills rather than the transcript vanishing.
+  const viewport = Math.max(rows - 1 - HEADER_ROWS - promptRows, 8);
+  const height = useMemo(() => totalHeight(drawn, columns), [drawn, columns]);
+  const furthest = Math.max(0, height - viewport);
+  // How far down the transcript the top of the viewport sits, or `undefined`
+  // while it follows the end — which is not the same number: pinned to the
+  // bottom, the view keeps up as the transcript grows under it, and a fixed
+  // offset would fall behind by whatever arrived.
+  const [scrolled, setScrolled] = useState<number | undefined>(undefined);
+  const from = Math.min(scrolled ?? furthest, furthest);
+  // What a scroll is measured against, for the handler below: several wheel
+  // reports can arrive in one stdin chunk and all be handled before a render,
+  // so the bounds are read from here rather than from the closure.
+  const bounds = useRef({ furthest, viewport });
+  bounds.current = { furthest, viewport };
+  /** Moves the viewport by `delta` rows, and re-pins it at the end. */
+  const scrollBy = (delta: number) =>
+    setScrolled((current) => {
+      const { furthest: end } = bounds.current;
+      const next = Math.min(Math.max((current ?? end) + delta, 0), end);
+      return next >= end ? undefined : next;
+    });
+
+  // Placement and rendering share the window, or a click would be aimed at a
   // different frame than the one on screen.
-  const shown = useMemo(() => {
-    const fitting = lastFitting(drawn, Math.max(rows - 1 - HEADER_ROWS - promptRows, 8), columns);
-    return fitting.map((item, index) => (index === 0 && item.gap ? { ...item, gap: false } : item));
-  }, [drawn, rows, columns, promptRows]);
-  const placements = useMemo(() => placeItems(shown, columns, HEADER_ROWS), [shown, columns]);
+  const { items: shown, top } = useMemo(
+    () => windowAt(drawn, viewport, columns, from),
+    [drawn, viewport, columns, from],
+  );
+  const placements = useMemo(
+    () => placeItems(shown, columns, HEADER_ROWS + top),
+    [shown, columns, top],
+  );
 
   const tasks = useMemo(
     () => new Set(shown.map((item) => item.taskId).filter((id) => id !== undefined)),
@@ -286,6 +323,9 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     dismissedRef.current = undefined;
     setDismissed(undefined);
     if (trimmed === '') return;
+    // Whatever was being read further up, the answer to what was just sent is
+    // what matters now: sending follows the end again.
+    setScrolled(undefined);
 
     const parsed = parseSlashCommand(trimmed);
     const command = parsed ? findCommand(parsed.name, runtime.commands) : undefined;
@@ -347,11 +387,28 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       frameTop.current = Math.max(0, cursorRow - (rows - 1));
       return;
     }
+    // A question owns the screen while it is up — it is taller than the prompt
+    // it stands in for, so the transcript above it gives up rows and no longer
+    // sits where a click was measured against. Answering it is the only input
+    // that lands.
+    if (ask) {
+      if (char === 'y' || char === 'Y') ask.answer(true);
+      if (char === 'n' || char === 'N' || key.escape) ask.answer(false);
+      return;
+    }
     if (isMouseReport(char)) {
       const mouse = parseMouseEvent(char);
       if (!mouse) return;
-      const top = frameTop.current ?? (stdout?.isTTY ? 1 : 0);
-      const taskId = itemAt(layout.current, mouse.row - top)?.taskId;
+      if (mouse.type === 'wheel') {
+        scrollBy(mouse.direction === 'up' ? -WHEEL_ROWS : WHEEL_ROWS);
+        return;
+      }
+      // A clipped item reaches above the viewport and below it, so a row
+      // outside the transcript is nobody's — the header and the prompt are not
+      // clickable, and the item hanging over their edge must not be either.
+      const row = mouse.row - (frameTop.current ?? (stdout?.isTTY ? 1 : 0));
+      const inside = row >= HEADER_ROWS && row < HEADER_ROWS + bounds.current.viewport;
+      const taskId = inside ? itemAt(layout.current, row)?.taskId : undefined;
       if (mouse.type === 'hover') {
         setHoveredTask(taskId);
       } else if (taskId !== undefined) {
@@ -359,15 +416,25 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       }
       return;
     }
-    if (ask) {
-      if (char === 'y' || char === 'Y') ask.answer(true);
-      if (char === 'n' || char === 'N' || key.escape) ask.answer(false);
-      return;
-    }
     // Folded tasks are still in the transcript; this is the way back to all of
     // them at once, where a click opens the one it landed on.
     if (key.ctrl && char === 'o') {
       setOpenTasks(allOpen ? new Set() : new Set(tasks));
+      return;
+    }
+    // Scrolling the transcript, for the times the wheel is not where the hands
+    // are. This sits above the menu because the menu owns the plain arrows for
+    // its own selection: the shift is what says the transcript is meant, and
+    // the page keys never belong to a list five rows tall.
+    if (key.shift && (key.upArrow || key.downArrow)) {
+      scrollBy(key.upArrow ? -1 : 1);
+      return;
+    }
+    if (key.pageUp || key.pageDown) {
+      // A page keeps one row of what was on screen, so the eye has somewhere
+      // to land.
+      const page = Math.max(1, bounds.current.viewport - 1);
+      scrollBy(key.pageUp ? -page : page);
       return;
     }
     // The menu, worked out here rather than read from the memo above: several
@@ -472,37 +539,54 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   });
 
   // The frame takes the whole window minus the line Ink keeps the cursor on:
-  // the spacer below the transcript is what pushes the prompt to the bottom,
-  // the way Claude Code's chat sits under its welcome mark.
+  // the transcript's pane takes every row the header and the prompt leave, so
+  // the prompt stays at the bottom while what is above it scrolls, the way
+  // Claude Code's chat sits under its welcome mark.
   return (
     <Box flexDirection="column" height={rows - 1}>
       <Header runtime={runtime} />
 
-      <Box flexDirection="column">
-        {shown.map((item, index) => {
-          const hovered = hoveredTask !== undefined && item.taskId === hoveredTask;
-          const opened = item.taskId !== undefined && openTasks.has(item.taskId);
-          const band = hovered ? 'gray' : opened ? BAND : undefined;
-          return (
-            <Entry
-              key={item.key}
-              item={item}
-              band={band}
-              hovered={hovered}
-              bridged={band !== undefined && shown[index - 1]?.taskId === item.taskId}
-            />
-          );
-        })}
-      </Box>
+      {/*
+        The transcript's window: a fixed pane the prompt sits under, with the
+        drawn column nudged up by the rows scrolled past its top. An item at
+        either edge is drawn whole and clipped here, so the view moves a row at
+        a time instead of jumping a message at a time.
 
-      <Box flexGrow={1} />
+        It gives up rows only to a question, which is taller than the prompt it
+        replaces; nothing is clickable while one is up, so the rows it takes
+        cost no aim.
+      */}
+      <Box flexDirection="column" height={viewport} flexShrink={ask ? 1 : 0} overflowY="hidden">
+        <Box flexDirection="column" flexShrink={0} marginTop={top}>
+          {shown.map((item, index) => {
+            const hovered = hoveredTask !== undefined && item.taskId === hoveredTask;
+            const opened = item.taskId !== undefined && openTasks.has(item.taskId);
+            const band = hovered ? 'gray' : opened ? BAND : undefined;
+            return (
+              <Entry
+                key={item.key}
+                item={item}
+                band={band}
+                hovered={hovered}
+                bridged={band !== undefined && shown[index - 1]?.taskId === item.taskId}
+              />
+            );
+          })}
+        </Box>
+      </Box>
 
       {menu.length > 0 ? <Suggestions items={menu} selected={selected} /> : null}
 
       {ask ? (
         <Ask ask={ask} />
       ) : (
-        <Prompt draft={draft} startedAt={startedAt} queued={queued.length} allOpen={allOpen} />
+        <Prompt
+          draft={draft}
+          startedAt={startedAt}
+          queued={queued.length}
+          allOpen={allOpen}
+          following={scrolled === undefined}
+        />
       )}
     </Box>
   );
@@ -557,7 +641,7 @@ function Header({ runtime }: { runtime: Runtime }): React.JSX.Element {
       ? `${orchestration.acp.agent} (acp)`
       : orchestration.local.model;
   return (
-    <Box margin={1} gap={2}>
+    <Box margin={1} gap={2} flexShrink={0}>
       <Box flexDirection="column" flexShrink={0}>
         {mascot.map((line, index) => (
           <Text key={index} color={BRAND}>
@@ -700,24 +784,29 @@ function Row({
  * Kept to exactly PROMPT_ROWS rows: the status line above the top rule holds
  * its row whether or not a turn is running, so the transcript above never
  * reflows the moment one starts.
+ *
+ * The hint line is also where the transcript says it has stopped following the
+ * end — scrolled up, what arrives next lands off screen, and only this says so.
  */
 function Prompt({
   draft,
   startedAt,
   queued,
   allOpen,
+  following,
 }: {
   draft: Draft;
   startedAt: number | undefined;
   queued: number;
   allOpen: boolean;
+  following: boolean;
 }): React.JSX.Element {
   // Where debug lines are going, when they are going anywhere. It cannot
   // change while the UI is up, so reading it at render is enough.
   const debugTo = debugDestination();
   const busy = startedAt !== undefined;
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" flexShrink={0}>
       <Box height={1} paddingX={2}>
         {busy ? <Working startedAt={startedAt} queued={queued} /> : null}
       </Box>
@@ -741,9 +830,11 @@ function Prompt({
       </Box>
       <Box paddingLeft={2} paddingRight={1} justifyContent="space-between" gap={2}>
         <Text color="gray" dimColor wrap="truncate">
-          {busy
-            ? `esc to interrupt · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all`
-            : `/ for commands · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all · /exit`}
+          {!following
+            ? 'scrolled up · page down or the wheel to follow again'
+            : busy
+              ? `esc to interrupt · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all`
+              : `/ for commands · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all · /exit`}
         </Text>
         {debugTo ? (
           <Text color="yellow" wrap="truncate-start">
@@ -773,7 +864,9 @@ function Suggestions({
 }): React.JSX.Element {
   const width = Math.max(...items.map((item) => item.name.length)) + 1;
   return (
-    <Box flexDirection="column" marginTop={1}>
+    // The transcript's pane already gave up these rows, so the menu keeps every
+    // one of them rather than being squeezed back into the prompt.
+    <Box flexDirection="column" flexShrink={0} marginTop={1}>
       {items.map((item, index) => {
         const chosen = index === Math.min(selected, items.length - 1);
         return (
@@ -851,7 +944,14 @@ function elapsed(ms: number): string {
 
 function Ask({ ask }: { ask: PendingAsk }): React.JSX.Element {
   return (
-    <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor="yellow" paddingX={1}>
+    <Box
+      flexDirection="column"
+      flexShrink={0}
+      marginTop={1}
+      borderStyle="round"
+      borderColor="yellow"
+      paddingX={1}
+    >
       <Text>
         <Text color={agentColour(ask.agentId)} bold>
           {ask.agentId}
