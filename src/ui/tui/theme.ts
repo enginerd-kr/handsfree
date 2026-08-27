@@ -1,7 +1,7 @@
 import type { Marker, Tone } from '../view-model.js';
 
-/** Claude's orange. handsfree keeps one accent and spends it on who is speaking. */
-export const BRAND = '#d77757';
+/** A bright gray. handsfree keeps one accent and spends it on who is speaking. */
+export const BRAND = '#d9d9d9';
 
 /**
  * Each agent in the colour of whoever makes it, so a delegated block says
@@ -102,8 +102,8 @@ export const RESULT_INDENT = ' ';
 
 /**
  * The startup mark, drawn the way Claude Code draws its condensed logo: three
- * rows of quadrant blocks in the brand colour, with the terminal's own
- * background showing through as the face.
+ * rows of quadrant blocks in the terminal's own ink — the same light the
+ * header's name is set in — with the background showing through as the face.
  */
 export const MASCOT = [' ▐▛███▜▌ ', '▝▜█████▛▘', '  ▘▘ ▝▝  '] as const;
 
@@ -115,6 +115,61 @@ export const MASCOT = [' ▐▛███▜▌ ', '▝▜█████▛▘',
  * measured against.
  */
 export const MASCOT_BLINK = [' ▐█████▌ ', MASCOT[1], MASCOT[2]] as const;
+
+/**
+ * What the mark says when the mood takes it: a greeting, a hurry-up, an
+ * offer. Kept short — a saying has to sit beside the mark without leaning
+ * into the header's text.
+ */
+export const SAYINGS = ['Hi', '허리업', '말만해'] as const;
+
+/** Display columns of a piece of text — hangul and its CJK neighbours sit two columns to Latin's one. */
+const WIDE = /[ᄀ-ᅟ⺀-鿿가-힣豈-﫿＀-｠￠-￦]/;
+export function columns(text: string): number {
+  let count = 0;
+  for (const char of text) count += WIDE.test(char) ? 2 : 1;
+  return count;
+}
+
+/**
+ * The stage the mark wanders on: its own cells with room on each side for
+ * the megaphone's column and the widest thing it says — a saying goes out
+ * whichever side of the mark it fits, and the mark never has to shuffle to
+ * make room. The header gives the stage this width outright, so however far
+ * the mark roams and whatever it says, the margin before it and the column
+ * of text after it never move a cell.
+ */
+export const MASCOT_STAGE =
+  [...MASCOT[0]].length + 2 * (1 + Math.max(...SAYINGS.map((saying) => columns(saying))));
+
+/**
+ * The mark standing `x` columns from the left edge of its stage — negative
+ * is offstage, clipped at the edge. A saying sits on the middle row on
+ * whichever side it is thrown, behind a megaphone's flare: the column
+ * between mark and word carries a slash above and below, opening toward the
+ * word. Rows come back ragged; the stage's fixed width is what keeps the
+ * neighbours still.
+ */
+export function stage(
+  lines: readonly string[],
+  x: number,
+  say?: string,
+  side: 'left' | 'right' = 'right',
+): string[] {
+  const rows = lines.map((line) =>
+    x < 0 ? [...line].slice(Math.min(-x, [...line].length)).join('') : ' '.repeat(x) + line,
+  );
+  if (!say) return rows;
+  if (side === 'right') {
+    return [`${rows[0] ?? ''}/`, `${rows[1] ?? ''} ${say}`, `${rows[2] ?? ''}\\`];
+  }
+  const edge = ' '.repeat(Math.max(0, x - 1));
+  return [
+    `${edge}\\${lines[0] ?? ''}`,
+    `${' '.repeat(Math.max(0, x - 1 - columns(say)))}${say} ${lines[1] ?? ''}`,
+    `${edge}/${lines[2] ?? ''}`,
+  ];
+}
 
 /**
  * The prompt's own glyph, the way Claude Code opens its input line. Windows
@@ -131,11 +186,11 @@ const SPINNER_FRAMES = ['·', '✢', '✳', '✶', '✻', '✽'];
 export const SPINNER = [...SPINNER_FRAMES, ...[...SPINNER_FRAMES].reverse()];
 
 /**
- * The shimmer's own ink: the brand orange lifted a few steps. The band that
+ * The shimmer's own ink: the brand gray lifted to white. The band that
  * crosses the working line has to read as light passing over the word rather
- * than as a second colour, so it is the same orange and not a new one.
+ * than as a second colour, so it is the same gray and not a new one.
  */
-export const SHIMMER = '#f59575';
+export const SHIMMER = '#ffffff';
 
 /**
  * How long the band sits on one column, and how many columns of nothing it

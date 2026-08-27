@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { AGENT_COLOUR, agentColour, BRAND, MASCOT, MASCOT_BLINK, shimmer } from './theme.js';
+import {
+  AGENT_COLOUR,
+  agentColour,
+  BRAND,
+  columns,
+  MASCOT,
+  MASCOT_BLINK,
+  MASCOT_STAGE,
+  SAYINGS,
+  shimmer,
+  stage,
+} from './theme.js';
 
 describe('the welcome mark', () => {
   // The header is a fixed number of rows of a fixed width — that is what a
@@ -9,6 +20,59 @@ describe('the welcome mark', () => {
     expect(MASCOT_BLINK.map((line) => [...line].length)).toEqual(
       MASCOT.map((line) => [...line].length),
     );
+  });
+});
+
+describe('the mark on its stage', () => {
+  const span = [...MASCOT[0]].length;
+
+  it('sits in place at home', () => {
+    expect(stage(MASCOT, 0)).toEqual([...MASCOT]);
+  });
+
+  // What crosses the edge is gone, not wrapped: the columns that remain are
+  // the tail of the row, in order.
+  it('clips at the left edge and nothing else', () => {
+    const walked = stage(MASCOT, -3);
+    for (const [index, line] of walked.entries()) {
+      expect(line).toBe([...MASCOT[index]!].slice(3).join(''));
+    }
+  });
+
+  it('is clean out of sight a full span off', () => {
+    for (const line of stage(MASCOT, -span)) expect(line.trim()).toBe('');
+  });
+
+  it('steps right without losing a cell', () => {
+    const walked = stage(MASCOT, 4);
+    for (const [index, line] of walked.entries()) expect(line).toBe('    ' + MASCOT[index]);
+  });
+
+  // The word rides the middle row; the megaphone is the column between mark
+  // and word, a slash above and below opening toward the word.
+  it('throws a saying to the right behind a megaphone flare', () => {
+    const spoken = stage(MASCOT, 0, '말만해', 'right');
+    expect(spoken[0]).toBe(`${MASCOT[0]}/`);
+    expect(spoken[1]).toBe(`${MASCOT[1]} 말만해`);
+    expect(spoken[2]).toBe(`${MASCOT[2]}\\`);
+  });
+
+  it('throws a saying to the left behind a mirrored flare', () => {
+    const spoken = stage(MASCOT, 7, '허리업', 'left');
+    expect(spoken[0]).toBe(`${' '.repeat(6)}\\${MASCOT[0]}`);
+    expect(spoken[1]).toBe(`허리업 ${MASCOT[1]}`);
+    expect(spoken[2]).toBe(`${' '.repeat(6)}/${MASCOT[2]}`);
+  });
+
+  // The stage is sized off the sayings themselves — hangul at two columns a
+  // glyph — with room for the widest one on each side of the mark, so a word
+  // goes out wherever the mark stands without it shuffling to make space.
+  it('gives every saying room on both sides of the mark', () => {
+    expect(columns('Hi')).toBe(2);
+    expect(columns('허리업')).toBe(6);
+    for (const saying of SAYINGS) {
+      expect(span + 2 * (1 + columns(saying))).toBeLessThanOrEqual(MASCOT_STAGE);
+    }
   });
 });
 

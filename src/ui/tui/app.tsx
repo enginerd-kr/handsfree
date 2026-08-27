@@ -31,11 +31,15 @@ import {
   BAND,
   BRAND,
   COLOUR,
+  columns,
   GLYPH,
   HEADER_INK,
   MASCOT,
   MASCOT_BLINK,
+  MASCOT_STAGE,
   PROMPT_BAND,
+  SAYINGS,
+  stage,
   PROMPT_CHAR,
   RESULT_GUTTER,
   RESULT_INDENT,
@@ -63,6 +67,27 @@ const BLINK_WAIT_MS = [4000, 6500] as const;
 function between([low, high]: readonly [number, number]): number {
   return low + Math.random() * (high - low);
 }
+
+/**
+ * The wander: the gait per column, the range of a pause wherever the walk
+ * ends, the range of the long sit at home between outings, and how long a
+ * saying hangs in the air. The gait itself is steady; it is what the mark
+ * does next that stays unpredictable, for the same reason the blink's waits
+ * are ranges.
+ */
+const WANDER_STEP_MS = 90;
+const WANDER_PAUSE_MS = [1200, 3500] as const;
+const WANDER_HOME_MS = [15000, 35000] as const;
+const SAY_MS = [1800, 3200] as const;
+
+/** How many columns a clean exit takes: every cell of the mark, edge to edge. */
+const WANDER_SPAN = [...MASCOT[0]].length;
+
+/** The rightmost column the mark may drift to and still fit on its stage. */
+const WANDER_ROAM = MASCOT_STAGE - WANDER_SPAN;
+
+/** Where the mark belongs when nothing is happening: the middle of its stage. */
+const WANDER_HOME = Math.round(WANDER_ROAM / 2);
 
 /**
  * Rows above the transcript: the welcome mark's three rows and the blank row
@@ -801,6 +826,74 @@ function useBlink(): boolean {
   return shut;
 }
 
+/** Where the mark stands on its stage and what, if anything, it is saying. */
+type Pose = { x: number; say?: string; side?: 'left' | 'right' };
+
+/**
+ * The mark's wandering, one timer at a time, chained: a long sit at the
+ * middle of its stage, then an outing — a clean exit off the left edge, a
+ * peek back, a hop to anywhere on the stage, or a word thrown from right
+ * where it stands — and as long as the mood holds, another. A saying goes
+ * out the side the mark has space on, so it lands left of the mark as
+ * readily as right. The stage itself never moves — `stage` clips the walk
+ * at its left edge — so the margin holds however far the mark goes.
+ */
+function useWander(): Pose {
+  const [pose, setPose] = useState<Pose>({ x: WANDER_HOME });
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    // The one column the mark actually stands on; every chained step moves
+    // it one cell and shows that cell, so a walk can start from anywhere.
+    let at = WANDER_HOME;
+    const walk = (to: number, then: () => void) => {
+      if (at === to) return then();
+      at += Math.sign(to - at);
+      setPose({ x: at });
+      timer = setTimeout(() => walk(to, then), WANDER_STEP_MS);
+    };
+    const rest = () => {
+      setPose({ x: at });
+      timer = setTimeout(outing, between(WANDER_HOME_MS));
+    };
+    // A word goes out from wherever the mark already stands — the stage
+    // keeps room for the widest saying on each side of any visible column,
+    // so the mark never shuffles to make space. Which side only matters
+    // when both fit; offstage it first comes home, since a voice from an
+    // empty stage reads as a glitch rather than a joke.
+    const speak = (then: () => void) => {
+      if (at < 0) return walk(WANDER_HOME, () => speak(then));
+      const saying = SAYINGS[Math.floor(Math.random() * SAYINGS.length)] ?? '';
+      const width = columns(saying);
+      const fitsRight = at + WANDER_SPAN + 1 + width <= MASCOT_STAGE;
+      const fitsLeft = at - 1 - width >= 0;
+      const side =
+        fitsRight && fitsLeft ? (Math.random() < 0.5 ? 'right' : 'left') : fitsRight ? 'right' : 'left';
+      setPose({ x: at, say: saying, side });
+      timer = setTimeout(then, between(SAY_MS));
+    };
+    const onward = () => {
+      timer = setTimeout(() => {
+        if (Math.random() < 0.4) return outing();
+        walk(WANDER_HOME, rest);
+      }, between(WANDER_PAUSE_MS));
+    };
+    const outing = () => {
+      const roll = Math.random();
+      if (roll < 0.35) return speak(onward);
+      const target =
+        roll < 0.55
+          ? -WANDER_SPAN
+          : roll < 0.7
+            ? 2 - WANDER_SPAN
+            : Math.floor(Math.random() * (WANDER_ROAM + 1));
+      walk(target, onward);
+    };
+    rest();
+    return () => clearTimeout(timer);
+  }, []);
+  return pose;
+}
+
 /**
  * The welcome mark, in the shape Claude Code opens with: the condensed logo on
  * the left and three facts beside it — what this is, what is answering, and
@@ -812,7 +905,8 @@ function useBlink(): boolean {
  * of the path is the part worth keeping.
  */
 function Header({ runtime }: { runtime: Runtime }): React.JSX.Element {
-  const mascot = useBlink() ? MASCOT_BLINK : MASCOT;
+  const { x, say, side } = useWander();
+  const mascot = stage(useBlink() ? MASCOT_BLINK : MASCOT, x, say, side);
   const agents = Object.entries(runtime.config.agents)
     .filter(([, profile]) => profile.enabled)
     .map(([id]) => id);
@@ -823,9 +917,9 @@ function Header({ runtime }: { runtime: Runtime }): React.JSX.Element {
       : orchestration.local.model;
   return (
     <Box margin={1} gap={2} flexShrink={0}>
-      <Box flexDirection="column" flexShrink={0}>
+      <Box flexDirection="column" flexShrink={0} width={MASCOT_STAGE}>
         {mascot.map((line, index) => (
-          <Text key={index} color={BRAND}>
+          <Text key={index} wrap="truncate">
             {line}
           </Text>
         ))}
@@ -1165,9 +1259,11 @@ function Suggestions({
         const chosen = index === Math.min(selected, items.length - 1);
         // An agent's name keeps its own colour whether or not it is chosen —
         // the colour is what the menu is teaching — so being chosen shows as
-        // weight instead.
+        // weight instead. A command row is set in the header name's own light
+        // when chosen — full ink and bold — and steps down to the path's gray
+        // otherwise, so the selection reads at a glance.
         const colour =
-          item.kind === 'agent' ? agentColour(item.id) : chosen ? BRAND : undefined;
+          item.kind === 'agent' ? agentColour(item.id) : chosen ? undefined : HEADER_INK;
         return (
           <Box key={menuLabel(item)} paddingLeft={2}>
             <Text wrap="truncate">
