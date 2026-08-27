@@ -115,12 +115,11 @@ describe('markdown', () => {
       expect(out).not.toContain('```');
     });
 
-    it('caps a block that would fill the window', () => {
+    it('keeps a long block whole', () => {
       const body = Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n');
       const out = plain(md('```\n' + body + '\n```'));
-      expect(out).toContain('line 19');
-      expect(out).not.toContain('line 20');
-      expect(out).toContain('… +10 lines');
+      expect(out).toContain('line 29');
+      expect(out).not.toContain('lines');
     });
   });
 

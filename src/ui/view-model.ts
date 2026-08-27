@@ -57,7 +57,6 @@ export interface ViewItem {
 }
 
 /** How much of a tool call's own output is worth putting on screen. */
-const MAX_DETAIL_LINES = 8;
 const MAX_LINE_CHARS = 200;
 
 interface ToolState {
@@ -548,7 +547,8 @@ function detailLines(content: readonly ToolCallContent[], root: string): ViewLin
         break;
     }
   }
-  return cap(lines);
+  // Every line an agent hands back is shown; the transcript scrolls.
+  return trimBlank(lines);
 }
 
 function blockLines(block: ContentBlock): ViewLine[] {
@@ -600,16 +600,6 @@ function diffLines(diff: Diff, root: string): ViewLine[] {
     { text: summary, tone: 'muted' },
     ...removed.map((text) => ({ text: clip(`- ${text}`, MAX_LINE_CHARS), tone: 'bad' as Tone })),
     ...added.map((text) => ({ text: clip(`+ ${text}`, MAX_LINE_CHARS), tone: 'good' as Tone })),
-  ];
-}
-
-function cap(lines: ViewLine[]): ViewLine[] {
-  const trimmed = trimBlank(lines);
-  if (trimmed.length <= MAX_DETAIL_LINES) return trimmed;
-  const hidden = trimmed.length - MAX_DETAIL_LINES;
-  return [
-    ...trimmed.slice(0, MAX_DETAIL_LINES),
-    { text: `… +${hidden} ${hidden === 1 ? 'line' : 'lines'}`, tone: 'muted' },
   ];
 }
 

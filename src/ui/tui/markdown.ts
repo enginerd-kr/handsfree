@@ -26,14 +26,6 @@ import { COLOUR } from './theme.js';
  */
 const EOL = '\n';
 
-/**
- * How much of one code block is worth putting on screen. Claude Code has no
- * such cap because it has real scrollback; this transcript is pinned to the
- * viewport by `lastFitting`, so one long block would push every other message
- * off the screen. Raise it or drop it — nothing else depends on the number.
- */
-const MAX_CODE_LINES = 20;
-
 /** Blockquote bar: left one-quarter block. */
 const QUOTE_BAR = '▎';
 
@@ -212,9 +204,9 @@ function formatToken(
  * what separate it from the prose, the way Claude Code leaves it.
  */
 function codeBlock(token: Tokens.Code, context: Context): string {
-  const all = token.text.split(EOL);
-  const shown = all.slice(0, MAX_CODE_LINES);
-  let out = shown.join(EOL);
+  // Nothing is held back: the transcript scrolls by rows, so a long block costs
+  // a scroll rather than the rest of the conversation.
+  let out = token.text;
 
   if (context.highlight) {
     // An info string can carry more than a name (`ts title="x"`); the language
@@ -228,10 +220,6 @@ function codeBlock(token: Tokens.Code, context: Context): string {
     }
   }
 
-  if (all.length > shown.length) {
-    const hidden = all.length - shown.length;
-    out += `${EOL}${chalk.dim(`… +${hidden} ${hidden === 1 ? 'line' : 'lines'}`)}`;
-  }
   return out + EOL;
 }
 
