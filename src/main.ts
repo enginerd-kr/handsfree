@@ -122,7 +122,7 @@ async function main(): Promise<number> {
   if (args.command === 'serve') {
     // stdout belongs to the protocol from here on: nothing else may write to it.
     const { serve } = await import('./commands/serve.js');
-    return serve(config);
+    return serve(config, source);
   }
 
   const write = (line: string) => process.stdout.write(`${line}\n`);
@@ -138,12 +138,24 @@ async function main(): Promise<number> {
       process.stderr.write('handsfree run needs a prompt.\n');
       return 2;
     }
-    return run(config, args.prompt, { json: args.json, runId: args.runId }, write);
+    return run(
+      config,
+      args.prompt,
+      {
+        json: args.json,
+        ...(args.runId === undefined ? {} : { runId: args.runId }),
+        ...(source === undefined ? {} : { configSource: source }),
+      },
+      write,
+    );
   }
 
   // The terminal UI pulls in ink and react, so it is loaded only when used.
   const { tui } = await import('./commands/tui.js');
-  return tui(config, args.runId);
+  return tui(config, {
+    ...(args.runId === undefined ? {} : { runId: args.runId }),
+    ...(source === undefined ? {} : { configSource: source }),
+  });
 }
 
 main()

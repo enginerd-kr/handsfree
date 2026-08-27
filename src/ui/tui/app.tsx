@@ -4,6 +4,13 @@ import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import type { Runtime } from '../../runtime.js';
 import { debugDestination } from '../../debug.js';
 import { buildView, type Tone, type ViewItem } from '../view-model.js';
+import {
+  findCommand,
+  parseSlashCommand,
+  suggest,
+  takesArguments,
+  type Command,
+} from '../../slash/command.js';
 import { itemAt, lastFitting, placeItems } from './layout.js';
 import { CURSOR_QUERY, isMouseReport, parseCursorReport, parseMouseEvent, trackMouse } from './mouse.js';
 import {
@@ -50,6 +57,9 @@ function between([low, high]: readonly [number, number]): number {
  */
 const HEADER_ROWS = 5;
 
+/** How many suggestions the menu offers before it starts crowding the transcript. */
+const MENU_ROWS = 6;
+
 /**
  * Rows below it: the status line, the prompt's two rules with its input between
  * them, and the hint. The status line is always drawn — blank when nothing is
@@ -86,9 +96,24 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   // the value from before any of them; edits go through this ref and state
   // only mirrors it for rendering.
   const draftRef = useRef<Draft>(draft);
+  // Which suggestion is highlighted, and what text the menu was waved away
+  // for. Both keep a ref for the same reason the draft does: a fused stdin
+  // chunk is handled to the end before React re-renders, so a handler reading
+  // state would be reading the frame before the one it is in.
+  const [selected, setSelected] = useState(0);
+  const selectedRef = useRef(0);
+  const [dismissed, setDismissed] = useState<string | undefined>(undefined);
+  const dismissedRef = useRef<string | undefined>(undefined);
   const applyDraft = (update: (d: Draft) => Draft) => {
-    draftRef.current = update(draftRef.current);
-    setDraft(draftRef.current);
+    const next = update(draftRef.current);
+    // Every edit aims the menu afresh. A dismissal is keyed by the text it was
+    // dismissed for, so it lapses on its own the moment the text moves on.
+    if (next.value !== draftRef.current.value && selectedRef.current !== 0) {
+      selectedRef.current = 0;
+      setSelected(0);
+    }
+    draftRef.current = next;
+    setDraft(next);
   };
   const [startedAt, setStartedAt] = useState<number | undefined>();
   // Typed while a turn was running. The prompt stays open the whole time, so
@@ -153,14 +178,28 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
 
   const rows = stdout?.rows ?? 30;
   const columns = stdout?.columns ?? 80;
+  // What the menu may claim before it starts eating the transcript's floor. On
+  // a short terminal that is nothing at all: the frame is a fixed height, and
+  // one that overflows scrolls the whole UI — losing the menu is much the
+  // cheaper of the two.
+  const menuBudget = Math.max(0, Math.min(MENU_ROWS, rows - 1 - HEADER_ROWS - PROMPT_ROWS - 8));
+  const menu = useMemo(
+    () =>
+      ask || dismissed === draft.value
+        ? []
+        : suggest(draft.value, runtime.commands).slice(0, menuBudget),
+    [ask, dismissed, draft.value, runtime.commands, menuBudget],
+  );
+  // The menu's own rows, plus the blank line that keeps it off the transcript.
+  const promptRows = PROMPT_ROWS + (menu.length > 0 ? menu.length + 1 : 0);
   // The first visible row sits against the header, so it keeps its own space
   // rather than inheriting the gap it would have had mid-scroll. Placement and
   // rendering share the result, or a click would be measured against a
   // different frame than the one on screen.
   const shown = useMemo(() => {
-    const fitting = lastFitting(items, Math.max(rows - 1 - HEADER_ROWS - PROMPT_ROWS, 8), columns);
+    const fitting = lastFitting(items, Math.max(rows - 1 - HEADER_ROWS - promptRows, 8), columns);
     return fitting.map((item, index) => (index === 0 && item.gap ? { ...item, gap: false } : item));
-  }, [items, rows, columns]);
+  }, [items, rows, columns, promptRows]);
   const placements = useMemo(() => placeItems(shown, columns, HEADER_ROWS), [shown, columns]);
 
   const tasks = useMemo(
@@ -197,10 +236,6 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   layout.current = placements;
 
   const start = (text: string) => {
-    if (text === '/reset') {
-      runtime.conversation.reset();
-      return;
-    }
     setStartedAt(Date.now());
     void runtime.conversation.send(text).finally(() => setStartedAt(undefined));
   };
@@ -208,16 +243,34 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   const submit = (text: string) => {
     const trimmed = text.trim();
     applyDraft(() => ({ value: '', cursor: 0 }));
-    if (trimmed === '/quit' || trimmed === '/exit') {
-      // Close, not cancel: cancel would still summarise the turn, and that
-      // request would keep the process alive after the UI is gone.
-      void runtime.conversation.close();
-      exit();
+    dismissedRef.current = undefined;
+    setDismissed(undefined);
+    if (trimmed === '') return;
+
+    const parsed = parseSlashCommand(trimmed);
+    const command = parsed ? findCommand(parsed.name, runtime.commands) : undefined;
+
+    if (command?.kind === 'local' && command.interactive) {
+      // The commands only this seat can carry out. Leaving is close, not
+      // cancel: a cancel would still summarise the turn, and that request
+      // would keep the process alive after the UI is gone.
+      const effect = command.run(parsed?.args ?? '', runtime.commandHost(`/${command.name}`));
+      if (effect.do === 'quit') {
+        void runtime.conversation.close();
+        exit();
+      }
       return;
     }
-    if (trimmed === '') return;
-    // Leaving is the only thing that cannot wait; everything else the user
-    // sends mid-turn takes its place in line behind the turn already running.
+
+    // A command handsfree answers itself is over the moment it runs, so it
+    // never queues behind a turn and never wears the spinner.
+    if (command?.kind === 'local') {
+      void runtime.conversation.send(trimmed);
+      return;
+    }
+
+    // Everything else the user sends mid-turn takes its place in line behind
+    // the turn already running.
     if (busy) {
       setQueued((line) => [...line, trimmed]);
       return;
@@ -276,6 +329,41 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     if (key.ctrl && char === 'o') {
       setOpenTasks(allOpen ? new Set() : new Set(tasks));
       return;
+    }
+    // The menu, worked out here rather than read from the memo above: several
+    // keys can arrive in one chunk, and the memo still describes the draft as
+    // it was before any of them were handled.
+    const offered =
+      dismissedRef.current === draftRef.current.value
+        ? []
+        : suggest(draftRef.current.value, runtime.commands).slice(0, menuBudget);
+    if (offered.length > 0) {
+      const move = (by: number): void => {
+        const next = (selectedRef.current + by + offered.length) % offered.length;
+        selectedRef.current = next;
+        setSelected(next);
+      };
+      if (key.downArrow || (key.ctrl && char === 'n')) return move(1);
+      if (key.upArrow || (key.ctrl && char === 'p')) return move(-1);
+      if (key.escape) {
+        // One escape closes the menu, a second stops the turn. Aiming at a
+        // command is no reason to lose the way to interrupt what is running.
+        dismissedRef.current = draftRef.current.value;
+        setDismissed(draftRef.current.value);
+        return;
+      }
+      if (key.tab || key.return) {
+        const chosen = offered[Math.min(selectedRef.current, offered.length - 1)]!;
+        // Enter sends a command that wants nothing further; one with arguments
+        // still to write is filled in and left for the user to finish.
+        if (key.return && !takesArguments(chosen)) {
+          submit(`/${chosen.name}`);
+          return;
+        }
+        const filled = `/${chosen.name} `;
+        applyDraft(() => ({ value: filled, cursor: [...filled].length }));
+        return;
+      }
     }
     if (key.escape) {
       // A cancelled turn ends in silence, and so does everything queued behind
@@ -368,6 +456,8 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       </Box>
 
       <Box flexGrow={1} />
+
+      {menu.length > 0 ? <Suggestions items={menu} selected={selected} /> : null}
 
       {ask ? (
         <Ask ask={ask} />
@@ -613,7 +703,7 @@ function Prompt({
         <Text color="gray" dimColor wrap="truncate">
           {busy
             ? `esc to interrupt · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all`
-            : `click a task · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all · /quit`}
+            : `/ for commands · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all · /exit`}
         </Text>
         {debugTo ? (
           <Text color="yellow" wrap="truncate-start">
@@ -621,6 +711,45 @@ function Prompt({
           </Text>
         ) : null}
       </Box>
+    </Box>
+  );
+}
+
+/**
+ * The commands a half-written line could still become, drawn above the prompt
+ * rather than in place of it — unlike `Ask`, which takes the keyboard with it.
+ * The prompt stays live the whole time: this is a hint, not a mode.
+ *
+ * Every suggestion is exactly one screen row. A description that wrapped would
+ * grow the frame by a line, and the frame is a fixed height — ink would answer
+ * by scrolling the whole UI.
+ */
+function Suggestions({
+  items,
+  selected,
+}: {
+  items: readonly Command[];
+  selected: number;
+}): React.JSX.Element {
+  const width = Math.max(...items.map((item) => item.name.length)) + 1;
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      {items.map((item, index) => {
+        const chosen = index === Math.min(selected, items.length - 1);
+        return (
+          <Box key={item.name} paddingLeft={2}>
+            <Text wrap="truncate">
+              <Text color={chosen ? BRAND : undefined} bold={chosen}>
+                {`/${item.name}`.padEnd(width)}
+              </Text>
+              <Text color="gray" dimColor>
+                {item.argumentHint ? `${item.argumentHint}  ` : ''}
+                {item.description}
+              </Text>
+            </Text>
+          </Box>
+        );
+      })}
     </Box>
   );
 }

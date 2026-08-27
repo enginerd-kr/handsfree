@@ -213,10 +213,15 @@ export function buildView(
 
       case 'note': {
         closeBlocks();
-        if (record.level === 'info' && fold({ text: record.text, tone: 'muted' })) break;
+        const detail = record.lines ?? [];
+        // A note that brought its own lines is not a routine remark about a
+        // tool call, and folding it into one would drop the lines entirely.
+        if (record.level === 'info' && detail.length === 0 && fold({ text: record.text, tone: 'muted' })) {
+          break;
+        }
         closeTool();
         if (record.level !== 'info') loud.add(`n${record.seq}`);
-        add(
+        const note = add(
           row(
             `n${record.seq}`,
             'system',
@@ -225,9 +230,10 @@ export function buildView(
             'muted',
             record.text,
             record.level === 'error' ? 'bad' : record.level === 'warn' ? 'warn' : 'muted',
-            false,
+            detail.length > 0,
           ),
         );
+        note.lines = detail.map((text) => ({ text, tone: 'muted' as const }));
         break;
       }
 
@@ -617,7 +623,7 @@ export function describeRecord(record: TranscriptRecord, workspaceDir: string): 
     case 'delegation':
       return `→ ${record.agentId}: ${record.task}`;
     case 'note':
-      return `  ${record.text}`;
+      return [record.text, ...(record.lines ?? [])].map((line) => `  ${line}`).join('\n');
     case 'decision':
       return `  ${record.entry.verdict === 'allow' ? '+' : '-'} ${record.entry.summary}`;
     case 'stop':

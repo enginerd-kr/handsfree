@@ -282,6 +282,39 @@ describe('buildView', () => {
     ]);
   });
 
+  it('puts a note\u2019s own lines under it', () => {
+    const t = transcript();
+    t.append({ type: 'note', level: 'info', text: 'commands', lines: ['/help  what you can type'] });
+
+    const view = buildView(t.all(), WORKSPACE);
+    expect(view).toHaveLength(1);
+    expect(view[0]).toMatchObject({ role: 'system', text: 'commands', gap: true });
+    expect(view[0]?.lines.map((line) => line.text)).toEqual(['/help  what you can type']);
+  });
+
+  // Folding it into the call would keep the headline and drop everything the
+  // note was actually written to say.
+  it('never folds a note that brought its own lines', () => {
+    const t = transcript();
+    t.append({
+      type: 'session_update',
+      agentId: 'claude',
+      sessionId: 's',
+      update: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 't1',
+        title: 'Write notes.txt',
+        kind: 'edit',
+        status: 'completed',
+      },
+    });
+    t.append({ type: 'note', level: 'info', text: 'commands', lines: ['/help'] });
+
+    const view = buildView(t.all(), WORKSPACE);
+    expect(view).toHaveLength(2);
+    expect(view[1]?.lines.map((line) => line.text)).toEqual(['/help']);
+  });
+
   it('keeps a refusal on its own line, never folded away', () => {
     const t = transcript();
     t.append({

@@ -14,6 +14,8 @@ export interface HarnessOptions {
     limits: Partial<Config['limits']>;
   }>;
   llm?: ChatClient;
+  /** Where command files are looked for. Defaults to the process's own cwd. */
+  cwd?: string;
 }
 
 export interface Harness {
@@ -38,6 +40,7 @@ export function harness(options: HarnessOptions): Harness {
   const runtime = createRuntime({
     config,
     llm: options.llm,
+    ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
     createTarget: (agentId) => {
       const agent = options.agents[agentId];
       if (!agent) throw new Error(`no fake agent registered for ${agentId}`);

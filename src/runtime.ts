@@ -8,9 +8,19 @@ import { Conversation } from './orchestrator/conversation.js';
 import { Transcript } from './workspace/transcript.js';
 import { Workspace } from './workspace/workspace.js';
 import type { Jail } from './policy/jail.js';
+import { debug } from './debug.js';
+import { loadCommands } from './slash/registry.js';
+import type { Command, CommandHost } from './slash/command.js';
 
 export interface RuntimeOptions {
   config: Config;
+  /** The file the settings were read from, for `/config` to name. */
+  configSource?: string;
+  /**
+   * Where project files are looked up — the config's directory and the command
+   * directory beside it. The workspace is never this: it is the agents' jail.
+   */
+  cwd?: string;
   /** Reuse an existing run directory instead of starting a new one. */
   runId?: string;
   /** Work in a directory that already exists, such as an editor's project root. */
@@ -30,6 +40,10 @@ export interface Runtime {
   policy: PolicyEngine;
   pool: AgentPool;
   conversation: Conversation;
+  /** Every slash command this run knows, built once from disk. */
+  commands: readonly Command[];
+  /** A context for a command to act in, named after the command doing the asking. */
+  commandHost(agentId: string): CommandHost;
   setEscalator(escalator: Escalator | undefined): void;
   close(): Promise<void>;
 }
@@ -88,7 +102,36 @@ export function createRuntime(options: RuntimeOptions): Runtime {
   } else {
     llm = new LocalModel(config.orchestration.local);
   }
-  const conversation = new Conversation({ config, pool, transcript, workspace, llm });
+  const registry = loadCommands(options.cwd);
+  debug(
+    'commands',
+    `${registry.commands.length} commands: ${registry.commands.map((command) => `/${command.name}`).join(' ')}`,
+  );
+  // Said once, where a person will see it: a command file that could not be
+  // read is a command that will not be there when they reach for it.
+  for (const problem of registry.problems) {
+    transcript.append({ type: 'note', level: 'warn', text: problem });
+  }
+  const commandHost = (agentId: string): CommandHost => ({
+    agentId,
+    config,
+    configSource: options.configSource,
+    workspace,
+    jail,
+    policy,
+    transcript,
+    commands: registry.commands,
+  });
+
+  const conversation = new Conversation({
+    config,
+    pool,
+    transcript,
+    workspace,
+    llm,
+    commands: registry.commands,
+    commandHost,
+  });
 
   return {
     config,
@@ -98,6 +141,8 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     policy,
     pool,
     conversation,
+    commands: registry.commands,
+    commandHost,
     setEscalator: (escalator) => policy.setEscalator(escalator),
     async close() {
       // The conversation goes first, and the agents are killed while it winds

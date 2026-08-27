@@ -13,7 +13,12 @@ export type TranscriptBody =
   | { type: 'assistant'; text: string; stream?: number }
   /** A piece of handsfree's own reply, shown while the model is still writing. */
   | { type: 'assistant_delta'; stream: number; text: string }
-  | { type: 'note'; level: 'info' | 'warn' | 'error'; text: string }
+  /**
+   * A remark from the machinery. `lines` is for the ones that have more to say
+   * than a row — a command's output, a list — and are shown under it rather
+   * than crammed into the headline.
+   */
+  | { type: 'note'; level: 'info' | 'warn' | 'error'; text: string; lines?: string[] }
   | { type: 'agent_stderr'; agentId: string; text: string }
   | { type: 'delegation'; taskId: number; agentId: string; sessionId: string; task: string }
   | { type: 'session_update'; agentId: string; sessionId: string; update: SessionUpdate }

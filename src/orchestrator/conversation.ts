@@ -7,6 +7,16 @@ import { SessionUnresponsiveError } from '../host/session.js';
 import type { AgentPool } from '../host/pool.js';
 import type { Transcript } from '../workspace/transcript.js';
 import type { Workspace } from '../workspace/workspace.js';
+import { expandBody } from '../slash/expand.js';
+import {
+  findCommand,
+  looksLikeCommand,
+  parseSlashCommand,
+  type Command,
+  type CommandBase,
+  type CommandHost,
+  type LocalCommand,
+} from '../slash/command.js';
 import { summarise, renderOutcome, type TaskOutcome } from './outcome.js';
 import { buildBrief, type TaskKind } from './prompts.js';
 
@@ -16,6 +26,9 @@ export interface ConversationDeps {
   transcript: Transcript;
   workspace: Workspace;
   llm: ChatClient | undefined;
+  commands: readonly Command[];
+  /** A context for a command to act in, named after the command doing the asking. */
+  commandHost: (agentId: string) => CommandHost;
 }
 
 /**
@@ -81,6 +94,12 @@ export class Conversation {
 
   reset(): void {
     this.messages = [];
+    // The ground rules go with the history. An agent that keeps its session
+    // across a reset would otherwise never hear them again, and the first
+    // brief after starting over would be the one that explains nothing.
+    // The counters deliberately do not reset: the view keys rows by them, and
+    // a second task 1 would land on the first one's row.
+    this.briefed.clear();
   }
 
   /**
@@ -105,15 +124,33 @@ export class Conversation {
 
   private async run(text: string): Promise<void> {
     const { config, transcript, workspace } = this.deps;
+
+    // A command is answered before the agent roster is even consulted:
+    // `/help` and `/config` are wanted most on exactly the machine where
+    // nothing is configured yet.
+    const invoked = this.invoked(text);
+    if (invoked === 'unknown') {
+      transcript.append({ type: 'user', text });
+      transcript.append({
+        type: 'note',
+        level: 'error',
+        text: `no such command as ${text.trim().split(/\s/)[0]}. /help lists the ones there are.`,
+      });
+      return;
+    }
+
     transcript.append({ type: 'user', text });
+
+    if (invoked && invoked.command.kind === 'local') {
+      this.local(invoked.command, invoked.args);
+      return;
+    }
 
     const agents = this.deps.pool.available();
     if (agents.length === 0) {
       transcript.append({ type: 'assistant', text: 'No agents are enabled in the configuration.' });
       return;
     }
-    this.ensureSystemPrompt(agents);
-    this.push({ role: 'user', content: text });
 
     const turn = new AbortController();
     this.turn = turn;
@@ -121,8 +158,25 @@ export class Conversation {
     const notes: string[] = [];
     let answered = false;
     let delegations = 0;
+    // What the model is actually asked. For a command file that is its
+    // expanded body; the record above keeps the line the user typed, because
+    // a transcript of expansions is not a transcript of the conversation.
+    let prompt = text;
 
     try {
+      // Inside the turn, and holding its signal: expansion can run a command,
+      // and a turn nobody can escape out of yet is not one this UI promises.
+      if (invoked && invoked.command.kind === 'prompt') {
+        prompt = await expandBody(
+          invoked.command,
+          invoked.args,
+          this.deps.commandHost(`/${invoked.command.name}`),
+          turn.signal,
+        );
+      }
+      this.ensureSystemPrompt(agents);
+      this.push({ role: 'user', content: prompt });
+
       for (let step = 0; step < config.limits.maxPlanSteps; step++) {
         if (turn.signal.aborted) break;
 
@@ -169,7 +223,7 @@ export class Conversation {
     } finally {
       // A cancelled turn ends where it stood, silently: the delegation and
       // stop records already say what ran, and the user asked for a stop, not
-      // a report about stopping. Skipping the summary is also what lets /quit
+      // a report about stopping. Skipping the summary is also what lets /exit
       // end the process instead of waiting on one nobody would read.
       if (!answered && !turn.signal.aborted) {
         const stream = this.newStream();
@@ -177,7 +231,7 @@ export class Conversation {
           outcomes.length > 0 || notes.length > 0
             ? await narrate(
                 this.deps.llm,
-                { userMessage: text, outcomes, notes, workspaceDir: workspace.dir },
+                { userMessage: prompt, outcomes, notes, workspaceDir: workspace.dir },
                 turn.signal,
                 (piece) => stream.delta(piece),
               )
@@ -274,6 +328,58 @@ export class Conversation {
       transcript.forTask(taskId),
       Date.now() - startedAt,
     );
+  }
+
+  /**
+   * The command a line invokes, if it invokes one. `unknown` is a name that
+   * could have been a command and was not; a name that could never have been
+   * one — a path, mostly — is not a command at all and goes to the model as
+   * the ordinary text it is.
+   */
+  private invoked(text: string): { command: Command; args: string } | 'unknown' | undefined {
+    const parsed = parseSlashCommand(text);
+    if (!parsed) return undefined;
+    const command = findCommand(parsed.name, this.deps.commands);
+    if (command) return { command, args: parsed.args };
+    return looksLikeCommand(parsed.name) ? 'unknown' : undefined;
+  }
+
+  /** A command handsfree answers itself. No agent is woken, no turn is spent. */
+  private local(command: CommandBase & LocalCommand, args: string): void {
+    const { transcript } = this.deps;
+    if (command.interactive) {
+      transcript.append({
+        type: 'note',
+        level: 'warn',
+        text: `/${command.name} only means something in the terminal UI.`,
+      });
+      return;
+    }
+
+    const effect = command.run(args, this.deps.commandHost(`/${command.name}`));
+    switch (effect.do) {
+      case 'say':
+        transcript.append({
+          type: 'note',
+          level: 'info',
+          text: effect.text,
+          ...(effect.lines ? { lines: effect.lines } : {}),
+        });
+        break;
+      case 'reset':
+        this.reset();
+        transcript.append({
+          type: 'note',
+          level: 'info',
+          text: 'conversation cleared — the agents will be briefed from scratch.',
+        });
+        break;
+      case 'quit':
+        // Only reachable where there is no UI to leave; the terminal handles
+        // its own departure before a turn is ever started.
+        transcript.append({ type: 'note', level: 'warn', text: 'there is nothing to leave here.' });
+        break;
+    }
   }
 
   private ensureSystemPrompt(agents: string[]): void {

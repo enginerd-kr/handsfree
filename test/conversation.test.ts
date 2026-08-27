@@ -268,7 +268,7 @@ describe('Conversation', () => {
       async chat() {
         calls++;
         if (calls === 1) return delegate('Sleep forever');
-        // What /quit used to hang on: a summary request nothing can abort.
+        // What /exit used to hang on: a summary request nothing can abort.
         return new Promise<never>(() => {});
       },
     };

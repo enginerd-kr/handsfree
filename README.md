@@ -61,6 +61,51 @@ handsfree run "add a test"     # one turn, no UI
 handsfree serve --acp          # be an ACP agent, for an editor to drive
 ```
 
+## Commands
+
+A line that opens with a slash is a command. There are two kinds, and the difference is who answers.
+
+**handsfree answers these itself** — no agent is woken, no turn is spent, and they work on a machine where nothing is configured yet, which is the machine where you want them most:
+
+| | |
+|---|---|
+| `/help` | every command there is, and where the rest of them come from |
+| `/config` | what handsfree is running with, and which file it read it from |
+| `/agents` | the agents this run can delegate to, and which one is routing |
+| `/reset` | forget the conversation; the agents are briefed from scratch |
+| `/exit`, `/quit` | leave |
+
+**You write the rest**, as markdown, in `.handsfree/commands/` beside your project or `~/.config/handsfree/commands/` for the ones you want everywhere. The project directory wins a name; the built-ins above win it from both, because a command file often arrives with somebody else's repository and `/exit` meaning anything other than leaving is not a thing a checkout gets to arrange. A sub-directory becomes a namespace: `commands/frontend/deploy.md` is `/frontend:deploy`.
+
+```markdown
+---
+description: review a path and say what you find
+argument-hint: "[path]"
+arguments: path
+---
+Review $path against the diff below.
+
+!`git diff --stat`
+
+The conventions we hold to are in @CONVENTIONS.md.
+```
+
+`$ARGUMENTS` is everything after the command, `$1` and `$2` are the words of it, and a name listed under `arguments:` can be used directly. A body that asks for none of them still gets them, appended under `ARGUMENTS:` — so a command file can be plain prose and `/review src` will still mean something.
+
+`` !`cmd` `` and `@file` are the interesting part. Both run **before** the model sees anything, which in any other tool would mean a markdown file in a repository you cloned quietly runs commands on your machine. Here they go through the same policy engine an agent's own request does — the same allowlist, the same jail, the same output ceiling and deadline, the same line in the transcript:
+
+```
+> /review src/policy
+  + run git diff --stat
+  - run git push origin main
+```
+
+A refusal is written into the prompt where the output would have been, and the model is told plainly that it was refused rather than being handed a prompt with a hole in it. Out of the box `policy.exec.enabled` is `false`, so every `` !`cmd` `` is refused until you turn it on and say what may run; `/help` says so at the bottom rather than leaving you to guess.
+
+One thing worth knowing: they run against **the workspace**, which is the agents' jail — `~/.handsfree/runs/<id>/workspace/`, not your repository. That is the same directory the agents see, which is the point, but it does mean `` !`git diff` `` in the terminal UI is looking at their work rather than yours. Under `handsfree serve --acp` the editor's project *is* the workspace, and then it is looking at exactly what you would expect.
+
+In the terminal UI, typing `/` opens the list. The arrows move through it, tab fills a command in, and enter sends the ones that want nothing further. Escape closes the menu; a second escape still stops whatever is running.
+
 ## Debugging
 
 ```bash

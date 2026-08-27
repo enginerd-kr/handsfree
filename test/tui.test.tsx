@@ -250,6 +250,172 @@ describe('terminal UI', () => {
     }
   });
 
+  it('offers the commands a half-written line could still become', async () => {
+    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      const closed = (app.lastFrame() ?? '').split('\n').length;
+
+      app.stdin.write('/');
+      await waitFor(() => app.lastFrame(), '/reset');
+      expect(app.lastFrame()).toContain('/help');
+
+      // The frame is a fixed height. A menu that grew it would scroll the
+      // whole UI, so the rows it takes have to come out of the transcript.
+      expect((app.lastFrame() ?? '').split('\n').length).toBe(closed);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('moves the highlight with the arrows and sends the one it lands on', async () => {
+    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    const press = async (...keys: string[]) => {
+      for (const key of keys) {
+        app.stdin.write(key);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    };
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      // The bare slash offers everything, shortest name first: exit, help,
+      // reset. Two steps down lands on the third.
+      await press('/');
+      await waitFor(() => app.lastFrame(), '/reset');
+      await press('\x1b[B', '\x1b[B', '\r');
+
+      await waitFor(() => app.lastFrame(), 'cleared');
+      expect(app.lastFrame()).not.toContain('Working');
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('completes on tab and sends on enter', async () => {
+    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    const plain = () => (app.lastFrame() ?? '').replace(/\[[0-9;]*m/g, '');
+    const press = async (...keys: string[]) => {
+      for (const key of keys) {
+        app.stdin.write(key);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    };
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      await press(...'/hel');
+      await waitFor(() => app.lastFrame(), '/help');
+
+      // Tab fills the line in and leaves it there; it is not a submission.
+      await press('\t');
+      await waitFor(plain, `${PROMPT_CHAR} /help`);
+      expect(h.runtime.transcript.all().filter((r) => r.type === 'user')).toHaveLength(0);
+
+      await press('\r');
+      await waitFor(() => app.lastFrame(), 'what you can type');
+      expect(app.lastFrame()).not.toContain('Working');
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('closes the menu on escape without stopping the turn behind it', async () => {
+    let release: (() => void) | undefined;
+    let turn = 0;
+    const llm: ChatClient = {
+      async chat(_messages, options) {
+        if (turn++ === 0) {
+          // Held until the test lets go, or until the turn is cancelled —
+          // which is the thing being tested, so it has to be felt here.
+          await new Promise<void>((resolve, reject) => {
+            release = resolve;
+            options?.signal?.addEventListener('abort', () => reject(new Error('cancelled')), {
+              once: true,
+            });
+          });
+        }
+        return JSON.stringify({ action: 'answer', message: 'an answer.' });
+      },
+    };
+    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) }, llm });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    const press = async (...keys: string[]) => {
+      for (const key of keys) {
+        app.stdin.write(key);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    };
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      await press(...'go', '\r');
+      await waitFor(() => app.lastFrame(), 'Working…');
+
+      await press('/');
+      await waitFor(() => app.lastFrame(), '/reset');
+      await press('\x1b');
+      await waitFor(() => app.lastFrame(), 'Working…');
+      expect(app.lastFrame()).not.toContain('/reset');
+
+      // The first escape was spent on the menu; the second reaches the turn.
+      await press('\x1b');
+      const deadline = Date.now() + 2_000;
+      while ((app.lastFrame() ?? '').includes('Working…')) {
+        if (Date.now() > deadline) throw new Error(`the turn never stopped:\n${app.lastFrame()}`);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(app.lastFrame()).not.toContain('an answer.');
+    } finally {
+      release?.();
+      app.unmount();
+    }
+  });
+
+  it('answers a command mid-turn instead of queueing it behind one', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let turn = 0;
+    const llm: ChatClient = {
+      async chat() {
+        if (turn++ === 0) await held;
+        return JSON.stringify({ action: 'answer', message: 'an answer.' });
+      },
+    };
+    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) }, llm });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    const press = async (...keys: string[]) => {
+      for (const key of keys) {
+        app.stdin.write(key);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    };
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      await press(...'go', '\r');
+      await waitFor(() => app.lastFrame(), 'Working…');
+
+      await press(...'/help', '\r');
+      await waitFor(() => app.lastFrame(), 'what you can type');
+      expect(app.lastFrame()).not.toContain('queued');
+    } finally {
+      release();
+      app.unmount();
+    }
+  });
+
   it('stays open while a turn runs, and sends what was typed once it ends', async () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => {

@@ -7,6 +7,8 @@ export interface RunOptions {
   /** Emit the transcript as NDJSON instead of prose. */
   json: boolean;
   runId?: string;
+  /** The file the settings were read from, for `/config` to name. */
+  configSource?: string;
 }
 
 /**
@@ -19,7 +21,11 @@ export async function run(
   options: RunOptions,
   write: (line: string) => void,
 ): Promise<number> {
-  const runtime = createRuntime({ config, runId: options.runId });
+  const runtime = createRuntime({
+    config,
+    ...(options.runId === undefined ? {} : { runId: options.runId }),
+    ...(options.configSource === undefined ? {} : { configSource: options.configSource }),
+  });
 
   const onRecord = (record: TranscriptRecord) => {
     if (options.json) {

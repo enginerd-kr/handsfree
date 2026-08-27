@@ -44,7 +44,14 @@ export function createServeApp(config: Config, overrides: Partial<RuntimeOptions
     }))
     .onRequest(methods.agent.session.new, (ctx) => {
       const sessionId = `handsfree-${++counter}`;
-      const runtime = createRuntime({ config, attachTo: ctx.params.cwd, ...overrides });
+      // The editor's project is both the jail and where its command files
+      // live, which is the one arrangement where the two are the same.
+      const runtime = createRuntime({
+        config,
+        attachTo: ctx.params.cwd,
+        cwd: ctx.params.cwd,
+        ...overrides,
+      });
       runtime.setEscalator(upstreamEscalator(ctx.client, sessionId));
 
       const forward = (record: TranscriptRecord) => {
@@ -89,8 +96,8 @@ export function createServeApp(config: Config, overrides: Partial<RuntimeOptions
   };
 }
 
-export async function serve(config: Config): Promise<number> {
-  const served = createServeApp(config);
+export async function serve(config: Config, configSource?: string): Promise<number> {
+  const served = createServeApp(config, configSource === undefined ? {} : { configSource });
   const stream = ndJsonStream(
     Writable.toWeb(process.stdout) as WritableStream<Uint8Array>,
     Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>,
