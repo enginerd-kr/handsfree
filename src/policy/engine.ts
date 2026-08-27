@@ -185,6 +185,17 @@ export class PolicyEngine {
       }
     }
 
+    // A tool call that names a runnable command is judged as one whatever the
+    // adapter chose to call it. codex labels a shell call by what it thinks the
+    // command means — `ls` arrives as `search` — and a command judged by the
+    // read rules is a command that never met the allowlist. The label is the
+    // agent's opinion; the argv is the fact. The two kinds refused outright keep
+    // their own answer, which is a denial either way but a clearer one.
+    if (request.toolKind !== 'fetch' && request.toolKind !== 'switch_mode') {
+      const named = commandFromRawInput(request.rawInput);
+      if (named) return this.execRule(named.command, named.args, undefined);
+    }
+
     switch (request.toolKind ?? infer(request)) {
       case 'think':
         return { outcome: 'allow', rule: 'tool.think' };
@@ -247,12 +258,10 @@ export class PolicyEngine {
  * Real adapters omit `kind` on permission requests — claude-code-acp sends the
  * file it wants to write and no kind at all. Refusing those would refuse most
  * honest work, so the request is read for what it evidently is: something that
- * names files is a file operation, something that names a command is a command.
- * Both then face the ordinary rules, including the workspace boundary that has
- * already been applied to those very paths.
+ * names files is a file operation. A request that names a command never reaches
+ * here; those are judged as commands before the kind is consulted at all.
  */
 function infer(request: Extract<PolicyRequest, { kind: 'tool' }>): ToolKind | undefined {
-  if (commandFromRawInput(request.rawInput)) return 'execute';
   if (request.locations.length > 0) return 'edit';
   return undefined;
 }
@@ -292,6 +301,15 @@ export function commandFromRawInput(raw: unknown): { command: string; args: stri
   const argv = input['argv'] ?? input['args'];
   if (typeof input['command'] === 'string' && Array.isArray(argv)) {
     return { command: input['command'], args: argv.filter((a): a is string => typeof a === 'string') };
+  }
+  // codex puts the whole argv in `command` as an array — `["/bin/zsh","-lc","ls"]`.
+  // That is a command stated plainly enough to check, and reading it as one is
+  // the difference between the allowlist judging it and `tool.opaqueCommand`
+  // refusing every command codex ever asks for.
+  if (Array.isArray(input['command'])) {
+    const argv = input['command'].filter((a): a is string => typeof a === 'string');
+    if (argv.length === 0 || argv.length !== input['command'].length) return undefined;
+    return { command: argv[0]!, args: argv.slice(1) };
   }
   const script = ['command', 'cmd', 'script', 'shell_command'].find(
     (key) => typeof input[key] === 'string',

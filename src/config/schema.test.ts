@@ -36,6 +36,17 @@ describe('defaults', () => {
     const config = ConfigSchema.parse({});
     expect(Object.keys(config.agents)).toEqual(['claude', 'gemini', 'codex']);
     expect(config.agents['gemini']?.args).toContain('--experimental-acp');
+    // All three are on by default; an adapter you have not installed fails at
+    // the handshake, which `doctor` reports, rather than being hidden here.
+    expect(Object.values(config.agents).every((agent) => agent.enabled)).toBe(true);
+    // Both adapters that read a model from a file of their own are pinned, so a
+    // CLI update elsewhere cannot retire the model out from under a turn.
+    expect(config.agents['codex']?.args).toEqual([
+      '-y',
+      '@zed-industries/codex-acp',
+      '-c',
+      'model=gpt-5.5',
+    ]);
   });
 
   it('keeps command execution off until it is asked for', () => {

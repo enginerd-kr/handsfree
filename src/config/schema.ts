@@ -78,7 +78,13 @@ export const DEFAULT_AGENTS: Record<string, z.input<typeof AgentProfileSchema>> 
   },
   codex: {
     command: 'npx',
-    args: ['-y', '@zed-industries/codex-acp'],
+    // Pinned for the same reason gemini is, by a different route: the adapter
+    // bundles its own Codex core, and left alone it reads the model out of
+    // `~/.codex/config.toml` — where the CLI, updated on its own schedule, has
+    // long since written a newer one. The turn then dies on the far side with
+    // "requires a newer version of Codex", and a ChatGPT account refuses every
+    // model named explicitly except the one this core already knows.
+    args: ['-y', '@zed-industries/codex-acp', '-c', 'model=gpt-5.5'],
     note: 'methodical coding agent, good at tests and refactors',
   },
 };

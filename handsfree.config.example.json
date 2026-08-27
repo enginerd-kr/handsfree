@@ -27,9 +27,8 @@
       "note": "fast, good at bulk text and single-file work"
     },
     "codex": {
-      "enabled": false,
       "command": "npx",
-      "args": ["-y", "@zed-industries/codex-acp"],
+      "args": ["-y", "@zed-industries/codex-acp", "-c", "model=gpt-5.5"],
       "note": "methodical coding agent, good at tests and refactors"
     }
   },

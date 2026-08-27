@@ -131,6 +131,27 @@ describe('permission gate', () => {
 
     expect(answers).toEqual(['no']);
   });
+
+  it('approves a codex command that the allowlist does cover', async () => {
+    // codex states the whole argv as one array and labels the call by what it
+    // thinks the command means — here a listing. Both are taken as they come:
+    // the argv is read, the label is not what decides.
+    const answers: string[] = [];
+    await runTurn(
+      () => [
+        {
+          do: 'ask',
+          title: 'List the workspace',
+          kind: 'search',
+          rawInput: { command: ['/bin/zsh', '-lc', 'ls'] },
+          onAnswer: (id) => answers.push(id),
+        },
+      ],
+      { policy: { exec: { enabled: true, allow: ['ls'] } } },
+    );
+
+    expect(answers).toEqual(['once']);
+  });
 });
 
 describe('filesystem gate', () => {

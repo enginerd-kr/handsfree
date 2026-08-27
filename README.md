@@ -33,7 +33,7 @@ You also need whichever agents you plan to use, each logged in with its own CLI:
 |---|---|---|
 | claude | `npx -y @zed-industries/claude-code-acp` | `claude /login` |
 | gemini | `gemini --experimental-acp` | `gemini` |
-| codex | `npx -y @zed-industries/codex-acp` | `codex login` |
+| codex | `npx -y @zed-industries/codex-acp -c model=gpt-5.5` | `codex login` |
 
 And an orchestration model to do the routing. By default that is a local OpenAI-compatible endpoint (LM Studio, Ollama, llama.cpp) at `http://localhost:1234/v1`; set `orchestration.provider` to `"acp"` and one of the agents above does the routing instead, with no local endpoint at all.
 
@@ -94,12 +94,17 @@ Adapters differ more than the protocol suggests, and the differences decide what
 
 | | claude-code-acp 0.16.2 | gemini `--experimental-acp` | codex-acp 0.16.0 |
 |---|---|---|---|
-| file reads/writes | through `fs/*` | through `fs/*` | through `fs/*` |
-| permission requests | no `kind`, no `locations`; file in `rawInput` | `kind` and `locations` present | — |
-| shell commands | uses `terminal/*` when offered | its own shell; command only in the title | — |
+| file reads/writes | through `fs/*` | through `fs/*` | its own; asks first, then writes |
+| permission requests | no `kind`, no `locations`; file in `rawInput` | `kind` and `locations` present | `kind` and `locations` present |
+| shell commands | uses `terminal/*` when offered | its own shell; command only in the title | its own shell; full argv in `rawInput` |
+| asks before | every tool call | every tool call | anything that changes or escapes |
 | `session/load` | yes | no | yes |
 
 Where an agent names its command only in a human-readable title, handsfree refuses it — approving would mean approving whatever that agent's own shell decides to run, which is exactly what the allowlist exists to prevent. In practice that means **gemini can create and edit files but cannot run commands** under handsfree, and it will say so plainly when asked to.
+
+codex is the opposite case. It never calls `fs/*` or `terminal/*`, so handsfree does not perform its work — but it states the whole argv as an array in `rawInput`, so the allowlist judges what it would actually run, and it names the file it would edit in `locations`, so the boundary applies to that path. **codex can both edit files and run allowlisted commands**, at the cost of being approved rather than mediated: the write is codex's, and what handsfree checked was codex's account of it. The two also draw the line in different places — codex asks before anything that changes the workspace or leaves it, and reads and lists without asking, so a plain `ls` is a command handsfree never sees.
+
+Its model is pinned in the launch profile for the same reason gemini's is. codex-acp bundles its own Codex core and otherwise reads the model out of `~/.codex/config.toml`, where the separately-updated CLI has usually written a newer one; the turn then fails on the far side with *"requires a newer version of Codex"*. Change the pin with `-c model=…`, but note that a ChatGPT account refuses every model named explicitly except the one the bundled core already knows.
 
 ### How a decision is made
 

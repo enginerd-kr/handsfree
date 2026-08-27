@@ -100,7 +100,7 @@ describe('PolicyEngine', () => {
   });
 
   it('refuses network and mode-switch tool calls outright', async () => {
-    const policy = engine();
+    const policy = engine({ exec: { enabled: true, allow: ['curl'] } });
     for (const toolKind of ['fetch', 'switch_mode'] as const) {
       const decision = await policy.resolve({
         kind: 'tool',
@@ -111,6 +111,17 @@ describe('PolicyEngine', () => {
         ...where,
       });
       expect(decision.verdict).toBe('deny');
+
+      // Still their own refusal, not the allowlist's, even when an argv rides along.
+      const withArgv = await policy.resolve({
+        kind: 'tool',
+        toolKind,
+        title: toolKind,
+        locations: [],
+        rawInput: { command: ['curl', 'https://example.com'] },
+        ...where,
+      });
+      expect(withArgv).toMatchObject({ verdict: 'deny', rule: `tool.${toolKind === 'fetch' ? 'fetch' : 'switchMode'}` });
     }
   });
 
@@ -162,6 +173,77 @@ describe('PolicyEngine', () => {
       ...where,
     });
     expect(decision).toMatchObject({ verdict: 'deny', rule: 'exec.allowlist' });
+  });
+
+  // The three shapes below are copied from a real codex-acp 0.16.0 turn.
+  it('judges the argv codex states as an array, not as an opaque command', async () => {
+    const policy = engine({ exec: { enabled: true, allow: ['ls'] } });
+    const decision = await policy.resolve({
+      kind: 'tool',
+      toolKind: 'execute',
+      title: 'Run ls',
+      locations: [],
+      rawInput: { call_id: 'call_1', command: ['/bin/zsh', '-lc', 'ls'], cwd: root },
+      ...where,
+    });
+    expect(decision).toMatchObject({ verdict: 'allow', rule: 'exec.allow:ls' });
+  });
+
+  it('refuses a chained codex command as a chain, not as a shrug', async () => {
+    const policy = engine({ exec: { enabled: true, allow: ['mkdir', 'echo'] } });
+    const decision = await policy.resolve({
+      kind: 'tool',
+      toolKind: 'execute',
+      title: 'Run mkdir',
+      locations: [],
+      rawInput: { command: ['/bin/zsh', '-lc', 'mkdir -p /tmp/x && echo done'], cwd: root },
+      ...where,
+    });
+    // The verdict is still no, but it is a judgement about the `&&` rather than
+    // an admission that we could not read the request.
+    expect(decision).toMatchObject({ verdict: 'deny', rule: 'exec.shellOperators' });
+  });
+
+  it('judges a command by its argv even when the agent calls it a search', async () => {
+    // codex labels a shell call by what it thinks the command means: `ls`
+    // arrives as `search`, which under the read rules would never meet the
+    // allowlist at all.
+    const policy = engine({ exec: { enabled: true, allow: ['ls'] } });
+    const allowed = await policy.resolve({
+      kind: 'tool',
+      toolKind: 'search',
+      title: 'List the workspace',
+      locations: [],
+      rawInput: { command: ['/bin/zsh', '-lc', 'ls'], cwd: root },
+      ...where,
+    });
+    expect(allowed).toMatchObject({ verdict: 'allow', rule: 'exec.allow:ls' });
+
+    const refused = await policy.resolve({
+      kind: 'tool',
+      toolKind: 'search',
+      title: 'List the workspace',
+      locations: [],
+      rawInput: { command: ['/bin/zsh', '-lc', 'curl https://example.com'], cwd: root },
+      ...where,
+    });
+    expect(refused).toMatchObject({ verdict: 'deny', rule: 'exec.allowlist' });
+  });
+
+  it('applies the workspace boundary to a codex edit through its locations', async () => {
+    const policy = engine();
+    const request = (file: string) => ({
+      kind: 'tool' as const,
+      toolKind: 'edit' as const,
+      title: `Edit ${file}`,
+      locations: [file],
+      // codex names the file as a *key* under `changes`, where path extraction
+      // never looks — `locations` is what actually carries it.
+      rawInput: { changes: { [file]: { type: 'add', content: 'hello from codex.\n' } } },
+      ...where,
+    });
+    expect((await policy.resolve(request(inside('NOTES.md')))).verdict).toBe('allow');
+    expect((await policy.resolve(request('/etc/hosts'))).rule).toBe('tool.outside');
   });
 
   it('denies an escalation when nobody is there to answer', async () => {
@@ -285,8 +367,18 @@ describe('commandFromRawInput', () => {
     });
   });
 
+  it('reads the whole argv from a single array, as codex sends it', () => {
+    expect(commandFromRawInput({ command: ['/bin/zsh', '-lc', 'ls'] })).toEqual({
+      command: '/bin/zsh',
+      args: ['-lc', 'ls'],
+    });
+  });
+
   it('gives up on input it does not understand', () => {
     expect(commandFromRawInput({ nothing: true })).toBeUndefined();
     expect(commandFromRawInput(null)).toBeUndefined();
+    expect(commandFromRawInput({ command: [] })).toBeUndefined();
+    // A half-string argv is not an argv we can vouch for.
+    expect(commandFromRawInput({ command: ['sh', { nested: true }] })).toBeUndefined();
   });
 });
