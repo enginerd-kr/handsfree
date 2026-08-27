@@ -6,7 +6,17 @@ import { debugDestination } from '../../debug.js';
 import { buildView, type Tone, type ViewItem } from '../view-model.js';
 import { itemAt, lastFitting, placeItems } from './layout.js';
 import { CURSOR_QUERY, isMouseReport, parseCursorReport, parseMouseEvent, trackMouse } from './mouse.js';
-import { BAND, BRAND, COLOUR, GLYPH, MASCOT, RESULT_GUTTER, RESULT_INDENT, SPINNER } from './theme.js';
+import {
+  BAND,
+  BRAND,
+  COLOUR,
+  GLYPH,
+  MASCOT,
+  PROMPT_CHAR,
+  RESULT_GUTTER,
+  RESULT_INDENT,
+  SPINNER,
+} from './theme.js';
 import { VERSION } from '../../version.js';
 
 const EXPAND_HINT = 'click or ctrl+o to expand';
@@ -21,7 +31,11 @@ const HEADER_ROWS = 11;
 /** Below this many columns the box drops its tips column and keeps only the mark. */
 const WIDE_HEADER = 70;
 
-/** Rows below it: the prompt's blank line, its bordered box, and the hint. */
+/**
+ * Rows below it: the status line, the prompt's two rules with its input between
+ * them, and the hint. The status line is always drawn — blank when nothing is
+ * running — so the transcript's budget never changes as a turn starts.
+ */
 const PROMPT_ROWS = 5;
 
 interface PendingAsk {
@@ -58,6 +72,10 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     setDraft(draftRef.current);
   };
   const [startedAt, setStartedAt] = useState<number | undefined>();
+  // Typed while a turn was running. The prompt stays open the whole time, so
+  // what is entered has to go somewhere; it goes here and leaves in order once
+  // the turn that was in the way finishes.
+  const [queued, setQueued] = useState<readonly string[]>([]);
   const [ask, setAsk] = useState<PendingAsk | undefined>();
   const [openTasks, setOpenTasks] = useState<ReadonlySet<number>>(() => new Set());
   const [hoveredTask, setHoveredTask] = useState<number | undefined>();
@@ -159,6 +177,15 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   const layout = useRef(placements);
   layout.current = placements;
 
+  const start = (text: string) => {
+    if (text === '/reset') {
+      runtime.conversation.reset();
+      return;
+    }
+    setStartedAt(Date.now());
+    void runtime.conversation.send(text).finally(() => setStartedAt(undefined));
+  };
+
   const submit = (text: string) => {
     const trimmed = text.trim();
     applyDraft(() => ({ value: '', cursor: 0 }));
@@ -169,14 +196,27 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       exit();
       return;
     }
-    if (trimmed === '' || busy) return;
-    if (trimmed === '/reset') {
-      runtime.conversation.reset();
+    if (trimmed === '') return;
+    // Leaving is the only thing that cannot wait; everything else the user
+    // sends mid-turn takes its place in line behind the turn already running.
+    if (busy) {
+      setQueued((line) => [...line, trimmed]);
       return;
     }
-    setStartedAt(Date.now());
-    void runtime.conversation.send(trimmed).finally(() => setStartedAt(undefined));
+    start(trimmed);
   };
+
+  // Whatever was typed mid-turn goes in one at a time, each one waiting for the
+  // one before it — a queue drained all at once would race the conversation,
+  // which takes a single turn.
+  useEffect(() => {
+    if (busy || queued.length === 0) return;
+    const [next, ...rest] = queued;
+    setQueued(rest);
+    start(next!);
+    // `start` is rebuilt every render and is deliberately not a dependency:
+    // the queue and whether a turn is running are what decide when one leaves.
+  }, [busy, queued]);
 
   // The prompt is edited here, not by a text-input component. A second
   // component would keep its own cursor state and see every keypress this
@@ -219,11 +259,14 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       return;
     }
     if (key.escape) {
-      if (busy) runtime.conversation.cancel();
+      // A cancelled turn ends in silence, and so does everything queued behind
+      // it — one escape stops the whole thing, not just the turn on screen.
+      if (busy) {
+        setQueued([]);
+        runtime.conversation.cancel();
+      }
       return;
     }
-    // While a turn runs the prompt is off screen, so nothing below applies.
-    if (busy) return;
     if (key.return) {
       submit(draftRef.current.value);
       return;
@@ -310,7 +353,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       {ask ? (
         <Ask ask={ask} />
       ) : (
-        <Prompt draft={draft} startedAt={startedAt} allOpen={allOpen} />
+        <Prompt draft={draft} startedAt={startedAt} queued={queued.length} allOpen={allOpen} />
       )}
     </Box>
   );
@@ -489,35 +532,60 @@ function Row({
   );
 }
 
+/**
+ * The chat prompt, in the shape Claude Code gives its own: a rule above and a
+ * rule below with the pointer and the draft between them, the running turn
+ * announced on the line above rather than in place of the input, and the
+ * shortcuts sitting under it all.
+ *
+ * The input never goes away. A turn already running does not take the keyboard
+ * with it — what is typed meanwhile is queued, and the count says so.
+ *
+ * Kept to exactly PROMPT_ROWS rows: the status line above the top rule holds
+ * its row whether or not a turn is running, so the transcript above never
+ * reflows the moment one starts.
+ */
 function Prompt({
   draft,
   startedAt,
+  queued,
   allOpen,
 }: {
   draft: Draft;
   startedAt: number | undefined;
+  queued: number;
   allOpen: boolean;
 }): React.JSX.Element {
   // Where debug lines are going, when they are going anywhere. It cannot
   // change while the UI is up, so reading it at render is enough.
   const debugTo = debugDestination();
+  const busy = startedAt !== undefined;
   return (
-    <Box flexDirection="column" marginTop={1}>
-      <Box borderStyle="round" borderColor={startedAt === undefined ? BRAND : 'gray'} paddingX={1}>
-        {startedAt === undefined ? (
-          <>
-            <Text color="gray">{'> '}</Text>
-            <DraftLine draft={draft} />
-          </>
-        ) : (
-          <Working startedAt={startedAt} />
-        )}
+    <Box flexDirection="column">
+      <Box height={1} paddingX={2}>
+        {busy ? <Working startedAt={startedAt} queued={queued} /> : null}
+      </Box>
+      <Box
+        width="100%"
+        borderStyle="round"
+        borderColor={busy ? 'gray' : BRAND}
+        borderDimColor={busy}
+        borderLeft={false}
+        borderRight={false}
+        paddingX={1}
+      >
+        <Text color="gray" dimColor={busy}>
+          {`${PROMPT_CHAR} `}
+        </Text>
+        <Box flexGrow={1}>
+          <DraftLine draft={draft} />
+        </Box>
       </Box>
       <Box paddingLeft={2} paddingRight={1} justifyContent="space-between" gap={2}>
         <Text color="gray" dimColor wrap="truncate">
-          {startedAt === undefined
-            ? `click a task · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all · /quit`
-            : 'esc to interrupt'}
+          {busy
+            ? `esc to interrupt · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all`
+            : `click a task · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all · /quit`}
         </Text>
         {debugTo ? (
           <Text color="yellow" wrap="truncate-start">
@@ -547,18 +615,32 @@ function DraftLine({ draft }: { draft: Draft }): React.JSX.Element {
   );
 }
 
-function Working({ startedAt }: { startedAt: number }): React.JSX.Element {
+/**
+ * The line that says a turn is running: the spinner, how long it has been going
+ * and how much is waiting behind it. The frame interval is also what advances
+ * the clock, so it has to be well under a second.
+ */
+function Working({ startedAt, queued }: { startedAt: number; queued: number }): React.JSX.Element {
   const [frame, setFrame] = useState(0);
   useEffect(() => {
-    const timer = setInterval(() => setFrame((n) => n + 1), 140);
+    const timer = setInterval(() => setFrame((n) => n + 1), 120);
     return () => clearInterval(timer);
   }, []);
-  const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+  const facts = [elapsed(Date.now() - startedAt), ...(queued > 0 ? [`${queued} queued`] : [])];
   return (
-    <Text color={BRAND}>
-      {SPINNER[frame % SPINNER.length]} <Text color="gray">working… ({seconds}s)</Text>
+    <Text wrap="truncate">
+      <Text color={BRAND}>{SPINNER[frame % SPINNER.length]}</Text>
+      <Text bold> Working…</Text>
+      <Text color="gray" dimColor>{` (${facts.join(' · ')})`}</Text>
     </Text>
   );
+}
+
+/** How long a turn has been running, in the units it has earned. */
+function elapsed(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
 function Ask({ ask }: { ask: PendingAsk }): React.JSX.Element {

@@ -3,8 +3,10 @@ import { render } from 'ink-testing-library';
 import { afterEach, describe, expect, it } from 'vitest';
 import { disableDebug, enableDebug } from '../src/debug.js';
 import { App } from '../src/ui/tui/app.js';
+import { PROMPT_CHAR } from '../src/ui/tui/theme.js';
 import { fakeAgent } from './fake-agent.js';
 import { harness, scriptedModel, type Harness } from './harness.js';
+import type { ChatClient } from '../src/brain/client.js';
 
 let open: Harness | undefined;
 
@@ -61,7 +63,7 @@ describe('terminal UI', () => {
 
     const app = render(<App runtime={h.runtime} />);
     try {
-      const frame = await waitFor(() => app.lastFrame(), '>');
+      const frame = await waitFor(() => app.lastFrame(), PROMPT_CHAR);
       expect(frame).not.toContain('● debug');
     } finally {
       app.unmount();
@@ -77,7 +79,7 @@ describe('terminal UI', () => {
 
     const app = render(<App runtime={h.runtime} />);
     try {
-      await waitFor(() => app.lastFrame(), '>');
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
       await h.runtime.conversation.send('hi');
       const frame = await waitFor(() => app.lastFrame(), 'Hello there.');
       expect(frame).toContain('> hi');
@@ -100,7 +102,7 @@ describe('terminal UI', () => {
 
     const app = render(<App runtime={h.runtime} />);
     try {
-      await waitFor(() => app.lastFrame(), '>');
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
       await h.runtime.conversation.send('who are you');
       await waitFor(() => app.lastFrame(), 'claude answered.');
 
@@ -129,7 +131,7 @@ describe('terminal UI', () => {
 
     const app = render(<App runtime={h.runtime} />);
     try {
-      await waitFor(() => app.lastFrame(), '>');
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
       await h.runtime.conversation.send('who are you');
       await waitFor(() => app.lastFrame(), 'claude answered.');
       expect(app.lastFrame()).not.toContain('the long agent answer');
@@ -159,7 +161,7 @@ describe('terminal UI', () => {
 
     const app = render(<App runtime={h.runtime} />);
     try {
-      await waitFor(() => app.lastFrame(), '>');
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
       app.stdin.write('\u001B[<35;3;1M'); // all-motion, with no button held
       await new Promise((resolve) => setTimeout(resolve, 0));
       app.stdin.write('still works');
@@ -175,7 +177,7 @@ describe('terminal UI', () => {
 
     const app = render(<App runtime={h.runtime} />);
     try {
-      await waitFor(() => app.lastFrame(), '>');
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
       // A hover report is swallowed before it reaches the prompt, but it must
       // also leave no trace in whatever cursor state the input keeps: typed
       // one keypress at a time, "/exit" once came out as "exit/".
@@ -208,17 +210,17 @@ describe('terminal UI', () => {
       }
     };
     try {
-      await waitFor(() => app.lastFrame(), '>');
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
       await press(...'hllo');
       await press('[D', '[D', '[D'); // left ×3, onto the first l
       await press('e');
-      await waitFor(plain, '> hello');
+      await waitFor(plain, `${PROMPT_CHAR} hello`);
 
       await press('\x01', '[3~'); // ctrl+a, then forward delete eats the h
-      await waitFor(plain, '> ello');
+      await waitFor(plain, `${PROMPT_CHAR} ello`);
 
       await press('\x05', '\x7f'); // ctrl+e, then backspace eats the o
-      await waitFor(plain, '> ell');
+      await waitFor(plain, `${PROMPT_CHAR} ell`);
       expect(plain()).not.toContain('ello');
     } finally {
       app.unmount();
@@ -231,7 +233,7 @@ describe('terminal UI', () => {
 
     const app = render(<App runtime={h.runtime} />);
     try {
-      await waitFor(() => app.lastFrame(), '>');
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
       for (const char of '/exit') {
         app.stdin.write(char);
         await new Promise((resolve) => setTimeout(resolve, 20));
@@ -242,8 +244,99 @@ describe('terminal UI', () => {
 
       // Leaving means the conversation never hears about it.
       expect(h.runtime.transcript.all().filter((r) => r.type === 'user')).toHaveLength(0);
-      expect(app.lastFrame()).not.toContain('working');
+      expect(app.lastFrame()).not.toContain('Working');
     } finally {
+      app.unmount();
+    }
+  });
+
+  it('stays open while a turn runs, and sends what was typed once it ends', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const replies = [
+      JSON.stringify({ action: 'answer', message: 'first answer.' }),
+      JSON.stringify({ action: 'answer', message: 'second answer.' }),
+    ];
+    let turn = 0;
+    const llm: ChatClient = {
+      async chat() {
+        const reply = replies[turn++];
+        if (reply === undefined) throw new Error('scripted model has no reply left');
+        if (turn === 1) await held;
+        return reply;
+      },
+    };
+    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) }, llm });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    const type = async (text: string) => {
+      for (const char of text) {
+        app.stdin.write(char);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      app.stdin.write('\r');
+    };
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      await type('first');
+      const running = await waitFor(() => app.lastFrame(), 'Working…');
+      // The prompt does not step aside for the turn it started.
+      expect(running).toContain(PROMPT_CHAR);
+
+      await type('second');
+      await waitFor(() => app.lastFrame(), '1 queued');
+      expect(h.runtime.transcript.all().filter((r) => r.type === 'user')).toHaveLength(1);
+
+      release();
+      await waitFor(() => app.lastFrame(), 'second answer.');
+      expect(app.lastFrame()).not.toContain('queued');
+    } finally {
+      release();
+      app.unmount();
+    }
+  });
+
+  it('drops what is queued when the turn in front of it is interrupted', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const llm: ChatClient = {
+      async chat(_messages, options) {
+        options?.signal?.addEventListener('abort', () => release(), { once: true });
+        await held;
+        throw new Error('interrupted');
+      },
+    };
+    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) }, llm });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    const type = async (text: string) => {
+      for (const char of text) {
+        app.stdin.write(char);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      app.stdin.write('\r');
+    };
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      await type('first');
+      await waitFor(() => app.lastFrame(), 'Working…');
+      await type('second');
+      await waitFor(() => app.lastFrame(), '1 queued');
+
+      app.stdin.write('\x1b'); // esc
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      expect(app.lastFrame()).not.toContain('queued');
+      // Only the first prompt was ever sent; the queued one left with the turn.
+      expect(h.runtime.transcript.all().filter((r) => r.type === 'user')).toHaveLength(1);
+    } finally {
+      release();
       app.unmount();
     }
   });
@@ -262,7 +355,7 @@ describe('terminal UI', () => {
 
     const app = render(<App runtime={h.runtime} />);
     try {
-      await waitFor(() => app.lastFrame(), '>');
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
       await h.runtime.conversation.send('who are you');
       await waitFor(() => app.lastFrame(), 'claude answered.');
 
@@ -292,7 +385,7 @@ describe('terminal UI', () => {
 
     const app = render(<App runtime={h.runtime} />);
     try {
-      await waitFor(() => app.lastFrame(), '>');
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
       // The test renderer exposes ANSI styling in its frame; no hover state
       // must be inferred from two undefined task ids.
       expect(app.lastFrame()).not.toContain('\u001B[100m');
@@ -318,7 +411,7 @@ describe('terminal UI', () => {
 
     const app = render(<App runtime={h.runtime} />);
     try {
-      await waitFor(() => app.lastFrame(), '>');
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
       await h.runtime.conversation.send('길게 물어봐');
       await waitFor(() => app.lastFrame(), 'claude answered.');
 
@@ -346,7 +439,7 @@ describe('terminal UI', () => {
 
     const app = render(<App runtime={h.runtime} />);
     try {
-      await waitFor(() => app.lastFrame(), '>');
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
       await h.runtime.conversation.send('who are you');
       await waitFor(() => app.lastFrame(), 'claude answered.');
 
@@ -388,7 +481,7 @@ describe('terminal UI', () => {
 
     const app = render(<App runtime={h.runtime} />);
     try {
-      await waitFor(() => app.lastFrame(), '>');
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
       await h.runtime.conversation.send('who are you');
       await waitFor(() => app.lastFrame(), 'claude answered.');
 
@@ -407,7 +500,7 @@ describe('terminal UI', () => {
 
     const app = render(<App runtime={h.runtime} />);
     try {
-      await waitFor(() => app.lastFrame(), '>');
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
 
       const decision = h.runtime.policy.resolve({
         kind: 'tool',
@@ -435,7 +528,7 @@ describe('terminal UI', () => {
 
     const app = render(<App runtime={h.runtime} />);
     try {
-      await waitFor(() => app.lastFrame(), '>');
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
 
       const decision = h.runtime.policy.resolve({
         kind: 'tool',
@@ -460,7 +553,7 @@ describe('terminal UI', () => {
     open = h;
 
     const app = render(<App runtime={h.runtime} />);
-    await waitFor(() => app.lastFrame(), '>');
+    await waitFor(() => app.lastFrame(), PROMPT_CHAR);
     app.unmount();
     await new Promise((resolve) => setTimeout(resolve, 50));
 

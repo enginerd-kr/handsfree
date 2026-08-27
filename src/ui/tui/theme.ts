@@ -43,4 +43,16 @@ export const RESULT_INDENT = ' ';
  */
 export const MASCOT = [' ▐▛███▜▌ ', '▝▜█████▛▘', '  ▘▘ ▝▝  '] as const;
 
-export const SPINNER = ['·', '✢', '✳', '∗', '✻', '✽'];
+/**
+ * The prompt's own glyph, the way Claude Code opens its input line. Windows
+ * consoles have no reliable glyph for it, so they get the shell's own mark.
+ */
+export const PROMPT_CHAR = process.platform === 'win32' ? '>' : '❯';
+
+/**
+ * The spinner runs its frames out and back again rather than snapping from the
+ * widest star to the smallest dot — the bounce is what makes it read as one
+ * mark growing, which is how Claude Code's spins.
+ */
+const SPINNER_FRAMES = ['·', '✢', '✳', '✶', '✻', '✽'];
+export const SPINNER = [...SPINNER_FRAMES, ...[...SPINNER_FRAMES].reverse()];
