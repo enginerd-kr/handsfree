@@ -9,19 +9,31 @@ import { appendFileSync } from 'node:fs';
  */
 
 let sink: ((line: string) => void) | undefined;
+let destination: string | undefined;
 
 export function debugEnabled(): boolean {
   return sink !== undefined;
 }
 
-/** Turns debug output on. Without a sink, lines go to stderr. */
-export function enableDebug(write?: (line: string) => void): void {
+/**
+ * Turns debug output on. Without a sink, lines go to stderr. `target` is the
+ * human-readable answer to "where are they going" — 'stderr' or a file path —
+ * so a surface like the TUI can say that debug is on and where to look.
+ */
+export function enableDebug(write?: (line: string) => void, target = 'stderr'): void {
   sink = write ?? ((line) => process.stderr.write(`${line}\n`));
+  destination = target;
+}
+
+/** Where debug lines are going, or undefined when debug is off. */
+export function debugDestination(): string | undefined {
+  return destination;
 }
 
 /** Mainly for tests: puts the module back in its default, silent state. */
 export function disableDebug(): void {
   sink = undefined;
+  destination = undefined;
 }
 
 export function debug(area: string, message: string): void {

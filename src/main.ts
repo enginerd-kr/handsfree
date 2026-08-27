@@ -74,11 +74,11 @@ function setUpDebug(args: Args): void {
   if (target === 'off') return;
 
   if (typeof target === 'object') {
-    enableDebug(fileSink(target.file));
+    enableDebug(fileSink(target.file), target.file);
     if (args.command === 'tui') process.stderr.write(`debug log: ${target.file}\n`);
   } else if (args.command === 'tui') {
     const file = `handsfree-debug-${process.pid}.log`;
-    enableDebug(fileSink(file));
+    enableDebug(fileSink(file), file);
     process.stderr.write(`debug log: ${file}\n`);
   } else {
     enableDebug();

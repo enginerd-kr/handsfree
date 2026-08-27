@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   debug,
+  debugDestination,
   debugEnabled,
   debugTargetFromEnv,
   describeProxyEnv,
@@ -30,6 +31,16 @@ describe('debug', () => {
     disableDebug();
     debug('area', 'dropped');
     expect(lines).toHaveLength(0);
+  });
+
+  it('remembers where the lines are going', () => {
+    expect(debugDestination()).toBeUndefined();
+    enableDebug(() => {});
+    expect(debugDestination()).toBe('stderr');
+    enableDebug(() => {}, '/tmp/hf.log');
+    expect(debugDestination()).toBe('/tmp/hf.log');
+    disableDebug();
+    expect(debugDestination()).toBeUndefined();
   });
 });
 

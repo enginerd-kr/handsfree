@@ -2,6 +2,7 @@ import os from 'node:os';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import type { Runtime } from '../../runtime.js';
+import { debugDestination } from '../../debug.js';
 import { buildView, type Tone, type ViewItem } from '../view-model.js';
 import { itemAt, lastFitting, placeItems } from './layout.js';
 import { CURSOR_QUERY, isMouseReport, parseCursorReport, parseMouseEvent, trackMouse } from './mouse.js';
@@ -497,6 +498,9 @@ function Prompt({
   startedAt: number | undefined;
   allOpen: boolean;
 }): React.JSX.Element {
+  // Where debug lines are going, when they are going anywhere. It cannot
+  // change while the UI is up, so reading it at render is enough.
+  const debugTo = debugDestination();
   return (
     <Box flexDirection="column" marginTop={1}>
       <Box borderStyle="round" borderColor={startedAt === undefined ? BRAND : 'gray'} paddingX={1}>
@@ -509,12 +513,17 @@ function Prompt({
           <Working startedAt={startedAt} />
         )}
       </Box>
-      <Box paddingLeft={2}>
-        <Text color="gray" dimColor>
+      <Box paddingLeft={2} paddingRight={1} justifyContent="space-between" gap={2}>
+        <Text color="gray" dimColor wrap="truncate">
           {startedAt === undefined
             ? `click a task · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all · /quit`
             : 'esc to interrupt'}
         </Text>
+        {debugTo ? (
+          <Text color="yellow" wrap="truncate-start">
+            ● debug → {tildify(debugTo)}
+          </Text>
+        ) : null}
       </Box>
     </Box>
   );

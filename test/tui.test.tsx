@@ -1,6 +1,7 @@
 import React from 'react';
 import { render } from 'ink-testing-library';
 import { afterEach, describe, expect, it } from 'vitest';
+import { disableDebug, enableDebug } from '../src/debug.js';
 import { App } from '../src/ui/tui/app.js';
 import { fakeAgent } from './fake-agent.js';
 import { harness, scriptedModel, type Harness } from './harness.js';
@@ -8,6 +9,7 @@ import { harness, scriptedModel, type Harness } from './harness.js';
 let open: Harness | undefined;
 
 afterEach(async () => {
+  disableDebug();
   await open?.dispose();
   open = undefined;
 });
@@ -33,6 +35,39 @@ async function waitFor(
 }
 
 describe('terminal UI', () => {
+  it('says under the prompt where debug lines go, only while debug is on', async () => {
+    enableDebug(() => {}, '/tmp/hf-debug.log');
+    const h = harness({
+      agents: { claude: fakeAgent({ script: () => [] }) },
+      llm: scriptedModel([]),
+    });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      const frame = await waitFor(() => app.lastFrame(), '● debug');
+      expect(frame).toContain('hf-debug.log');
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('keeps the debug marker off screen when debug is off', async () => {
+    const h = harness({
+      agents: { claude: fakeAgent({ script: () => [] }) },
+      llm: scriptedModel([]),
+    });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      const frame = await waitFor(() => app.lastFrame(), '>');
+      expect(frame).not.toContain('● debug');
+    } finally {
+      app.unmount();
+    }
+  });
+
   it('renders the transcript as it arrives', async () => {
     const h = harness({
       agents: { claude: fakeAgent({ script: () => [] }) },
