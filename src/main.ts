@@ -91,7 +91,8 @@ function setUpDebug(args: Args): void {
     'env',
     'agents are spawned directly, not through a shell: aliases and functions from ' +
       'your rc files (e.g. `alias claude="HTTP_PROXY= claude"`) do not apply to them — ' +
-      'they inherit this process environment, plus the profile\'s `env` from config.',
+      'they inherit this process environment, shaped by the config\'s `proxy` block ' +
+      'and the profile\'s `env`.',
   );
 }
 

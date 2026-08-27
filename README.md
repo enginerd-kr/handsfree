@@ -71,7 +71,7 @@ HANDSFREE_DEBUG=/tmp/hf.log handsfree
 
 `--debug` (or a non-empty `HANDSFREE_DEBUG`) logs what the transcript cannot show: the exact command each agent is launched with, the environment it inherits, adapter stderr, handshake timing, and the orchestration endpoint. The TUI owns the terminal, so there it writes to a `handsfree-debug-<pid>.log` file and prints the path; set `HANDSFREE_DEBUG` to a path to choose the file yourself.
 
-One pitfall the log calls out explicitly, because it is invisible otherwise: agents are spawned directly, **not through a shell**, so aliases and functions from your rc files do not apply to them. An `alias claude="HTTP_PROXY= NO_PROXY= claude"` never fires — handsfree launches `npx @zed-industries/claude-code-acp`, which inherits handsfree's own environment. Behind a corporate proxy, set or clear the variables where handsfree can see them (in the shell that starts handsfree, or per agent via the profile's `env` in config), and note that `HTTP_PROXY=` sets the variable to an *empty string* rather than unsetting it, and that HTTPS traffic reads `HTTPS_PROXY`, not `HTTP_PROXY`. The debug log prints each variable as set, `<empty>`, or unset — with proxy credentials masked — so you can see exactly what the child saw.
+One pitfall the log calls out explicitly, because it is invisible otherwise: agents are spawned directly, **not through a shell**, so aliases and functions from your rc files do not apply to them. An `alias claude="HTTP_PROXY= NO_PROXY= claude"` never fires — handsfree launches `npx @zed-industries/claude-code-acp`, which inherits handsfree's own environment. Behind a corporate proxy, use the config's `proxy` block (see Configuration) instead of the shell, and note that `HTTP_PROXY=` in a shell sets the variable to an *empty string* rather than unsetting it, and that HTTPS traffic reads `HTTPS_PROXY`, not `HTTP_PROXY`. The debug log prints each variable as set, `<empty>`, or unset — with proxy credentials masked — so you can see exactly what the child saw.
 
 ## The three gates
 
@@ -138,6 +138,24 @@ The orchestration model is picked by `orchestration.provider`, and both ways of 
 ```
 
 `local` speaks to any OpenAI-compatible endpoint. `acp` drives one of the configured `agents` over ACP in a connection of its own, separate from the sessions that do the work — its planning chatter never lands in a task's context, and it passes through the same policy engine as everything else. (The old top-level `llm` block is still read and treated as `orchestration.local`.)
+
+Behind a corporate proxy, configure the proxy here rather than in the shell — agents are spawned directly, so shell aliases never reach them:
+
+```json
+"proxy": {
+  "https": "http://proxy.corp:8080",
+  "noProxy": "localhost,127.0.0.1,.corp.example"
+}
+```
+
+Each key writes both spellings (`HTTPS_PROXY` and `https_proxy`) into every process handsfree starts. A key that is omitted inherits the shell's value; `""` removes the variable entirely — so `"proxy": { "http": "", "https": "", "all": "" }` means "no proxy for the agents, whatever the shell says". An agent profile's `env` overrides this block per agent, and a `null` value there removes an inherited variable:
+
+```json
+"agents": {
+  "claude": { "command": "npx", "args": ["-y", "@zed-industries/claude-code-acp"],
+              "env": { "HTTPS_PROXY": null } }
+}
+```
 
 Two things are deliberately absent: there is no `permissionMode`, `approvalMode` or `sandbox` setting per agent, and no way to express a bypass flag. Launch arguments are checked at config load and again immediately before `exec`.
 

@@ -52,6 +52,29 @@ describe('defaults', () => {
   });
 });
 
+describe('proxy', () => {
+  it('defaults to inheriting everything', () => {
+    const config = ConfigSchema.parse({});
+    expect(config.proxy).toEqual({});
+  });
+
+  it('accepts values, empty strings and omissions side by side', () => {
+    const config = ConfigSchema.parse({
+      proxy: { https: 'http://proxy.corp:8080', http: '' },
+    });
+    expect(config.proxy.https).toBe('http://proxy.corp:8080');
+    expect(config.proxy.http).toBe('');
+    expect(config.proxy.noProxy).toBeUndefined();
+  });
+
+  it('lets an agent profile null out an inherited variable', () => {
+    const config = ConfigSchema.parse({
+      agents: { claude: { command: 'agent', env: { HTTPS_PROXY: null } } },
+    });
+    expect(config.agents['claude']?.env['HTTPS_PROXY']).toBeNull();
+  });
+});
+
 describe('orchestration', () => {
   it('defaults to the local provider with both blocks filled in', () => {
     const config = ConfigSchema.parse({});

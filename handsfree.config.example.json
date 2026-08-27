@@ -13,6 +13,8 @@
     "maxHistoryMessages": 30
   },
 
+  "proxy": {},
+
   "agents": {
     "claude": {
       "command": "npx",

@@ -40,8 +40,11 @@ export const AgentProfileSchema = z
     /** Executable that speaks ACP over stdio. */
     command: z.string(),
     args: z.array(z.string()).default([]),
-    /** Extra environment for the child. The parent environment is passed through. */
-    env: z.record(z.string(), z.string()).default({}),
+    /**
+     * Extra environment for the child. The parent environment is passed
+     * through; `null` removes an inherited variable instead of setting it.
+     */
+    env: z.record(z.string(), z.string().nullable()).default({}),
     /** One-line capability note used when routing. Overridden by what `initialize` reports. */
     note: z.string().default(''),
   })
@@ -79,6 +82,30 @@ export const DEFAULT_AGENTS: Record<string, z.input<typeof AgentProfileSchema>> 
     note: 'methodical coding agent, good at tests and refactors',
   },
 };
+
+/**
+ * Proxy configuration for every process handsfree starts. This exists because
+ * the shell is the wrong place to fix a corporate proxy: agents are spawned
+ * directly, so rc-file aliases never apply to them, and `HTTP_PROXY=` in a
+ * shell sets an empty string rather than unsetting. Here the semantics are
+ * explicit — a key that is omitted inherits the shell's value, `""` removes
+ * the variable entirely, and anything else sets it — and each key writes both
+ * spellings (`HTTPS_PROXY` and `https_proxy`), since tools disagree on which
+ * one they read. An agent profile's `env` still wins over this block.
+ */
+export const ProxySchema = z
+  .object({
+    /** HTTP_PROXY / http_proxy */
+    http: z.string().optional(),
+    /** HTTPS_PROXY / https_proxy — the one API traffic actually reads. */
+    https: z.string().optional(),
+    /** ALL_PROXY / all_proxy */
+    all: z.string().optional(),
+    /** NO_PROXY / no_proxy */
+    noProxy: z.string().optional(),
+  })
+  .prefault({});
+export type ProxyConfig = z.infer<typeof ProxySchema>;
 
 const Rule = z.enum(['allow', 'ask', 'deny']);
 export type RuleOutcome = z.infer<typeof Rule>;
@@ -156,6 +183,7 @@ export const ConfigSchema = z
     /** Where session workspaces are created. Resolved to an absolute path at load. */
     workspaceRoot: z.string().default(''),
     orchestration: OrchestrationSchema.prefault({}),
+    proxy: ProxySchema,
     agents: z.record(z.string(), AgentProfileSchema).prefault(DEFAULT_AGENTS),
     capabilities: z
       .object({

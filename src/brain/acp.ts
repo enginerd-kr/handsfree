@@ -105,6 +105,7 @@ export class AcpModel implements ChatClient {
         ? this.options.createTarget(this.options.agentId, profileForAttempt)
         : spawnTarget(profileForAttempt, {
             cwd: host.workspace.dir,
+            proxy: host.config.proxy,
             onStderr: (text) =>
               host.transcript.append({ type: 'agent_stderr', agentId: host.agentId, text }),
           });
