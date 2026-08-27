@@ -47,6 +47,7 @@ export class AcpModel implements ChatClient {
       session = await connection.newSession((update: SessionUpdate) => {
         if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') {
           reply += update.content.text;
+          options.onDelta?.(update.content.text);
         }
       });
     } catch (err) {

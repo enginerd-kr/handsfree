@@ -2,7 +2,7 @@ import type { StopReason } from '@agentclientprotocol/sdk';
 import type { Config } from '../config/schema.js';
 import { trimHistory, type ChatClient, type ChatMessage } from '../brain/client.js';
 import { narrate } from '../brain/narrate.js';
-import { nextStep, planSystemPrompt, type AgentCard } from '../brain/plan.js';
+import { nextStep, planSystemPrompt, type AgentCard, type AnswerStream } from '../brain/plan.js';
 import { SessionUnresponsiveError } from '../host/session.js';
 import type { AgentPool } from '../host/pool.js';
 import type { Transcript } from '../workspace/transcript.js';
@@ -25,9 +25,46 @@ export interface ConversationDeps {
  * or the agent dies. A cancelled turn is the exception: Esc means stop, and
  * answering it would be one more thing the user has to wait through.
  */
+/**
+ * One reply of handsfree's own, shown as it is written. Deltas open the block,
+ * `end` settles it on the final text, and `retract` takes it back — for when
+ * what streamed turned out to be a delegation or unusable JSON, not an answer.
+ * A reply that never streamed ends as the plain assistant record it always was.
+ */
+class AssistantStream implements AnswerStream {
+  private open = false;
+
+  constructor(
+    private readonly transcript: Transcript,
+    private readonly id: number,
+  ) {}
+
+  delta(text: string): void {
+    if (text === '') return;
+    this.open = true;
+    this.transcript.append({ type: 'assistant_delta', stream: this.id, text });
+  }
+
+  retract(): void {
+    if (!this.open) return;
+    this.open = false;
+    this.transcript.append({ type: 'assistant', stream: this.id, text: '' });
+  }
+
+  end(text: string): void {
+    if (this.open) {
+      this.open = false;
+      this.transcript.append({ type: 'assistant', stream: this.id, text });
+    } else {
+      this.transcript.append({ type: 'assistant', text });
+    }
+  }
+}
+
 export class Conversation {
   private messages: ChatMessage[] = [];
   private taskCounter = 0;
+  private streamCounter = 0;
   private turn: AbortController | undefined;
   private inflight: Promise<void> | undefined;
   private readonly briefed = new Set<string>();
@@ -89,18 +126,22 @@ export class Conversation {
       for (let step = 0; step < config.limits.maxPlanSteps; step++) {
         if (turn.signal.aborted) break;
 
-        const planned = await this.plan(agents, turn.signal);
+        const stream = this.newStream();
+        const planned = await this.plan(agents, turn.signal, stream);
         if (!planned.ok) {
+          stream.retract();
           notes.push(`The orchestration model did not produce a usable next step (${planned.error}).`);
           break;
         }
         this.push({ role: 'assistant', content: JSON.stringify(planned.step) });
 
         if (planned.step.action === 'answer') {
-          transcript.append({ type: 'assistant', text: planned.step.message });
+          stream.end(planned.step.message);
           answered = true;
           break;
         }
+        // The step is a delegation; anything its JSON streamed was not a reply.
+        stream.retract();
 
         if (delegations >= config.limits.maxDelegationsPerTurn) {
           notes.push(`Stopped at the limit of ${config.limits.maxDelegationsPerTurn} tasks per message.`);
@@ -131,30 +172,36 @@ export class Conversation {
       // a report about stopping. Skipping the summary is also what lets /quit
       // end the process instead of waiting on one nobody would read.
       if (!answered && !turn.signal.aborted) {
+        const stream = this.newStream();
         const summary =
           outcomes.length > 0 || notes.length > 0
             ? await narrate(
                 this.deps.llm,
                 { userMessage: text, outcomes, notes, workspaceDir: workspace.dir },
                 turn.signal,
+                (piece) => stream.delta(piece),
               )
             : 'Nothing to do.';
         this.push({ role: 'assistant', content: summary });
-        transcript.append({ type: 'assistant', text: summary });
+        stream.end(summary);
       }
       this.turn = undefined;
     }
   }
 
-  private async plan(agents: string[], signal: AbortSignal) {
+  private async plan(agents: string[], signal: AbortSignal, stream: AnswerStream) {
     if (!this.deps.llm) {
       return { ok: false as const, error: 'no orchestration model is configured' };
     }
     try {
-      return await nextStep(this.deps.llm, this.messages, agents, signal);
+      return await nextStep(this.deps.llm, this.messages, agents, signal, stream);
     } catch (err) {
       return { ok: false as const, error: (err as Error).message };
     }
+  }
+
+  private newStream(): AssistantStream {
+    return new AssistantStream(this.deps.transcript, ++this.streamCounter);
   }
 
   private async delegate(

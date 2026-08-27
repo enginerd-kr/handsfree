@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { extractJsonObject } from './json.js';
+import { extractJsonObject, MessageStream } from './json.js';
 import type { ChatClient, ChatMessage, JsonSchemaSpec } from './client.js';
 
 export const StepSchema = z.discriminatedUnion('action', [
@@ -95,12 +95,23 @@ User: what does ${first} think of this approach?
 {"action":"delegate","agent":"${first}","kind":"answer","task":"What do you think of this approach?","done_when":"you have given your view"}`;
 }
 
+/**
+ * Where a would-be answer's text goes while the model is still writing it.
+ * The step may yet turn out to be a delegation or unusable JSON, so whatever
+ * was shown must be retractable.
+ */
+export interface AnswerStream {
+  delta(text: string): void;
+  retract(): void;
+}
+
 /** Asks for one step, correcting the model in place when its JSON is unusable. */
 export async function nextStep(
   llm: ChatClient,
   messages: ChatMessage[],
   agents: string[],
   signal: AbortSignal,
+  stream?: AnswerStream,
   attempts = 3,
 ): Promise<ParsedStep> {
   let last: ParsedStep = { ok: false, error: 'no reply' };
@@ -115,9 +126,25 @@ export async function nextStep(
               content: `That reply was unusable: ${last.ok ? '' : last.error} Reply with ONLY one JSON object matching the schema.`,
             },
           ];
-    const reply = await llm.chat(prompt, { schema: STEP_SCHEMA, signal });
+    // A fresh extractor per attempt: a retried reply starts a new JSON object.
+    const message = stream ? new MessageStream() : undefined;
+    const onDelta = message
+      ? (text: string) => {
+          const decoded = message.push(text);
+          if (decoded !== '') stream!.delta(decoded);
+        }
+      : undefined;
+    let reply: string;
+    try {
+      reply = await llm.chat(prompt, { schema: STEP_SCHEMA, signal, onDelta });
+    } catch (err) {
+      stream?.retract();
+      throw err;
+    }
     last = parseStep(reply, agents);
     if (last.ok) return last;
+    // Whatever streamed came from a reply that could not be used.
+    stream?.retract();
   }
   return last;
 }

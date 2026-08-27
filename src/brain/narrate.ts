@@ -29,6 +29,7 @@ export async function narrate(
   llm: ChatClient | undefined,
   input: NarrateInput,
   signal?: AbortSignal,
+  onDelta?: (text: string) => void,
 ): Promise<string> {
   const ledger = renderLedger(input);
   if (!llm || signal?.aborted) return ledger;
@@ -42,13 +43,39 @@ export async function narrate(
           content: `The user asked:\n${input.userMessage}\n\nHere is exactly what happened:\n\n${ledger}\n\nReport back to the user.`,
         },
       ],
-      { signal },
+      { signal, onDelta: onDelta ? proseGate(onDelta) : undefined },
     );
     const prose = asProse(reply);
     return grounded(prose, input) ? prose : ledger;
   } catch {
     return ledger;
   }
+}
+
+/**
+ * Streams the reply only once it is clearly prose. A model that opens with `{`
+ * or a code fence is emitting one more JSON action, which asProse below will
+ * unwrap or discard — so nothing is shown until the finished reply settles it.
+ */
+function proseGate(onDelta: (text: string) => void): (text: string) => void {
+  let buffer = '';
+  let mode: 'buffering' | 'stream' | 'silent' = 'buffering';
+  return (text) => {
+    if (mode === 'silent') return;
+    if (mode === 'stream') {
+      onDelta(text);
+      return;
+    }
+    buffer += text;
+    const first = buffer.trimStart()[0];
+    if (first === undefined) return;
+    if (first === '{' || first === '`') {
+      mode = 'silent';
+      return;
+    }
+    mode = 'stream';
+    onDelta(buffer);
+  };
 }
 
 /**

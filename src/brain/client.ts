@@ -16,6 +16,12 @@ export interface ChatOptions {
   /** Ask the endpoint to constrain the reply to this JSON Schema, if it can. */
   schema?: JsonSchemaSpec;
   signal?: AbortSignal;
+  /**
+   * Called with each piece of the reply as the model writes it. The full reply
+   * is still the return value; the pieces exist so a caller can show text the
+   * moment it exists instead of after the last token.
+   */
+  onDelta?: (text: string) => void;
 }
 
 export interface ChatClient {
@@ -61,17 +67,24 @@ export class LocalModel implements ChatClient {
   }
 
   async chat(messages: ChatMessage[], options: ChatOptions = {}): Promise<string> {
-    if (!options.schema) return this.send(messages, undefined, options.signal);
+    if (!options.schema) return this.send(messages, undefined, options.signal, undefined, options.onDelta);
 
     for (;;) {
       const mode = this.mode;
       try {
-        return await this.send(messages, mode === 'text' ? undefined : mode, options.signal, options.schema);
+        return await this.send(
+          messages,
+          mode === 'text' ? undefined : mode,
+          options.signal,
+          options.schema,
+          options.onDelta,
+        );
       } catch (err) {
         if (mode === 'text' || !isFormatRejection(err)) throw err;
         // The endpoint told us it cannot honour this way of asking. Step down
         // and try again rather than reporting a planning failure the user can
-        // do nothing about.
+        // do nothing about. A format rejection fails the request itself, so no
+        // deltas have been sent when this retries.
         this.mode = NEXT[mode];
       }
     }
@@ -82,6 +95,7 @@ export class LocalModel implements ChatClient {
     mode: Exclude<Mode, 'text'> | undefined,
     signal: AbortSignal | undefined,
     schema?: JsonSchemaSpec,
+    onDelta?: (text: string) => void,
   ): Promise<string> {
     const response_format =
       mode === 'json_schema' && schema
@@ -90,17 +104,29 @@ export class LocalModel implements ChatClient {
           ? { type: 'json_object' as const }
           : undefined;
 
-    let response;
+    const request = {
+      model: this.config.model,
+      temperature: this.config.temperature,
+      messages,
+      ...(response_format ? { response_format } : {}),
+    };
     try {
-      response = await this.client.chat.completions.create(
-        {
-          model: this.config.model,
-          temperature: this.config.temperature,
-          messages,
-          ...(response_format ? { response_format } : {}),
-        },
-        { signal },
-      );
+      if (onDelta) {
+        const stream = await this.client.chat.completions.create(
+          { ...request, stream: true },
+          { signal },
+        );
+        let text = '';
+        for await (const chunk of stream) {
+          const delta = chunk.choices[0]?.delta?.content ?? '';
+          if (delta === '') continue;
+          text += delta;
+          onDelta(delta);
+        }
+        return text;
+      }
+      const response = await this.client.chat.completions.create(request, { signal });
+      return response.choices[0]?.message?.content ?? '';
     } catch (err) {
       const error = err as { status?: number; message?: string };
       debug(
@@ -110,7 +136,6 @@ export class LocalModel implements ChatClient {
       );
       throw err;
     }
-    return response.choices[0]?.message?.content ?? '';
   }
 }
 

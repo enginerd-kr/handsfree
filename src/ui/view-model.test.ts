@@ -344,6 +344,37 @@ describe('buildView', () => {
     expect(view[0]?.tone).toBe('bad');
   });
 
+  it('joins handsfree its own streamed reply into one block, settled by the close', () => {
+    const t = transcript();
+    t.append({ type: 'user', text: 'hi' });
+    for (const text of ['Hel', 'lo ', 'there']) {
+      t.append({ type: 'assistant_delta', stream: 1, text });
+    }
+
+    // Still streaming: the block reads as one row.
+    let view = buildView(t.all(), WORKSPACE);
+    expect(view).toHaveLength(2);
+    expect(view[1]).toMatchObject({ role: 'handsfree', text: 'Hello there' });
+
+    t.append({ type: 'assistant', stream: 1, text: 'Hello there!' });
+
+    // The close settles the final text in place rather than adding a row.
+    view = buildView(t.all(), WORKSPACE);
+    expect(view).toHaveLength(2);
+    expect(view[1]?.text).toBe('Hello there!');
+  });
+
+  it('removes a streamed block its retraction says was not an answer', () => {
+    const t = transcript();
+    t.append({ type: 'user', text: 'hi' });
+    t.append({ type: 'assistant_delta', stream: 1, text: 'half a thou' });
+    t.append({ type: 'assistant', stream: 1, text: '' });
+
+    const view = buildView(t.all(), WORKSPACE);
+    expect(view).toHaveLength(1);
+    expect(view[0]?.role).toBe('user');
+  });
+
   it('keeps adapter stderr out of the view', () => {
     const t = transcript();
     t.append({ type: 'agent_stderr', agentId: 'claude', text: 'DeprecationWarning: ...' });

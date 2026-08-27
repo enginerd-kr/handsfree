@@ -5,7 +5,14 @@ import type { AuditEntry } from '../policy/types.js';
 
 export type TranscriptBody =
   | { type: 'user'; text: string }
-  | { type: 'assistant'; text: string }
+  /**
+   * When `stream` is set, this closes the `assistant_delta` records that share
+   * it: the text here is the reply's final form, and an empty text retracts the
+   * streamed block entirely — the deltas turned out not to be an answer.
+   */
+  | { type: 'assistant'; text: string; stream?: number }
+  /** A piece of handsfree's own reply, shown while the model is still writing. */
+  | { type: 'assistant_delta'; stream: number; text: string }
   | { type: 'note'; level: 'info' | 'warn' | 'error'; text: string }
   | { type: 'agent_stderr'; agentId: string; text: string }
   | { type: 'delegation'; taskId: number; agentId: string; sessionId: string; task: string }

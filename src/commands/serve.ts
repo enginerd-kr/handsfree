@@ -134,10 +134,15 @@ function upstreamEscalator(client: AgentContext, sessionId: string): Escalator {
 function toUpdate(record: TranscriptRecord) {
   switch (record.type) {
     case 'assistant':
-      return {
-        sessionUpdate: 'agent_message_chunk' as const,
-        content: { type: 'text' as const, text: record.text },
-      };
+      // A streamed reply arrives as deltas and closes with the full text here;
+      // forwarding only the close keeps the editor from seeing it twice. An
+      // empty text is a retraction, and there is nothing to unsay upstream.
+      return record.text === ''
+        ? undefined
+        : {
+            sessionUpdate: 'agent_message_chunk' as const,
+            content: { type: 'text' as const, text: record.text },
+          };
     case 'delegation':
       return {
         sessionUpdate: 'tool_call' as const,

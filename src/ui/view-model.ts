@@ -92,6 +92,10 @@ export function buildView(
   // stays open until something else interrupts it.
   let openText: ViewItem | undefined;
   let openThought: ViewItem | undefined;
+  // Handsfree's own reply while it streams. The closing assistant record that
+  // shares its stream id settles the block's final text — or removes it, when
+  // an empty text says what streamed was not an answer after all.
+  let openAssistant: { stream: number; item: ViewItem } | undefined;
 
   // The tool call the machinery is currently talking about. One write produces a
   // tool call, an approval at each gate it passes, and a note saying it landed;
@@ -118,6 +122,7 @@ export function buildView(
   const closeBlocks = () => {
     openText = undefined;
     openThought = undefined;
+    openAssistant = undefined;
   };
   const closeTool = () => {
     openTool = undefined;
@@ -138,10 +143,44 @@ export function buildView(
         add(row(`u${record.seq}`, 'user', 0, 'prompt', 'muted', record.text, 'normal', true));
         break;
 
-      case 'assistant':
-        closeBlocks();
+      case 'assistant': {
         closeTool();
+        const streamed =
+          record.stream !== undefined && openAssistant?.stream === record.stream
+            ? openAssistant.item
+            : undefined;
+        closeBlocks();
+        if (streamed) {
+          if (record.text === '') {
+            // Retracted: what streamed was not an answer, so the block goes.
+            const at = items.indexOf(streamed);
+            if (at !== -1) items.splice(at, 1);
+            byKey.delete(streamed.key);
+          } else {
+            streamed.text = record.text;
+          }
+          break;
+        }
+        // A retraction whose block is already gone has nothing left to say.
+        if (record.stream !== undefined && record.text === '') break;
         add(row(`a${record.seq}`, 'handsfree', 0, 'bullet', 'brand', record.text, 'normal', true));
+        break;
+      }
+
+      case 'assistant_delta':
+        closeTool();
+        openText = undefined;
+        openThought = undefined;
+        if (openAssistant?.stream === record.stream) {
+          openAssistant.item.text += record.text;
+        } else {
+          openAssistant = {
+            stream: record.stream,
+            item: add(
+              row(`a${record.seq}`, 'handsfree', 0, 'bullet', 'brand', record.text, 'normal', true),
+            ),
+          };
+        }
         break;
 
       case 'delegation': {
@@ -560,7 +599,8 @@ export function describeRecord(record: TranscriptRecord, workspaceDir: string): 
     case 'user':
       return `> ${record.text}`;
     case 'assistant':
-      return `\n${record.text}\n`;
+      // An empty text retracts a streamed block; there is nothing to print.
+      return record.text === '' ? undefined : `\n${record.text}\n`;
     case 'delegation':
       return `→ ${record.agentId}: ${record.task}`;
     case 'note':

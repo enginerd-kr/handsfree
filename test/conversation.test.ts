@@ -22,6 +22,21 @@ function assistantText(h: Harness): string[] {
     .map((record) => (record.type === 'assistant' ? record.text : ''));
 }
 
+/** A scripted model that streams each reply through onDelta before returning it. */
+function streamingModel(replies: string[]): ChatClient {
+  let index = 0;
+  return {
+    async chat(_messages, options) {
+      const reply = replies[index++];
+      if (reply === undefined) throw new Error('scripted model has no reply left');
+      for (let at = 0; at < reply.length; at += 5) {
+        options?.onDelta?.(reply.slice(at, at + 5));
+      }
+      return reply;
+    },
+  };
+}
+
 describe('Conversation', () => {
   it('answers directly without touching an agent', async () => {
     const agent = fakeAgent({ script: () => [] });
@@ -32,6 +47,38 @@ describe('Conversation', () => {
 
     expect(assistantText(h)).toEqual(['Hi there.']);
     expect(agent.prompts).toEqual([]);
+  });
+
+  it('streams an answer while the model writes it', async () => {
+    const agent = fakeAgent({ script: () => [] });
+    const h = harness({ agents: { claude: agent }, llm: streamingModel([answer('Hi there.')]) });
+    open = h;
+
+    await h.runtime.conversation.send('hello');
+
+    // The message field streamed as it was decoded, and the close settled it.
+    const deltas = h.runtime.transcript
+      .all()
+      .filter((record) => record.type === 'assistant_delta');
+    expect(deltas.length).toBeGreaterThan(1);
+    expect(deltas.map((record) => record.text).join('')).toBe('Hi there.');
+    expect(assistantText(h)).toEqual(['Hi there.']);
+  });
+
+  it('retracts what streamed from a reply that turned out unusable', async () => {
+    const agent = fakeAgent({ script: () => [] });
+    // The first reply streams half a message and never closes its JSON; the
+    // retry answers properly.
+    const llm = streamingModel(['{"action":"answer","message":"oops', answer('All good.')]);
+    const h = harness({ agents: { claude: agent }, llm });
+    open = h;
+
+    await h.runtime.conversation.send('hello');
+
+    const finals = h.runtime.transcript.all().filter((record) => record.type === 'assistant');
+    // One retraction for the broken attempt, then the real answer.
+    expect(finals.map((record) => record.text)).toEqual(['', 'All good.']);
+    expect(assistantText(h).at(-1)).toBe('All good.');
   });
 
   it('delegates, then reports what the agent actually did', async () => {
