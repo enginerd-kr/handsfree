@@ -16,17 +16,29 @@ export interface Placement {
 }
 
 /**
+ * Measured heights, kept per item. Wrapping is the expensive part of layout —
+ * `wrap-ansi` walks every escape and code point — and every scroll step asks
+ * for the same items again, which without this re-wraps the whole transcript
+ * per turn of the wheel. The items are rebuilt whenever the transcript or the
+ * markdown changes, and that is exactly what drops a stale entry.
+ */
+const measured = new WeakMap<ViewItem, { columns: number; rows: number }>();
+
+/**
  * How many terminal rows an item takes. Ink wraps with `wrap-ansi` under
  * `{trim: false, hard: true}`, so the same call is used here rather than a
  * character count: word breaks and double-width CJK both move a line, and a
  * click that is one row off lands on the wrong task.
  */
 export function heightOf(item: ViewItem, columns: number): number {
+  const hit = measured.get(item);
+  if (hit?.columns === columns) return hit.rows;
   const indent = item.depth * 2;
   let rows = item.gap ? 1 : 0;
   rows += lines(headline(item), width(columns, indent));
   const detail = width(columns, indent + DETAIL_INDENT);
   for (const line of item.lines) rows += lines(line.text, detail);
+  measured.set(item, { columns, rows });
   return rows;
 }
 
