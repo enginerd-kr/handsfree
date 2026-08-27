@@ -49,7 +49,9 @@ const DOT = process.platform === 'darwin' ? '⏺' : '●';
 
 export const GLYPH: Record<Marker, string> = {
   none: ' ',
-  prompt: '>',
+  // The user's line is marked by its wash now, not by a glyph — no gutter at
+  // all, so the text starts in the column the other rows' marks do.
+  prompt: '',
   bullet: DOT,
   thought: '✻',
   result: '⎿',
@@ -62,6 +64,13 @@ export const GLYPH: Record<Marker, string> = {
  * text rather than compete with it. A hover brightens it to plain gray.
  */
 export const BAND = '#3a3a3a';
+
+/**
+ * The wash behind the user's own lines: a faint lift of white, a step above
+ * the task band, running the whole width of the pane — so what was asked
+ * reads as its own strip before anything done about it is read.
+ */
+export const PROMPT_BAND = '#454545';
 
 /**
  * The welcome mark's second ink. The terminal's own `gray` sits too far under

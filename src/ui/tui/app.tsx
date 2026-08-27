@@ -11,6 +11,7 @@ import {
   takesArguments,
   type Command,
 } from '../../slash/command.js';
+import { completeMention, mentionSpans, suggestAgents } from '../../mention/mention.js';
 import { itemAt, placeItems, totalHeight, windowAt } from './layout.js';
 import { type Highlighter, loadHighlighter, renderMarkdown } from './markdown.js';
 import { CURSOR_QUERY, isMouseReport, parseCursorReport, parseMouseEvent, trackMouse } from './mouse.js';
@@ -23,6 +24,7 @@ import {
   HEADER_INK,
   MASCOT,
   MASCOT_BLINK,
+  PROMPT_BAND,
   PROMPT_CHAR,
   RESULT_GUTTER,
   RESULT_INDENT,
@@ -106,6 +108,22 @@ interface PendingAsk {
 interface Draft {
   value: string;
   cursor: number;
+}
+
+/**
+ * One row of the menu, whichever list it came from. A slash offers commands
+ * and an at-sign offers agents; the two never fire together — a command is
+ * still being spelled while the line has no spaces, and by then it holds no
+ * word an `@` could open — so one selection, one keymap and one layout serve
+ * both.
+ */
+type MenuItem =
+  | { kind: 'command'; command: Command }
+  | { kind: 'agent'; id: string; note: string };
+
+/** What a row is filtered by and measured by: `/name` or `@name`. */
+function menuLabel(item: MenuItem): string {
+  return item.kind === 'command' ? `/${item.command.name}` : `@${item.id}`;
 }
 
 export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
@@ -219,12 +237,23 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   // one that overflows scrolls the whole UI — losing the menu is much the
   // cheaper of the two.
   const menuBudget = Math.max(0, Math.min(MENU_ROWS, rows - 1 - HEADER_ROWS - PROMPT_ROWS - 8));
+  // Who a mention can name. The roster is fixed for the life of the run, so
+  // reading it once is enough.
+  const agents = useMemo(() => runtime.pool.available(), [runtime]);
+  /** The rows a half-written draft earns: commands for a slash, agents for an at-sign. */
+  const offeredFor = (d: Draft): MenuItem[] => {
+    const commands = suggest(d.value, runtime.commands);
+    if (commands.length > 0) return commands.map((command) => ({ kind: 'command', command }));
+    return suggestAgents(d.value, d.cursor, agents).map((id) => ({
+      kind: 'agent',
+      id,
+      note: runtime.config.agents[id]?.note ?? '',
+    }));
+  };
   const menu = useMemo(
-    () =>
-      ask || dismissed === draft.value
-        ? []
-        : suggest(draft.value, runtime.commands).slice(0, menuBudget),
-    [ask, dismissed, draft.value, runtime.commands, menuBudget],
+    () => (ask || dismissed === draft.value ? [] : offeredFor(draft).slice(0, menuBudget)),
+    // offeredFor is rebuilt every render but reads only what is listed here.
+    [ask, dismissed, draft, runtime.commands, agents, menuBudget],
   );
   // The menu's own rows, plus the blank line that keeps it off the transcript.
   const promptRows = PROMPT_ROWS + (menu.length > 0 ? menu.length + 1 : 0);
@@ -483,7 +512,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     const offered =
       dismissedRef.current === draftRef.current.value
         ? []
-        : suggest(draftRef.current.value, runtime.commands).slice(0, menuBudget);
+        : offeredFor(draftRef.current).slice(0, menuBudget);
     if (offered.length > 0) {
       const move = (by: number): void => {
         const next = (selectedRef.current + by + offered.length) % offered.length;
@@ -501,13 +530,19 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       }
       if (key.tab || key.return) {
         const chosen = offered[Math.min(selectedRef.current, offered.length - 1)]!;
-        // Enter sends a command that wants nothing further; one with arguments
-        // still to write is filled in and left for the user to finish.
-        if (key.return && !takesArguments(chosen)) {
-          submit(`/${chosen.name}`);
+        // An agent is only ever filled in, never sent: the mention opens a
+        // task, and the task is still to be written after the name.
+        if (chosen.kind === 'agent') {
+          applyDraft((d) => completeMention(d, chosen.id));
           return;
         }
-        const filled = `/${chosen.name} `;
+        // Enter sends a command that wants nothing further; one with arguments
+        // still to write is filled in and left for the user to finish.
+        if (key.return && !takesArguments(chosen.command)) {
+          submit(`/${chosen.command.name}`);
+          return;
+        }
+        const filled = `/${chosen.command.name} `;
         applyDraft(() => ({ value: filled, cursor: [...filled].length }));
         return;
       }
@@ -609,6 +644,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
                 band={band}
                 hovered={hovered}
                 bridged={band !== undefined && shown[index - 1]?.taskId === item.taskId}
+                agents={agents}
               />
             );
           })}
@@ -622,6 +658,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       ) : (
         <Prompt
           draft={draft}
+          agents={agents}
           startedAt={startedAt}
           queued={queued.length}
           allOpen={allOpen}
@@ -730,22 +767,32 @@ function Entry({
   band,
   hovered,
   bridged,
+  agents,
 }: {
   item: ViewItem;
   band: string | undefined;
   hovered: boolean;
   bridged: boolean;
+  agents: readonly string[];
 }): React.JSX.Element {
   const accent = item.agentId ? agentColour(item.agentId) : undefined;
+  // The user's own line wears its faint wash whether or not anything else is
+  // going on; a task's band and the hover still win, because they only exist
+  // on rows that are not the user's.
+  const wash = band ?? (item.marker === 'prompt' ? PROMPT_BAND : undefined);
   return (
     <Box flexDirection="column">
       {item.gap ? <Box height={1} backgroundColor={bridged ? band : undefined} /> : null}
-      <Box flexDirection="column" paddingLeft={item.depth * 2} backgroundColor={band}>
+      <Box flexDirection="column" paddingLeft={item.depth * 2} backgroundColor={wash}>
         <Row gutter={GLYPH[item.marker]} tone={item.markerTone} accent={accent} hovered={hovered}>
           {item.label ? (
             <Text {...paint(accent ? 'brand' : 'muted', hovered, accent)}>{`${item.label}  `}</Text>
           ) : null}
-          <Text {...paint(item.tone, hovered)}>{item.text}</Text>
+          {item.marker === 'prompt' ? (
+            <Mentioned text={item.text} tone={item.tone} hovered={hovered} agents={agents} />
+          ) : (
+            <Text {...paint(item.tone, hovered)}>{item.text}</Text>
+          )}
         </Row>
         {item.lines.map((line, index) => (
           <Row
@@ -782,6 +829,53 @@ function paint(
 }
 
 /**
+ * A user line with its mentions in colour: every `@name` that resolves to a
+ * configured agent wears that agent's own colour, and everything around it
+ * keeps the tone the row was given. The same rule as the draft under the
+ * prompt, so a line does not change its dress on the way into the transcript.
+ */
+function Mentioned({
+  text,
+  tone,
+  hovered,
+  agents,
+}: {
+  text: string;
+  tone: Tone;
+  hovered: boolean;
+  agents: readonly string[];
+}): React.JSX.Element {
+  const spans = mentionSpans(text, agents);
+  if (spans.length === 0) return <Text {...paint(tone, hovered)}>{text}</Text>;
+  const chars = [...text];
+  const pieces: React.ReactNode[] = [];
+  let at = 0;
+  for (const span of spans) {
+    if (span.start > at) {
+      pieces.push(
+        <Text key={at} {...paint(tone, hovered)}>
+          {chars.slice(at, span.start).join('')}
+        </Text>,
+      );
+    }
+    pieces.push(
+      <Text key={span.start} color={agentColour(span.agent)}>
+        {chars.slice(span.start, span.end).join('')}
+      </Text>,
+    );
+    at = span.end;
+  }
+  if (at < chars.length) {
+    pieces.push(
+      <Text key={at} {...paint(tone, hovered)}>
+        {chars.slice(at).join('')}
+      </Text>,
+    );
+  }
+  return <Text>{pieces}</Text>;
+}
+
+/**
  * A gutter and the text beside it. The gutter is its own fixed-width column so
  * that wrapped text hangs under the first line rather than under the glyph.
  */
@@ -802,9 +896,12 @@ function Row({
 }): React.JSX.Element {
   return (
     <Box paddingLeft={indent}>
-      <Box flexShrink={0} width={gutter.length + 1}>
-        <Text {...paint(tone, hovered, accent)}>{gutter}</Text>
-      </Box>
+      {/* An empty gutter is no gutter: the text starts where the marks do. */}
+      {gutter === '' ? null : (
+        <Box flexShrink={0} width={gutter.length + 1}>
+          <Text {...paint(tone, hovered, accent)}>{gutter}</Text>
+        </Box>
+      )}
       <Box flexGrow={1}>
         <Text wrap="wrap">{children}</Text>
       </Box>
@@ -830,12 +927,14 @@ function Row({
  */
 function Prompt({
   draft,
+  agents,
   startedAt,
   queued,
   allOpen,
   following,
 }: {
   draft: Draft;
+  agents: readonly string[];
   startedAt: number | undefined;
   queued: number;
   allOpen: boolean;
@@ -865,7 +964,7 @@ function Prompt({
           {`${PROMPT_CHAR} `}
         </Text>
         <Box flexGrow={1}>
-          <DraftLine draft={draft} />
+          <DraftLine draft={draft} agents={agents} />
         </Box>
       </Box>
       <Box paddingLeft={2} paddingRight={1} justifyContent="space-between" gap={2}>
@@ -874,7 +973,7 @@ function Prompt({
             ? 'scrolled up · page down or the wheel to follow again'
             : busy
               ? `esc to interrupt · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all`
-              : `/ for commands · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all · /exit`}
+              : `/ for commands · @ for agents · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all · /exit`}
         </Text>
         {debugTo ? (
           <Text color="yellow" wrap="truncate-start">
@@ -899,25 +998,32 @@ function Suggestions({
   items,
   selected,
 }: {
-  items: readonly Command[];
+  items: readonly MenuItem[];
   selected: number;
 }): React.JSX.Element {
-  const width = Math.max(...items.map((item) => item.name.length)) + 1;
+  const width = Math.max(...items.map((item) => menuLabel(item).length)) + 1;
   return (
     // The transcript's pane already gave up these rows, so the menu keeps every
     // one of them rather than being squeezed back into the prompt.
     <Box flexDirection="column" flexShrink={0} marginTop={1}>
       {items.map((item, index) => {
         const chosen = index === Math.min(selected, items.length - 1);
+        // An agent's name keeps its own colour whether or not it is chosen —
+        // the colour is what the menu is teaching — so being chosen shows as
+        // weight instead.
+        const colour =
+          item.kind === 'agent' ? agentColour(item.id) : chosen ? BRAND : undefined;
         return (
-          <Box key={item.name} paddingLeft={2}>
+          <Box key={menuLabel(item)} paddingLeft={2}>
             <Text wrap="truncate">
-              <Text color={chosen ? BRAND : undefined} bold={chosen}>
-                {`/${item.name}`.padEnd(width)}
+              <Text color={colour} bold={chosen}>
+                {menuLabel(item).padEnd(width)}
               </Text>
               <Text color="gray" dimColor>
-                {item.argumentHint ? `${item.argumentHint}  ` : ''}
-                {item.description}
+                {item.kind === 'command' && item.command.argumentHint
+                  ? `${item.command.argumentHint}  `
+                  : ''}
+                {item.kind === 'command' ? item.command.description : item.note}
               </Text>
             </Text>
           </Box>
@@ -930,17 +1036,38 @@ function Suggestions({
 /**
  * The draft with its cursor drawn in: the code point under the cursor is
  * inverted, and a cursor at the end inverts the space one past the text.
+ *
+ * A completed mention wears its agent's colour as it is typed, the same
+ * colour the header roster and the task blocks spend on that agent. The
+ * colouring and the cursor have to be composed rather than layered — the
+ * inverted cell is a piece of its own, so a cursor sitting inside a mention
+ * splits the colour around itself instead of losing it.
  */
-function DraftLine({ draft }: { draft: Draft }): React.JSX.Element {
+function DraftLine({ draft, agents }: { draft: Draft; agents: readonly string[] }): React.JSX.Element {
+  const spans = mentionSpans(draft.value, agents);
+  // A cursor at the end rests on a space one past the text; the virtual cell
+  // joins the array so one loop draws every cursor position the same way.
   const chars = [...draft.value];
-  const before = chars.slice(0, draft.cursor).join('');
-  const under = chars[draft.cursor] ?? ' ';
-  const after = chars.slice(draft.cursor + 1).join('');
+  if (draft.cursor >= chars.length) chars.push(' ');
+  const colourAt = (index: number): string | undefined => {
+    const span = spans.find((s) => index >= s.start && index < s.end);
+    return span ? agentColour(span.agent) : undefined;
+  };
+  const pieces: { text: string; colour: string | undefined; inverse: boolean }[] = [];
+  for (const [index, char] of chars.entries()) {
+    const colour = colourAt(index);
+    const inverse = index === draft.cursor;
+    const last = pieces[pieces.length - 1];
+    if (last && last.colour === colour && last.inverse === inverse && !inverse) last.text += char;
+    else pieces.push({ text: char, colour, inverse });
+  }
   return (
     <Text>
-      {before}
-      <Text inverse>{under}</Text>
-      {after}
+      {pieces.map((piece, index) => (
+        <Text key={index} color={piece.colour} inverse={piece.inverse}>
+          {piece.text}
+        </Text>
+      ))}
     </Text>
   );
 }

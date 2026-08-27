@@ -17,6 +17,7 @@ import {
   type CommandHost,
   type LocalCommand,
 } from '../slash/command.js';
+import { parseMention } from '../mention/mention.js';
 import { summarise, renderOutcome, type TaskOutcome } from './outcome.js';
 import { buildBrief, type TaskKind } from './prompts.js';
 
@@ -176,6 +177,38 @@ export class Conversation {
       }
       this.ensureSystemPrompt(agents);
       this.push({ role: 'user', content: prompt });
+
+      // A line that leads with "@agent" has already chosen its recipient, so
+      // the planner is never consulted: what follows the name is the task,
+      // sent as written. The step still goes into the history as the JSON the
+      // planner would have written, so the turns after this one read the same
+      // conversation whichever way the task was routed.
+      const mention = invoked ? undefined : parseMention(prompt, agents);
+      if (mention) {
+        delegations++;
+        this.push({
+          role: 'assistant',
+          content: JSON.stringify({
+            action: 'delegate',
+            agent: mention.agent,
+            kind: 'change',
+            task: mention.task,
+          }),
+        });
+        const outcome = await this.delegate(
+          mention.agent,
+          'change',
+          mention.task,
+          undefined,
+          turn.signal,
+        );
+        outcomes.push(outcome);
+        this.push({
+          role: 'user',
+          content: `TASK RESULT\n${renderOutcome(outcome, workspace.dir).slice(0, config.limits.maxResultChars)}`,
+        });
+        return;
+      }
 
       for (let step = 0; step < config.limits.maxPlanSteps; step++) {
         if (turn.signal.aborted) break;

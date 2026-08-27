@@ -316,6 +316,41 @@ describe('Conversation', () => {
     expect(h.runtime.transcript.all().map((record) => record.type)).toContain('stop');
   });
 
+  it('routes a leading @mention straight to its agent, planner unconsulted', async () => {
+    const claude = fakeAgent({ script: () => [] });
+    const gemini = fakeAgent({ script: () => [{ do: 'say', text: 'made it.' }] });
+    // One reply only — the summary. A consulted planner would run the script dry.
+    const llm = scriptedModel([answer('gemini made notes.txt.')]);
+    const h = harness({ agents: { claude, gemini }, llm });
+    open = h;
+
+    await h.runtime.conversation.send('@gemini make notes.txt');
+
+    expect(gemini.prompts[0]).toContain('make notes.txt');
+    expect(gemini.prompts[0]).not.toContain('@gemini');
+    expect(claude.prompts).toEqual([]);
+    expect(llm.seen).toHaveLength(1);
+    expect(assistantText(h)).toEqual(['gemini made notes.txt.']);
+
+    const kinds = h.runtime.transcript.all().map((record) => record.type);
+    expect(kinds).toContain('delegation');
+    expect(kinds).toContain('stop');
+  });
+
+  it('leaves an @name nobody answers to for the planner to read', async () => {
+    const claude = fakeAgent({ script: () => [] });
+    const llm = scriptedModel([answer('nobody here goes by that name.')]);
+    const h = harness({ agents: { claude }, llm });
+    open = h;
+
+    await h.runtime.conversation.send('@nobody do something');
+
+    // The planner was consulted, and saw the line as it was typed.
+    expect(llm.seen).toHaveLength(1);
+    expect(llm.seen[0]?.some((message) => message.content === '@nobody do something')).toBe(true);
+    expect(assistantText(h)).toEqual(['nobody here goes by that name.']);
+  });
+
   it('records the workspace path it gave the model', async () => {
     const agent = fakeAgent({ script: () => [] });
     const llm = scriptedModel([answer('ok')]);

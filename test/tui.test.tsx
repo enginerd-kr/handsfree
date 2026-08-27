@@ -82,7 +82,10 @@ describe('terminal UI', () => {
       await waitFor(() => app.lastFrame(), PROMPT_CHAR);
       await h.runtime.conversation.send('hi');
       const frame = await waitFor(() => app.lastFrame(), 'Hello there.');
-      expect(frame).toContain('> hi');
+      // The user's line is on screen, but no longer opened by a `>` — its
+      // wash is what marks it now.
+      expect(frame).toContain('hi');
+      expect(frame).not.toContain('> hi');
     } finally {
       app.unmount();
     }
@@ -322,6 +325,79 @@ describe('terminal UI', () => {
       await press('\r');
       await waitFor(() => app.lastFrame(), 'what you can type');
       expect(app.lastFrame()).not.toContain('Working');
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('offers the agents a half-written mention could still become', async () => {
+    const h = harness({
+      agents: { claude: fakeAgent({ script: () => [] }), gemini: fakeAgent({ script: () => [] }) },
+    });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      const closed = (app.lastFrame() ?? '').split('\n').length;
+
+      app.stdin.write('@');
+      const frame = await waitFor(() => app.lastFrame(), '@gemini');
+      expect(frame).toContain('@claude');
+
+      // Same rule as the command menu: the rows come out of the transcript,
+      // never out of the frame's height.
+      expect((app.lastFrame() ?? '').split('\n').length).toBe(closed);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('keeps the agent menu shut mid-word, where an @ is an address', async () => {
+    const h = harness({
+      agents: { claude: fakeAgent({ script: () => [] }), gemini: fakeAgent({ script: () => [] }) },
+    });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      for (const char of 'me@g') {
+        app.stdin.write(char);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      await waitFor(() => app.lastFrame(), 'me@g');
+      expect(app.lastFrame()).not.toContain('@gemini');
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('fills a mention in on tab or enter, and never sends it', async () => {
+    const h = harness({
+      agents: { claude: fakeAgent({ script: () => [] }), gemini: fakeAgent({ script: () => [] }) },
+    });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    const plain = () => (app.lastFrame() ?? '').replace(/\[[0-9;]*m/g, '');
+    const press = async (...keys: string[]) => {
+      for (const key of keys) {
+        app.stdin.write(key);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    };
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      await press(...'@ge');
+      await waitFor(() => app.lastFrame(), '@gemini');
+
+      // Enter completes the name rather than sending it: the mention opens a
+      // task, and the task is still to be written.
+      await press('\r');
+      await waitFor(plain, `${PROMPT_CHAR} @gemini`);
+      expect(h.runtime.transcript.all().filter((r) => r.type === 'user')).toHaveLength(0);
+      expect(plain()).not.toContain('@ge ');
     } finally {
       app.unmount();
     }
