@@ -8,6 +8,12 @@ export interface BriefInput {
   workspaceDir: string;
   /** The first brief of a session explains the ground rules; later ones do not. */
   first: boolean;
+  /**
+   * What the other agents did since this one last worked, rendered by
+   * `renderHandoff`. Empty when nothing did — the section is then left out,
+   * not left in with nothing under it.
+   */
+  handoff?: string;
 }
 
 /**
@@ -29,6 +35,7 @@ export function buildBrief(input: BriefInput): string {
     );
   }
   if (input.doneWhen) lines.push('', `Done when: ${input.doneWhen}`);
+  if (input.handoff) lines.push('', input.handoff);
   if (input.first) {
     lines.push(
       '',

@@ -20,8 +20,10 @@ import {
   type LocalCommand,
 } from '../slash/command.js';
 import { parseMention, parseOrchestration } from '../mention/mention.js';
+import { floorOf, renderHandoff, renderRunState, tasksSince } from './ledger.js';
 import { summarise, renderOutcome, type TaskOutcome } from './outcome.js';
 import { buildBrief, type TaskKind } from './prompts.js';
+import { metered } from './usage.js';
 
 export interface ConversationDeps {
   config: Config;
@@ -84,13 +86,27 @@ class AssistantStream implements AnswerStream {
   }
 }
 
+/**
+ * What handsfree remembers about having briefed an agent: which session heard
+ * the ground rules, how many tasks it has had since, how the last one ended,
+ * and where in the record its last task stopped — the line "since your last
+ * task" is drawn at.
+ */
+interface Briefing {
+  sessionId: string;
+  tasksSinceRules: number;
+  lastStop: StopReason | 'unresponsive';
+  /** The seq of the agent's last `stop`; handoffs are what came after it. */
+  since: number;
+}
+
 export class Conversation {
   private messages: ChatMessage[] = [];
   private taskCounter = 0;
   private streamCounter = 0;
   private turn: AbortController | undefined;
   private inflight: Promise<void> | undefined;
-  private readonly briefed = new Set<string>();
+  private readonly briefed = new Map<string, Briefing>();
 
   constructor(private readonly deps: ConversationDeps) {}
 
@@ -186,6 +202,14 @@ export class Conversation {
     const notes: string[] = [];
     let answered = false;
     let delegations = 0;
+    /**
+     * The turn as the planner will remember it: the line the user typed and
+     * the reply that closed it. Everything between — the steps, the task
+     * results — is dropped once the turn is over, since what they said is by
+     * then in the run state under the system prompt.
+     */
+    let opening: ChatMessage | undefined;
+    let closing: string | undefined;
 
     try {
       // Inside the turn, and holding its signal: expansion can run a command,
@@ -199,7 +223,8 @@ export class Conversation {
         );
       }
       this.ensureSystemPrompt(agents);
-      this.push({ role: 'user', content: prompt });
+      opening = { role: 'user', content: prompt };
+      this.push(opening);
 
       // A line that leads with "@agent" has already chosen its recipient, so
       // the planner is never consulted: what follows the name is the task,
@@ -251,6 +276,7 @@ export class Conversation {
         if (planned.step.action === 'answer') {
           stream.end(planned.step.message);
           answered = true;
+          closing = JSON.stringify(planned.step);
           break;
         }
         // The step is a delegation; anything its JSON streamed was not a reply.
@@ -289,17 +315,42 @@ export class Conversation {
         const summary =
           outcomes.length > 0 || notes.length > 0
             ? await narrate(
-                this.deps.llm,
+                this.deps.llm && metered(this.deps.llm, 'narrate', transcript),
                 { userMessage: prompt, outcomes, notes, workspaceDir: workspace.dir },
                 turn.signal,
                 (piece) => stream.delta(piece),
               )
             : 'Nothing to do.';
-        this.push({ role: 'assistant', content: summary });
+        // Kept in the shape of every other reply of the planner's, so the
+        // history it reads back is JSON all the way down: a prose turn among
+        // JSON ones is the example a small model imitates next.
+        closing = JSON.stringify({ action: 'answer', message: summary });
         stream.end(summary);
       }
+      if (opening) this.settle(opening, closing);
       this.turn = undefined;
     }
+  }
+
+  /**
+   * Closes the turn in the planner's history: the line the user typed, then
+   * the reply — and nothing of the steps and results in between. Those are
+   * bulk once the turn is over, and what they established is in the run
+   * state, which is rebuilt from the record at the start of every turn. A
+   * turn that stopped before it could reply closes on a line saying so,
+   * because two user lines in a row is a shape some chat templates refuse.
+   */
+  private settle(opening: ChatMessage, closing: string | undefined): void {
+    const at = this.messages.indexOf(opening);
+    if (at === -1) return;
+    const reply = closing ?? JSON.stringify({ action: 'answer', message: '(stopped before finishing)' });
+    // A new array rather than a splice: the one being replaced was handed to
+    // the planner on every step of this turn, and a client that kept it —
+    // anything queueing, retrying or recording — must keep what it was sent.
+    this.messages = trimHistory(
+      [...this.messages.slice(0, at), opening, { role: 'assistant', content: reply }],
+      this.deps.config.orchestration.maxHistoryMessages,
+    );
   }
 
   /**
@@ -333,7 +384,8 @@ export class Conversation {
       return { ok: false as const, error: 'no orchestration model is configured' };
     }
     try {
-      return await nextStep(this.deps.llm, this.messages, agents, signal, stream);
+      const llm = metered(this.deps.llm, 'plan', this.deps.transcript);
+      return await nextStep(llm, this.messages, agents, signal, stream);
     } catch (err) {
       return { ok: false as const, error: (err as Error).message };
     }
@@ -384,9 +436,27 @@ export class Conversation {
       ...(chosen === undefined ? {} : { model: chosen.value }),
     });
 
-    const first = !this.briefed.has(agentId);
-    this.briefed.add(agentId);
-    const brief = buildBrief({ task, kind, doneWhen, workspaceDir: workspace.dir, first });
+    // The ground rules go out to a session that has not heard them — one just
+    // opened, or one that replaced a discarded process — and again to one
+    // that may have lost them: after a turn cut off at max_tokens, and every
+    // so many tasks, since a session compacts from the front. What the others
+    // did since is drawn from the record, from this agent's last stop; a
+    // session that remembers nothing is told about its own tasks too.
+    const known = this.briefed.get(agentId);
+    const fresh = known === undefined || known.sessionId !== session.sessionId;
+    const first =
+      fresh ||
+      known.lastStop === 'max_tokens' ||
+      known.tasksSinceRules >= config.limits.rebriefEveryTasks;
+    const records = transcript.all();
+    const since = fresh ? floorOf(records) : known.since;
+    const handoff = renderHandoff({
+      tasks: tasksSince(records, since),
+      agentId,
+      includeOwn: fresh,
+      workspaceDir: workspace.dir,
+    });
+    const brief = buildBrief({ task, kind, doneWhen, workspaceDir: workspace.dir, first, handoff });
 
     let stopReason: StopReason | 'unresponsive';
     try {
@@ -410,12 +480,18 @@ export class Conversation {
       }
     }
 
-    transcript.append({
+    const stopped = transcript.append({
       type: 'stop',
       taskId,
       agentId,
       sessionId: session.sessionId,
       stopReason: stopReason === 'unresponsive' ? 'cancelled' : stopReason,
+    });
+    this.briefed.set(agentId, {
+      sessionId: session.sessionId,
+      tasksSinceRules: first ? 1 : known.tasksSinceRules + 1,
+      lastStop: stopReason,
+      since: stopped.seq,
     });
 
     return summarise(
@@ -484,18 +560,31 @@ export class Conversation {
     }
   }
 
+  /**
+   * The system prompt, rebuilt at the start of every turn with the run so far
+   * under it. The run state is read off the record from the last `/clear`
+   * on, so a cleared conversation plans from a clean slate the way it is
+   * briefed from one.
+   */
   private ensureSystemPrompt(agents: string[]): void {
+    const { transcript, workspace } = this.deps;
     const cards: AgentCard[] = agents.map((id) => ({
       id,
       description: agentRole(this.deps.config, id) || 'coding agent',
     }));
-    const system = planSystemPrompt(cards, this.deps.workspace.dir);
+    const records = transcript.all();
+    const runState = renderRunState(tasksSince(records, floorOf(records)), workspace.dir);
+    const system = planSystemPrompt(cards, workspace.dir, runState);
     if (this.messages[0]?.role === 'system') this.messages[0] = { role: 'system', content: system };
     else this.messages.unshift({ role: 'system', content: system });
   }
 
+  /**
+   * Within a turn the history grows unchecked — bounded by `maxPlanSteps`, and
+   * every message in it is one the planner needs right now. It is trimmed
+   * when the turn settles, after the turn has been folded to two lines.
+   */
   private push(message: ChatMessage): void {
     this.messages.push(message);
-    this.messages = trimHistory(this.messages, this.deps.config.orchestration.maxHistoryMessages);
   }
 }

@@ -58,9 +58,17 @@ export interface AgentCard {
   description: string;
 }
 
-export function planSystemPrompt(agents: AgentCard[], workspace: string): string {
+/**
+ * The planner's standing instructions, with the run so far under them. The
+ * run state is the planner's memory of what was delegated: the exchanges that
+ * carried each task are dropped once the turn is over, and this is what stays.
+ */
+export function planSystemPrompt(agents: AgentCard[], workspace: string, runState = ''): string {
   const roster = agents.map((agent) => `- "${agent.id}": ${agent.description}`).join('\n');
   const first = agents[0]?.id ?? 'claude';
+  const memory = runState
+    ? `\n\nTasks so far this run (the full record — earlier messages may have been dropped):\n${runState}`
+    : '';
   return `You are handsfree. You either answer the user yourself or hand one task to one agent.
 
 Agents:
@@ -70,6 +78,7 @@ How the agents work:
 - They share a workspace directory: ${workspace}. Everything they create lives there.
 - Every file they touch and every command they run is approved or refused by handsfree, not by them. A refusal is final; asking again will not change it.
 - Each agent keeps its memory between tasks, so a follow-up task can refer to what it just did.
+- Each agent is told which files the other agents changed since it last worked, and what they said they did. A brief need not repeat that.
 - They can also just talk. Asking one a question is a task; its reply comes back to you.
 
 Your rules:
@@ -92,7 +101,7 @@ User: make notes.txt containing hello world
 User: ask ${first} 안녕?
 {"action":"delegate","agent":"${first}","kind":"answer","task":"안녕?","done_when":"you have replied"}
 User: what does ${first} think of this approach?
-{"action":"delegate","agent":"${first}","kind":"answer","task":"What do you think of this approach?","done_when":"you have given your view"}`;
+{"action":"delegate","agent":"${first}","kind":"answer","task":"What do you think of this approach?","done_when":"you have given your view"}${memory}`;
 }
 
 /**

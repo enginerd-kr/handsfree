@@ -546,6 +546,124 @@ describe('Conversation', () => {
     expect(assistantText(h)).toEqual(['nobody here goes by that name.']);
   });
 
+  it('hands an agent what the others changed since it last worked', async () => {
+    let edited = '';
+    const claude = fakeAgent({
+      script: () => [
+        {
+          do: 'tool',
+          toolCallId: 't1',
+          title: 'Write a.ts',
+          kind: 'edit',
+          locations: [edited],
+        },
+        { do: 'say', text: 'Added parse(); empty input returns null.' },
+      ],
+    });
+    const gemini = fakeAgent({ script: () => [{ do: 'say', text: 'Wrote three tests.' }] });
+    const llm = scriptedModel([answer('done.'), answer('done.')]);
+    const h = harness({ agents: { claude, gemini }, llm });
+    open = h;
+    edited = path.join(h.workspaceDir, 'a.ts');
+
+    await h.runtime.conversation.send('@claude add parse()');
+    await h.runtime.conversation.send('@gemini test parse()');
+
+    // gemini is told what claude changed, and what claude said about it —
+    // paths and an account, not the file.
+    expect(gemini.prompts[0]).toContain('Since your last task:');
+    expect(gemini.prompts[0]).toContain('claude (task 1) changed a.ts');
+    expect(gemini.prompts[0]).toContain('empty input returns null');
+  });
+
+  it("does not hand an agent back its own work, which its session remembers", async () => {
+    const claude = fakeAgent({ script: () => [{ do: 'say', text: 'Added parse().' }] });
+    const llm = scriptedModel([answer('done.'), answer('done.')]);
+    const h = harness({ agents: { claude }, llm });
+    open = h;
+
+    await h.runtime.conversation.send('@claude add parse()');
+    await h.runtime.conversation.send('@claude now tidy it');
+
+    expect(claude.prompts[1]).not.toContain('Since your last task:');
+    expect(claude.prompts[1]).not.toContain('Added parse().');
+  });
+
+  it('briefs an agent again once its session has run enough tasks to have compacted', async () => {
+    const claude = fakeAgent({ script: () => [{ do: 'say', text: 'ok' }] });
+    const llm = scriptedModel([answer('a'), answer('b'), answer('c')]);
+    const h = harness({
+      agents: { claude },
+      llm,
+      config: { limits: { rebriefEveryTasks: 2 } },
+    });
+    open = h;
+
+    await h.runtime.conversation.send('@claude one');
+    await h.runtime.conversation.send('@claude two');
+    await h.runtime.conversation.send('@claude three');
+
+    expect(claude.prompts[0]).toContain('handsfree approves or refuses');
+    expect(claude.prompts[1]).not.toContain('handsfree approves or refuses');
+    // Two tasks on from the rules, so they go out again.
+    expect(claude.prompts[2]).toContain('handsfree approves or refuses');
+  });
+
+  it('briefs an agent again after a turn that ran out of tokens', async () => {
+    const claude = fakeAgent({
+      script: (_prompt, turn) => (turn === 0 ? [{ do: 'stop', reason: 'max_tokens' }] : [{ do: 'say', text: 'ok' }]),
+    });
+    const llm = scriptedModel([answer('a'), answer('b')]);
+    const h = harness({ agents: { claude }, llm });
+    open = h;
+
+    await h.runtime.conversation.send('@claude one');
+    await h.runtime.conversation.send('@claude two');
+
+    expect(claude.prompts[1]).toContain('handsfree approves or refuses');
+  });
+
+  it('keeps the run in the system prompt and folds the turn that established it', async () => {
+    // Resolved once the harness exists, so the path is inside the real
+    // workspace and the run state can name it the way a reader would.
+    let edited = '';
+    const claude = fakeAgent({
+      script: () => [
+        { do: 'tool', toolCallId: 't1', title: 'Write a.ts', kind: 'edit', locations: [edited] },
+        { do: 'say', text: 'A long account of everything that was done, at length.' },
+      ],
+    });
+    const llm = scriptedModel([delegate('Add parse()'), answer('done.'), answer('and again.')]);
+    const h = harness({ agents: { claude }, llm });
+    open = h;
+    edited = path.join(h.workspaceDir, 'a.ts');
+
+    await h.runtime.conversation.send('add parse()');
+    await h.runtime.conversation.send('anything else?');
+
+    const second = llm.seen.at(-1) ?? [];
+    // The task is in the system prompt, as a line rebuilt from the record...
+    expect(second[0]?.content).toContain('Task 1 (claude): done');
+    expect(second[0]?.content).toContain('Files changed this run: a.ts');
+    // ...and the turn that produced it is two messages, not five.
+    expect(second.slice(1).map((message) => message.role)).toEqual(['user', 'assistant', 'user']);
+    expect(second.some((message) => message.content.startsWith('TASK RESULT'))).toBe(false);
+    expect(JSON.stringify(second)).not.toContain('A long account');
+  });
+
+  it('writes down what each call to the planner cost', async () => {
+    const agent = fakeAgent({ script: () => [] });
+    const h = harness({ agents: { claude: agent }, llm: scriptedModel([answer('Hi.')]) });
+    open = h;
+
+    await h.runtime.conversation.send('hello');
+
+    const usage = h.runtime.transcript.all().filter((record) => record.type === 'usage');
+    expect(usage).toHaveLength(1);
+    expect(usage[0]).toMatchObject({ purpose: 'plan' });
+    expect(usage[0] && usage[0].type === 'usage' ? usage[0].promptChars : 0).toBeGreaterThan(0);
+  });
+
   it('records the workspace path it gave the model', async () => {
     const agent = fakeAgent({ script: () => [] });
     const llm = scriptedModel([answer('ok')]);

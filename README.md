@@ -307,9 +307,48 @@ One run, one record:
 
 The record is kept out here either way, never inside the directory being worked on, because an audit log an agent can edit is not an audit log. The UI renders it, the summary is written from it, and tests replay it — there is no second copy of what happened anywhere in the system. Runs older than `cleanupPeriodDays` are swept a beat after startup.
 
-## Sessions
+## Sessions, and who remembers what
 
-handsfree keeps one session per agent for the whole run, so a follow-up task builds on the previous one instead of replaying context through files. Where an adapter supports `session/load`, a restart rejoins the conversation rather than starting over.
+The whole point of a small planner is that the expensive context lives with the agents rather than in front of them. Three things remember, and they remember different things.
+
+**The agent remembers its own work.** handsfree keeps one session per agent for the whole run, so a follow-up task builds on the previous one instead of replaying context through files — the files it has read, the shape of the code, what it just changed. Where an adapter supports `session/load`, a restart rejoins the conversation rather than starting over. This is the context worth paying for, and nothing else duplicates it.
+
+Its brief is short for the same reason: the ground rules go out once and are not repeated, since a session that has heard them still has them. They *are* sent again where the session may have lost them — after a turn that ended at `max_tokens`, every `limits.rebriefEveryTasks` tasks (eight), and to a session that had to be replaced. An agent compacts from the front, and what was said first is the part that explains the jail.
+
+**The planner remembers the ledger, not the transcript.** It never sees an agent's output twice. What it keeps between turns is a line per task, rebuilt from the record at the start of every turn and put under its system prompt:
+
+```
+Tasks so far this run:
+Task 1 (claude): done — after 12s — touched src/parse.ts
+  task: Add parse(), returning null for empty input
+Task 2 (gemini): done — after 8s — touched src/parse.test.ts
+  task: Write tests for parse()
+Files changed this run: src/parse.ts, src/parse.test.ts
+```
+
+Within a turn it sees each result in full, agent's words and all. Once the turn closes, the turn folds to the line you typed and the reply you got, because everything else it established is in the ledger above. Nothing is summarised by a model to get there — the ledger is a projection of the transcript, built by code, so it costs nothing and cannot drift from what happened.
+
+**The workspace is how agents reach each other.** An agent's brief ends with what the *others* changed since it last worked:
+
+```
+Since your last task:
+- claude (task 1) changed src/parse.ts
+  "Added parse(); empty input returns null."
+```
+
+Paths and the agent's own closing account — never file contents. If it needs what is in the file it reads the file, which is cheaper and truer than being told about it second-hand, and it is never handed its own work back, because its session already has it. handsfree assembles this from the record too; the planner is not asked to carry anything across.
+
+`/clear` draws the line under all three at once: the ledger starts from it, the handoffs start from it, and the agents are briefed from scratch.
+
+### What it costs
+
+Every call to the orchestration model is written into the transcript, so a run that feels expensive can be read rather than guessed at:
+
+```json
+{"type":"usage","purpose":"plan","promptChars":2841,"replyChars":96,"promptTokens":712,"completionTokens":29}
+```
+
+`promptChars` is always there. `promptTokens` is the endpoint's own count and appears where it gives one — a local OpenAI-compatible server does, an agent driven over ACP does not. Nothing renders these; they are for reading the file with `jq`, and `--debug` prints the same figures live.
 
 ## Debugging
 

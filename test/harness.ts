@@ -81,7 +81,10 @@ export function scriptedModel(replies: string[]): ChatClient & { seen: ChatMessa
   return {
     seen,
     async chat(messages) {
-      seen.push(messages);
+      // A copy: the conversation goes on mutating its history after the call,
+      // and a test asserting on what the planner was *sent* has to see the
+      // messages as they were sent.
+      seen.push([...messages]);
       const reply = replies[index++];
       if (reply === undefined) throw new Error('scripted model has no reply left');
       return reply;

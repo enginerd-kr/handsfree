@@ -1,5 +1,5 @@
 import type { StopReason } from '@agentclientprotocol/sdk';
-import { agentText, touchedFiles, type TranscriptRecord } from '../workspace/transcript.js';
+import { agentText, changedFiles, touchedFiles, type TranscriptRecord } from '../workspace/transcript.js';
 
 export type TaskStatus = 'done' | 'incomplete' | 'refused' | 'cancelled' | 'error';
 
@@ -10,8 +10,10 @@ export interface TaskOutcome {
   status: TaskStatus;
   /** What the agent said at the end of the turn. */
   message: string;
-  /** Absolute paths the agent reported touching. */
+  /** Absolute paths the agent reported touching, reads included. */
   files: string[];
+  /** The subset it wrote, edited, moved or deleted — what is different now. */
+  changed: string[];
   /** Everything handsfree refused during this task, in order. */
   denials: string[];
   durationMs: number;
@@ -46,6 +48,7 @@ export function summarise(
     status: statusOf(stopReason),
     message: agentText(records),
     files: touchedFiles(records),
+    changed: changedFiles(records),
     denials,
     durationMs,
   };
@@ -68,15 +71,24 @@ function statusOf(stopReason: StopReason | 'unresponsive'): TaskStatus {
 }
 
 export function renderOutcome(outcome: TaskOutcome, workspaceDir: string): string {
+  const head = renderOutcomeHead(outcome, workspaceDir);
+  return outcome.message ? `${head}\n${outcome.message}` : head;
+}
+
+/**
+ * The one line that says what became of a task: status, time, files, refusals.
+ * It is what the planner keeps once the agent's words have been relayed — the
+ * words are the bulk of a result, and once passed on they are only bulk.
+ */
+export function renderOutcomeHead(outcome: TaskOutcome, workspaceDir: string): string {
   const parts = [`Task ${outcome.taskId} (${outcome.agentId}): ${outcome.status}`];
   parts.push(`after ${Math.round(outcome.durationMs / 1000)}s`);
   const files = outcome.files.map((file) => relative(file, workspaceDir));
   if (files.length > 0) parts.push(`touched ${files.join(', ')}`);
   if (outcome.denials.length > 0) parts.push(`refused: ${outcome.denials.join('; ')}`);
-  const head = parts.join(' — ');
-  return outcome.message ? `${head}\n${outcome.message}` : head;
+  return parts.join(' — ');
 }
 
-function relative(file: string, root: string): string {
+export function relative(file: string, root: string): string {
   return file.startsWith(root) ? file.slice(root.length).replace(/^\//, '') : file;
 }

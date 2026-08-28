@@ -342,6 +342,14 @@ export const ConfigSchema = z
         maxDelegationsPerTurn: z.number().int().positive().default(3),
         maxPlanSteps: z.number().int().positive().default(6),
         maxResultChars: z.number().int().positive().default(4000),
+        /**
+         * How many tasks an agent's session gets between repeats of the ground
+         * rules. The session keeps its own memory, but a long one is compacted
+         * by the agent and what goes first is what was said first — the brief
+         * that explained the jail. A repeat is a hundred tokens; being told
+         * about it is not something a session can do.
+         */
+        rebriefEveryTasks: z.number().int().positive().default(8),
       })
       .prefault({}),
   })

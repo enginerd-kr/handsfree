@@ -12,10 +12,23 @@ export interface JsonSchemaSpec {
   schema: Record<string, unknown>;
 }
 
+/** What one reply cost, as the endpoint counted it. */
+export interface Usage {
+  promptTokens: number;
+  completionTokens: number;
+}
+
 export interface ChatOptions {
   /** Ask the endpoint to constrain the reply to this JSON Schema, if it can. */
   schema?: JsonSchemaSpec;
   signal?: AbortSignal;
+  /**
+   * Called once with the endpoint's own token count for the exchange, where it
+   * gives one. Not every endpoint does — an agent driven over ACP reports
+   * nothing — so a caller that needs a number it can always have measures the
+   * prompt itself and treats this as the better figure when it arrives.
+   */
+  onUsage?: (usage: Usage) => void;
   /**
    * Called with each piece of the reply as the model writes it. The full reply
    * is still the return value; the pieces exist so a caller can show text the
@@ -51,6 +64,13 @@ const NEXT: Record<Mode, Mode> = {
 export class LocalModel implements ChatClient {
   private readonly client: OpenAI;
   private mode: Mode = 'json_schema';
+  /**
+   * Whether a streamed reply can carry its token count. It takes
+   * `stream_options.include_usage`, which llama.cpp, LM Studio and Ollama all
+   * accept today but older builds refuse outright — and a refused request is
+   * a planning failure, so the first refusal turns it off for the run.
+   */
+  private usageInStream = true;
 
   constructor(private readonly config: Config['orchestration']['local']) {
     this.client = new OpenAI({
@@ -67,18 +87,12 @@ export class LocalModel implements ChatClient {
   }
 
   async chat(messages: ChatMessage[], options: ChatOptions = {}): Promise<string> {
-    if (!options.schema) return this.send(messages, undefined, options.signal, undefined, options.onDelta);
+    if (!options.schema) return this.send(messages, undefined, options);
 
     for (;;) {
       const mode = this.mode;
       try {
-        return await this.send(
-          messages,
-          mode === 'text' ? undefined : mode,
-          options.signal,
-          options.schema,
-          options.onDelta,
-        );
+        return await this.send(messages, mode === 'text' ? undefined : mode, options);
       } catch (err) {
         if (mode === 'text' || !isFormatRejection(err)) throw err;
         // The endpoint told us it cannot honour this way of asking. Step down
@@ -93,9 +107,7 @@ export class LocalModel implements ChatClient {
   private async send(
     messages: ChatMessage[],
     mode: Exclude<Mode, 'text'> | undefined,
-    signal: AbortSignal | undefined,
-    schema?: JsonSchemaSpec,
-    onDelta?: (text: string) => void,
+    { schema, signal, onDelta, onUsage }: ChatOptions,
   ): Promise<string> {
     const response_format =
       mode === 'json_schema' && schema
@@ -110,14 +122,27 @@ export class LocalModel implements ChatClient {
       messages,
       ...(response_format ? { response_format } : {}),
     };
+    const report = (usage: { prompt_tokens?: number; completion_tokens?: number } | null | undefined) => {
+      if (!onUsage || !usage) return;
+      onUsage({ promptTokens: usage.prompt_tokens ?? 0, completionTokens: usage.completion_tokens ?? 0 });
+    };
     try {
       if (onDelta) {
-        const stream = await this.client.chat.completions.create(
-          { ...request, stream: true },
-          { signal },
-        );
+        const withUsage = onUsage !== undefined && this.usageInStream;
+        const stream = await this.client.chat.completions
+          .create(
+            { ...request, stream: true, ...(withUsage ? { stream_options: { include_usage: true } } : {}) },
+            { signal },
+          )
+          .catch(async (err: unknown) => {
+            if (!withUsage || !isUsageRejection(err)) throw err;
+            this.usageInStream = false;
+            return this.client.chat.completions.create({ ...request, stream: true }, { signal });
+          });
         let text = '';
         for await (const chunk of stream) {
+          // The count rides on a final chunk of its own, with no choices in it.
+          if (chunk.usage) report(chunk.usage);
           const delta = chunk.choices[0]?.delta?.content ?? '';
           if (delta === '') continue;
           text += delta;
@@ -126,6 +151,7 @@ export class LocalModel implements ChatClient {
         return text;
       }
       const response = await this.client.chat.completions.create(request, { signal });
+      report(response.usage);
       return response.choices[0]?.message?.content ?? '';
     } catch (err) {
       const error = err as { status?: number; message?: string };
@@ -144,6 +170,13 @@ function isFormatRejection(err: unknown): boolean {
   const error = err as { status?: number; message?: string };
   if (error.status !== undefined && error.status !== 400 && error.status !== 422) return false;
   return /response_format|json_schema|json_object|schema/i.test(error.message ?? '');
+}
+
+/** True when the endpoint refused `stream_options`, not the request around it. */
+function isUsageRejection(err: unknown): boolean {
+  const error = err as { status?: number; message?: string };
+  if (error.status !== undefined && error.status !== 400 && error.status !== 422) return false;
+  return /stream_options|include_usage/i.test(error.message ?? '');
 }
 
 /** Keeps the system prompt and the most recent window. */

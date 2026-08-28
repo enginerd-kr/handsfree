@@ -42,7 +42,21 @@ export type TranscriptBody =
     }
   | { type: 'session_update'; agentId: string; sessionId: string; update: SessionUpdate }
   | { type: 'stop'; taskId: number; agentId: string; sessionId: string; stopReason: StopReason }
-  | { type: 'decision'; agentId: string; entry: AuditEntry };
+  | { type: 'decision'; agentId: string; entry: AuditEntry }
+  /**
+   * What one call to the orchestration model cost. Characters are counted here
+   * and are always present; tokens are the endpoint's own figure and are there
+   * only when it gave one. Not shown anywhere — this is the number to read
+   * when a run feels expensive, and the file is where to read it.
+   */
+  | {
+      type: 'usage';
+      purpose: 'plan' | 'narrate';
+      promptChars: number;
+      replyChars: number;
+      promptTokens?: number;
+      completionTokens?: number;
+    };
 
 export type TranscriptRecord = TranscriptBody & { seq: number; at: number };
 
@@ -114,6 +128,31 @@ export function agentText(records: readonly TranscriptRecord[]): string {
     if (update.content.type === 'text') text += update.content.text;
   }
   return text.trim();
+}
+
+/**
+ * Files that are different because of these records: what handsfree itself
+ * wrote on the agent's behalf, and what the agent reported editing, moving or
+ * deleting. A read is a `touchedFiles` entry and not one of these — the next
+ * agent needs to know what changed, not what was looked at.
+ */
+export function changedFiles(records: readonly TranscriptRecord[]): string[] {
+  const seen = new Set<string>();
+  for (const record of records) {
+    if (record.type === 'decision') {
+      const { entry } = record;
+      if (entry.verdict === 'allow' && entry.request.kind === 'fs.write') seen.add(entry.request.path);
+      continue;
+    }
+    if (record.type !== 'session_update') continue;
+    const update = record.update;
+    if (update.sessionUpdate !== 'tool_call' && update.sessionUpdate !== 'tool_call_update') continue;
+    if (update.kind !== 'edit' && update.kind !== 'delete' && update.kind !== 'move') continue;
+    for (const location of update.locations ?? []) {
+      if (location?.path) seen.add(location.path);
+    }
+  }
+  return [...seen];
 }
 
 /** Files an agent reported touching, in the order they were first mentioned. */

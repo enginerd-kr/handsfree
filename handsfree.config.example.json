@@ -58,6 +58,7 @@
     "cancelGraceMs": 10000,
     "maxDelegationsPerTurn": 3,
     "maxPlanSteps": 6,
-    "maxResultChars": 4000
+    "maxResultChars": 4000,
+    "rebriefEveryTasks": 8
   }
 }
