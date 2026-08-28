@@ -9,6 +9,7 @@ import {
   type RequestPermissionResponse,
 } from '@agentclientprotocol/sdk';
 import type { Config } from '../config/schema.js';
+import type { ConfigLocation } from '../config/load.js';
 import { createRuntime, type Runtime, type RuntimeOptions } from '../runtime.js';
 import type { Escalator } from '../policy/types.js';
 import type { TranscriptRecord } from '../workspace/transcript.js';
@@ -96,8 +97,11 @@ export function createServeApp(config: Config, overrides: Partial<RuntimeOptions
   };
 }
 
-export async function serve(config: Config, configSource?: string): Promise<number> {
-  const served = createServeApp(config, configSource === undefined ? {} : { configSource });
+export async function serve(
+  config: Config,
+  configSources: readonly ConfigLocation[] = [],
+): Promise<number> {
+  const served = createServeApp(config, { configSources });
   const stream = ndJsonStream(
     Writable.toWeb(process.stdout) as WritableStream<Uint8Array>,
     Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>,

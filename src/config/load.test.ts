@@ -1,44 +1,152 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { CONFIG_FILENAME, loadConfig } from './load.js';
+
+const made: string[] = [];
+
+afterEach(() => {
+  for (const dir of made.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
+
+/** A project directory and a home directory, neither of them the machine's own. */
+function layout(files: { project?: unknown; user?: unknown }): { cwd: string; home: string } {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'handsfree-config-'));
+  made.push(root);
+  const cwd = path.join(root, 'project');
+  const home = path.join(root, 'home');
+  fs.mkdirSync(cwd);
+  fs.mkdirSync(path.join(home, '.config', 'handsfree'), { recursive: true });
+  if (files.project !== undefined) {
+    fs.writeFileSync(path.join(cwd, CONFIG_FILENAME), JSON.stringify(files.project));
+  }
+  if (files.user !== undefined) {
+    fs.writeFileSync(
+      path.join(home, '.config', 'handsfree', 'config.json'),
+      JSON.stringify(files.user),
+    );
+  }
+  return { cwd, home };
+}
+
+describe('layering', () => {
+  it('reads the user file when there is no project one', () => {
+    const { cwd, home } = layout({ user: { orchestration: { local: { model: 'mine' } } } });
+    const { config, sources } = loadConfig(cwd, home);
+    expect(config.orchestration.local.model).toBe('mine');
+    expect(sources.map((source) => source.scope)).toEqual(['user']);
+  });
+
+  it('merges a project file over the user one, key by key', () => {
+    const { cwd, home } = layout({
+      user: {
+        orchestration: { local: { baseURL: 'http://localhost:9999/v1', model: 'mine' } },
+        policy: { exec: { enabled: true, timeoutMs: 5000 } },
+      },
+      project: {
+        orchestration: { local: { model: 'theirs' } },
+        policy: { exec: { timeoutMs: 1000 } },
+      },
+    });
+    const { config, sources } = loadConfig(cwd, home);
+    // The project spoke, so it wins the key it named…
+    expect(config.orchestration.local.model).toBe('theirs');
+    expect(config.policy.exec.timeoutMs).toBe(1000);
+    // …and everything it stayed quiet about is still the user's.
+    expect(config.orchestration.local.baseURL).toBe('http://localhost:9999/v1');
+    expect(config.policy.exec.enabled).toBe(true);
+    expect(sources.map((source) => source.scope)).toEqual(['project', 'user']);
+  });
+
+  it('replaces an array rather than adding to it', () => {
+    const { cwd, home } = layout({
+      user: { policy: { exec: { allow: ['git status', 'rm -rf'] } } },
+      project: { policy: { exec: { allow: ['git status'] } } },
+    });
+    const { config } = loadConfig(cwd, home);
+    expect(config.policy.exec.allow).toEqual(['git status']);
+  });
+
+  it('takes an agent profile whole, and keeps the ones the project did not name', () => {
+    const { cwd, home } = layout({
+      user: {
+        agents: {
+          gemini: { command: 'gemini', args: ['--experimental-acp', '-m', 'old'], note: 'mine' },
+          codex: { command: 'codex', args: [] },
+        },
+      },
+      project: { agents: { gemini: { command: 'gemini', args: ['--experimental-acp'] } } },
+    });
+    const { config } = loadConfig(cwd, home);
+    // No splicing: the profile is the one the project wrote, not a mixture.
+    expect(config.agents['gemini']?.args).toEqual(['--experimental-acp']);
+    expect(config.agents['gemini']?.note).toBe('');
+    expect(config.agents['codex']?.command).toBe('codex');
+  });
+
+  it('validates the merged whole, so a layer may be a fragment', () => {
+    const { cwd, home } = layout({
+      user: { agents: { local: { command: 'my-agent' } } },
+      project: { orchestration: { provider: 'acp', acp: { agent: 'local' } } },
+    });
+    const { config } = loadConfig(cwd, home);
+    expect(config.orchestration.provider).toBe('acp');
+    expect(config.orchestration.acp.agent).toBe('local');
+  });
+
+  it('names every file that contributed when the result does not validate', () => {
+    const { cwd, home } = layout({
+      user: { agents: { local: { command: 'my-agent' } } },
+      project: { orchestration: { provider: 'acp', acp: { agent: 'missing' } } },
+    });
+    expect(() => loadConfig(cwd, home)).toThrow(/handsfree\.config\.json over .*config\.json/s);
+  });
+
+  it('falls back to defaults, from nowhere, when neither file exists', () => {
+    const { cwd, home } = layout({});
+    const { config, sources } = loadConfig(cwd, home);
+    expect(sources).toEqual([]);
+    expect(config.orchestration.provider).toBe('local');
+  });
+
+  it('names the file that is not valid JSON', () => {
+    const { cwd, home } = layout({ project: {} });
+    fs.writeFileSync(path.join(cwd, CONFIG_FILENAME), '{ nope');
+    expect(() => loadConfig(cwd, home)).toThrow(/handsfree\.config\.json is not valid JSON/);
+  });
+});
 
 describe('legacy llm block', () => {
   it('is read as orchestration.local', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'handsfree-config-'));
-    try {
-      fs.writeFileSync(
-        path.join(dir, CONFIG_FILENAME),
-        JSON.stringify({
-          llm: { baseURL: 'http://localhost:9999/v1', model: 'legacy', maxHistoryMessages: 7 },
-        }),
-      );
-      const { config } = loadConfig(dir);
-      expect(config.orchestration.provider).toBe('local');
-      expect(config.orchestration.local.baseURL).toBe('http://localhost:9999/v1');
-      expect(config.orchestration.local.model).toBe('legacy');
-      expect(config.orchestration.maxHistoryMessages).toBe(7);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    const { cwd, home } = layout({
+      project: {
+        llm: { baseURL: 'http://localhost:9999/v1', model: 'legacy', maxHistoryMessages: 7 },
+      },
+    });
+    const { config } = loadConfig(cwd, home);
+    expect(config.orchestration.provider).toBe('local');
+    expect(config.orchestration.local.baseURL).toBe('http://localhost:9999/v1');
+    expect(config.orchestration.local.model).toBe('legacy');
+    expect(config.orchestration.maxHistoryMessages).toBe(7);
   });
 
-  it('yields to an orchestration block when both are present', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'handsfree-config-'));
-    try {
-      fs.writeFileSync(
-        path.join(dir, CONFIG_FILENAME),
-        JSON.stringify({
-          llm: { model: 'legacy' },
-          orchestration: { provider: 'acp' },
-        }),
-      );
-      const { config } = loadConfig(dir);
-      expect(config.orchestration.provider).toBe('acp');
-      expect(config.orchestration.local.model).toBe('google/gemma-3-12b');
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+  it('yields to an orchestration block in the same file', () => {
+    const { cwd, home } = layout({
+      project: { llm: { model: 'legacy' }, orchestration: { provider: 'acp' } },
+    });
+    const { config } = loadConfig(cwd, home);
+    expect(config.orchestration.provider).toBe('acp');
+    expect(config.orchestration.local.model).toBe('google/gemma-3-12b');
+  });
+
+  it('is translated per file, so an old user file layers under a new project one', () => {
+    const { cwd, home } = layout({
+      user: { llm: { baseURL: 'http://localhost:9999/v1', model: 'legacy' } },
+      project: { orchestration: { local: { model: 'current' } } },
+    });
+    const { config } = loadConfig(cwd, home);
+    expect(config.orchestration.local.model).toBe('current');
+    expect(config.orchestration.local.baseURL).toBe('http://localhost:9999/v1');
   });
 });

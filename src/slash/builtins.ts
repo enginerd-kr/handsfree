@@ -100,7 +100,7 @@ function agents(host: CommandHost): string[] {
 function configuration(host: CommandHost): string[] {
   const { policy } = host.config;
   return [
-    `read from:  ${host.configSource ? tildify(host.configSource) : 'nowhere — these are the defaults'}`,
+    `read from:  ${readFrom(host)}`,
     `workspace:  ${tildify(host.workspace.dir)}`,
     `transcript: ${tildify(host.workspace.transcriptFile)}`,
     '',
@@ -110,6 +110,19 @@ function configuration(host: CommandHost): string[] {
       : 'exec: off — no command runs, whoever asks',
     `ask:  ${policy.escalation.join(', ') || 'nobody'}, within ${Math.round(policy.decisionTimeoutMs / 1000)}s`,
   ];
+}
+
+/**
+ * Where the settings came from, said so the precedence is visible: two files
+ * that both had something to say are named in the order they won, because
+ * "why is this setting not what my config says" is nearly always answered by
+ * the other file.
+ */
+function readFrom(host: CommandHost): string {
+  if (host.configSources.length === 0) return 'nowhere — these are the defaults';
+  return host.configSources
+    .map((source) => `${tildify(source.file)} (${source.scope})`)
+    .join(' over ');
 }
 
 function hint(command: Command): string {

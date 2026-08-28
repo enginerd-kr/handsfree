@@ -1,4 +1,5 @@
 import type { Config } from '../config/schema.js';
+import type { ConfigLocation } from '../config/load.js';
 import type { Jail } from '../policy/jail.js';
 import type { PolicyEngine } from '../policy/engine.js';
 import type { Transcript } from '../workspace/transcript.js';
@@ -68,8 +69,8 @@ export interface CommandHost {
   /** Who is asking, as the audit trail and the approval box will name them. */
   agentId: string;
   config: Config;
-  /** The file the settings were read from, when there was one. */
-  configSource: string | undefined;
+  /** The files the settings were read from, strongest first. Empty when there were none. */
+  configSources: readonly ConfigLocation[];
   workspace: Workspace;
   jail: Jail;
   policy: PolicyEngine;

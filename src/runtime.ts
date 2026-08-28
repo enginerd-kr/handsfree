@@ -1,4 +1,5 @@
 import type { Config } from './config/schema.js';
+import type { ConfigLocation } from './config/load.js';
 import { AcpModel } from './brain/acp.js';
 import { LocalModel, type ChatClient } from './brain/client.js';
 import { PolicyEngine } from './policy/engine.js';
@@ -18,8 +19,8 @@ const PRUNE_DELAY_MS = 5_000;
 
 export interface RuntimeOptions {
   config: Config;
-  /** The file the settings were read from, for `/config` to name. */
-  configSource?: string;
+  /** The files the settings were read from, strongest first, for `/config` to name. */
+  configSources?: readonly ConfigLocation[];
   /**
    * Where project files are looked up — the config's directory and the command
    * directory beside it. The workspace is never this: it is the agents' jail.
@@ -119,7 +120,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
   const commandHost = (agentId: string): CommandHost => ({
     agentId,
     config,
-    configSource: options.configSource,
+    configSources: options.configSources ?? [],
     workspace,
     jail,
     policy,

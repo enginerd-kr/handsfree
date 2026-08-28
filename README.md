@@ -70,7 +70,7 @@ A line that opens with a slash is a command. There are two kinds, and the differ
 | | |
 |---|---|
 | `/help` | every command there is, and where the rest of them come from |
-| `/config` | what handsfree is running with, and which file it read it from |
+| `/config` | what handsfree is running with, and which files it read it from |
 | `/agents` | the agents this run can delegate to, and which one is routing |
 | `/reset` | forget the conversation; the agents are briefed from scratch |
 | `/exit`, `/quit` | leave |
@@ -175,7 +175,16 @@ The transcript sits *above* the workspace, because an audit log an agent can edi
 
 ## Configuration
 
-Drop a `handsfree.config.json` in the working directory or at `~/.config/handsfree/config.json`. See `handsfree.config.example.json`; everything has a default.
+Settings are read from two files and layered, the project over the user:
+
+```
+./handsfree.config.json                 this checkout, and it wins
+~/.config/handsfree/config.json         you, on this machine
+```
+
+Both are read, so a project file is a layer over the user's rather than a replacement for it: a checkout can pin the one thing it cares about — the agent it wants, an entry off the allowlist — without restating the endpoint, the proxy and the timeouts you set once for every project. Objects merge key by key, so naming `policy.exec.mode` leaves the rest of `policy` as you wrote it; anything else — a scalar, an array — is taken from the stronger file whole. Arrays are not concatenated on purpose: `policy.exec.allow` says what may run, and a layer that could only ever add to it is a layer that cannot say *not here*. An entry under `agents` is taken whole for the same reason — a launch line spliced from two files is a command nobody wrote.
+
+Only what is present is layered, and the merged whole is validated once, so either file may be a fragment. `/config` names the files it read, in the order they won; so does `handsfree doctor`. See `handsfree.config.example.json`; everything has a default.
 
 The orchestration model is picked by `orchestration.provider`, and both ways of running it sit side by side in the config:
 

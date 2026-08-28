@@ -1,4 +1,4 @@
-import { loadConfig } from './config/load.js';
+import { describeSources, loadConfig } from './config/load.js';
 import { doctor } from './commands/doctor.js';
 import { run } from './commands/run.js';
 import { debug, debugTargetFromEnv, describeProxyEnv, enableDebug, fileSink } from './debug.js';
@@ -109,8 +109,13 @@ async function main(): Promise<number> {
 
   setUpDebug(args);
 
-  const { config, source } = loadConfig();
-  debug('config', source ? `loaded from ${source}` : 'no config file found, using defaults');
+  const { config, sources } = loadConfig();
+  debug(
+    'config',
+    sources.length > 0
+      ? `loaded from ${describeSources(sources)}`
+      : 'no config file found, using defaults',
+  );
   const orchestration = config.orchestration;
   debug(
     'config',
@@ -122,13 +127,13 @@ async function main(): Promise<number> {
   if (args.command === 'serve') {
     // stdout belongs to the protocol from here on: nothing else may write to it.
     const { serve } = await import('./commands/serve.js');
-    return serve(config, source);
+    return serve(config, sources);
   }
 
   const write = (line: string) => process.stdout.write(`${line}\n`);
 
   if (args.command === 'doctor') {
-    if (source) write(`config: ${source}`);
+    if (sources.length > 0) write(`config: ${describeSources(sources)}`);
     const reports = await doctor(config, write);
     return reports.every((report) => report.ok) ? 0 : 1;
   }
@@ -144,7 +149,7 @@ async function main(): Promise<number> {
       {
         json: args.json,
         ...(args.runId === undefined ? {} : { runId: args.runId }),
-        ...(source === undefined ? {} : { configSource: source }),
+        configSources: sources,
       },
       write,
     );
@@ -154,7 +159,7 @@ async function main(): Promise<number> {
   const { tui } = await import('./commands/tui.js');
   return tui(config, {
     ...(args.runId === undefined ? {} : { runId: args.runId }),
-    ...(source === undefined ? {} : { configSource: source }),
+    configSources: sources,
   });
 }
 
