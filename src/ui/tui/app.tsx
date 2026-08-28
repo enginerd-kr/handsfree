@@ -1586,8 +1586,10 @@ function Row({
  * end — scrolled up, what arrives next lands off screen, and only this says so
  * — and where a finished drag says how much of the transcript it copied.
  *
- * Its right edge is the agents' roll call, each agent as the model it is on:
- * a dot per agent, filled while that agent holds an open task.
+ * The agents' roll call sits at the right edge of the status line above the
+ * input — each agent as the model it is on, a dot per agent, filled while that
+ * agent holds an open task — so who is working reads right beside the running
+ * turn it belongs to rather than under the shortcuts.
  */
 function Prompt({
   draft,
@@ -1614,8 +1616,9 @@ function Prompt({
   const busy = startedAt !== undefined;
   return (
     <Box flexDirection="column" flexShrink={0}>
-      <Box height={1} paddingX={2}>
-        {busy ? <Working startedAt={startedAt} queued={queued} /> : null}
+      <Box height={1} paddingLeft={2} paddingRight={1} justifyContent="space-between" gap={2}>
+        <Box>{busy ? <Working startedAt={startedAt} queued={queued} /> : null}</Box>
+        <AgentStatus status={status} />
       </Box>
       <Box
         width="100%"
@@ -1642,14 +1645,11 @@ function Prompt({
                 ? `esc to interrupt · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all`
                 : `/ for commands · @ for agents · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all · /exit`}
         </Text>
-        <Box gap={2}>
-          {debugTo ? (
-            <Text color="yellow" wrap="truncate-start">
-              ● debug → {tildify(debugTo)}
-            </Text>
-          ) : null}
-          <AgentStatus status={status} />
-        </Box>
+        {debugTo ? (
+          <Text color="yellow" wrap="truncate-start">
+            ● debug → {tildify(debugTo)}
+          </Text>
+        ) : null}
       </Box>
     </Box>
   );
@@ -1688,7 +1688,8 @@ function plannerStatus(config: Config, busy: boolean): AgentStatusEntry {
 }
 
 /**
- * The roll call at the hint line's right edge: a dot per enabled agent, filled
+ * The roll call at the status line's right edge, directly above the input: a
+ * dot per enabled agent, filled
  * and full-strength while that agent holds an open task, outlined and dimmed
  * while it sits idle. The dot spends the agent's own colour — the same one its
  * mentions and its task blocks wear — so who is working reads before any label.
