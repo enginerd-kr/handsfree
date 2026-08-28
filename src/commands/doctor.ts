@@ -78,6 +78,10 @@ export async function doctor(config: Config, log: (line: string) => void): Promi
     `  terminal/*          ${caps.terminal ? 'yes' : 'no'}` +
       (caps.terminal ? ` (${config.policy.exec.mode})` : ' — agents cannot run commands'),
   );
+  log(
+    `  elicitation/create  ${caps.elicitation ? 'yes (form)' : 'no'}` +
+      (caps.elicitation ? '' : ' — agents cannot stop and ask you anything'),
+  );
 
   await runtime.close();
   return reports;

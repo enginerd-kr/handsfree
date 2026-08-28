@@ -38,7 +38,7 @@
     "readTextFile": true,
     "writeTextFile": true,
     "terminal": false,
-    "elicitation": false
+    "elicitation": true
   },
 
   "policy": {

@@ -15,13 +15,19 @@ import type { HostContext } from './context.js';
  */
 export function createFsHandlers(host: HostContext) {
   return {
-    async readTextFile(params: ReadTextFileRequest): Promise<ReadTextFileResponse> {
-      const decision = await host.policy.resolve({
-        kind: 'fs.read',
-        agentId: host.agentId,
-        sessionId: params.sessionId,
-        path: params.path,
-      });
+    async readTextFile(
+      params: ReadTextFileRequest,
+      signal?: AbortSignal,
+    ): Promise<ReadTextFileResponse> {
+      const decision = await host.policy.resolve(
+        {
+          kind: 'fs.read',
+          agentId: host.agentId,
+          sessionId: params.sessionId,
+          path: params.path,
+        },
+        { ...(signal ? { signal } : {}) },
+      );
       if (decision.verdict === 'deny') {
         throw denied('read', params.path, decision.reason);
       }
@@ -49,14 +55,20 @@ export function createFsHandlers(host: HostContext) {
       return { content: slice(content, params.line ?? null, params.limit ?? null) };
     },
 
-    async writeTextFile(params: WriteTextFileRequest): Promise<Record<string, never>> {
-      const decision = await host.policy.resolve({
-        kind: 'fs.write',
-        agentId: host.agentId,
-        sessionId: params.sessionId,
-        path: params.path,
-        bytes: Buffer.byteLength(params.content, 'utf8'),
-      });
+    async writeTextFile(
+      params: WriteTextFileRequest,
+      signal?: AbortSignal,
+    ): Promise<Record<string, never>> {
+      const decision = await host.policy.resolve(
+        {
+          kind: 'fs.write',
+          agentId: host.agentId,
+          sessionId: params.sessionId,
+          path: params.path,
+          bytes: Buffer.byteLength(params.content, 'utf8'),
+        },
+        { ...(signal ? { signal } : {}) },
+      );
       if (decision.verdict === 'deny') {
         throw denied('write', params.path, decision.reason);
       }

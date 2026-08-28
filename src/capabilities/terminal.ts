@@ -57,7 +57,7 @@ export class TerminalRegistry {
 
   handlers() {
     return {
-      create: (params: CreateTerminalRequest) => this.create(params),
+      create: (params: CreateTerminalRequest, signal?: AbortSignal) => this.create(params, signal),
       output: (params: TerminalOutputRequest) => this.output(params),
       waitForExit: (params: WaitForTerminalExitRequest) => this.waitForExit(params),
       kill: (params: KillTerminalRequest) => this.kill(params),
@@ -70,17 +70,23 @@ export class TerminalRegistry {
     for (const id of [...this.terminals.keys()]) this.dispose(id);
   }
 
-  private async create(params: CreateTerminalRequest): Promise<CreateTerminalResponse> {
+  private async create(
+    params: CreateTerminalRequest,
+    signal?: AbortSignal,
+  ): Promise<CreateTerminalResponse> {
     const cwd = params.cwd ?? this.host.workspace.dir;
     const args = params.args ?? [];
-    const decision = await this.host.policy.resolve({
-      kind: 'exec',
-      agentId: this.host.agentId,
-      sessionId: params.sessionId,
-      command: params.command,
-      args,
-      cwd,
-    });
+    const decision = await this.host.policy.resolve(
+      {
+        kind: 'exec',
+        agentId: this.host.agentId,
+        sessionId: params.sessionId,
+        command: params.command,
+        args,
+        cwd,
+      },
+      { ...(signal ? { signal } : {}) },
+    );
     if (decision.verdict === 'deny') {
       throw new RequestError(
         -32000,

@@ -111,6 +111,9 @@ function configuration(host: CommandHost): string[] {
       ? `exec: ${policy.exec.mode}, shell operators ${policy.exec.shellOperators}, allowing ${policy.exec.allow.join(', ') || 'nothing'}`
       : 'exec: off — no command runs, whoever asks',
     `ask:  ${policy.escalation.join(', ') || 'nobody'}, within ${Math.round(policy.decisionTimeoutMs / 1000)}s`,
+    host.config.capabilities.elicitation
+      ? 'q&a:  agents may stop and ask you a question of their own'
+      : 'q&a:  off — an agent that needs an answer has to end its turn to ask',
   ];
 }
 

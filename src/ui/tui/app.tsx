@@ -2,6 +2,7 @@ import os from 'node:os';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, Transform, useApp, useInput, useStdout } from 'ink';
 import type { Runtime } from '../../runtime.js';
+import type { InputAnswer, InputField, InputValue } from '../../policy/types.js';
 import { debugDestination } from '../../debug.js';
 import {
   buildView,
@@ -198,12 +199,37 @@ const WHEEL_ROWS = 3;
 const DRAIN_MS = 16;
 const SCROLL_STEP = 4;
 
-interface PendingAsk {
-  summary: string;
-  detail: string;
-  rule: string;
-  agentId: string;
-  answer: (allowed: boolean) => void;
+/**
+ * A question waiting on the person at the keyboard. Both kinds queue in one
+ * line and own the screen the same way, because from here they are the same
+ * thing: an agent has stopped, and it is stopped until this is answered.
+ * `answer` is idempotent — a question that times out while it is being typed
+ * into must not also hand the queue its next entry.
+ */
+type Question =
+  | {
+      kind: 'ask';
+      summary: string;
+      detail: string;
+      rule: string;
+      agentId: string;
+      answer: (allowed: boolean) => void;
+    }
+  | {
+      kind: 'input';
+      summary: string;
+      agentId: string;
+      fields: readonly InputField[];
+      answer: (answer: InputAnswer) => void;
+    };
+
+/** Where a form has got to: which field is being filled, and what is typed. */
+interface FormState {
+  index: number;
+  values: Record<string, InputValue>;
+  buffer: string;
+  chosen: readonly string[];
+  error: string | undefined;
 }
 
 /**
@@ -293,7 +319,16 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   // what is entered has to go somewhere; it goes here and leaves in order once
   // the turn that was in the way finishes.
   const [queued, setQueued] = useState<readonly string[]>([]);
-  const [ask, setAsk] = useState<PendingAsk | undefined>();
+  const [ask, setAsk] = useState<Question | undefined>();
+  // The form being filled in, when the question on screen is one. It keeps a
+  // ref for the reason the draft does: several keys can arrive in one stdin
+  // chunk and are all handled before React renders once.
+  const [form, setForm] = useState<FormState | undefined>();
+  const formRef = useRef<FormState | undefined>(undefined);
+  const applyForm = (next: FormState | undefined) => {
+    formRef.current = next;
+    setForm(next);
+  };
   const [openTasks, setOpenTasks] = useState<ReadonlySet<number>>(() => new Set());
   const [hoveredTask, setHoveredTask] = useState<number | undefined>();
   // Who has a task open right now, replayed from the same records the view is.
@@ -302,7 +337,9 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   // brief. It is read whether or not a turn is running; what a phase means
   // once one has finished is `brief`'s business, not this one's.
   const [phase, setPhase] = useState<TurnPhase>('start');
-  const pending = useRef<PendingAsk[]>([]);
+  const pending = useRef<Question[]>([]);
+  /** The question actually on screen, kept in step with `ask` synchronously. */
+  const head = useRef<Question | undefined>(undefined);
   const busy = startedAt !== undefined;
 
   // The mark's last word on a turn. A turn ending leaves no record of its own
@@ -372,31 +409,77 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     };
   }, [runtime, openTasks]);
 
-  // Being here is what turns an `ask` verdict into a real question. Without a
-  // mounted UI the policy engine denies instead of waiting.
+  // Being here is what turns an `ask` verdict into a real question, and an
+  // agent that stopped to ask something into a form. Without a mounted UI the
+  // policy engine denies the first and cancels the second.
   useEffect(() => {
+    // One question at a time, in the order they arrived: a second agent that
+    // stops while the first is being answered waits its turn rather than
+    // overwriting the question on screen. `head` is that queue's front, kept
+    // synchronously, because an abort can retire a question between renders.
+    const show = (entry: Question) => {
+      if (head.current) {
+        pending.current.push(entry);
+        return;
+      }
+      head.current = entry;
+      applyForm(entry.kind === 'input' ? blankForm(entry.fields) : undefined);
+      setAsk(entry);
+    };
+    // A question that answers itself — a timeout, a withdrawn request — may be
+    // anywhere in the line, not necessarily on screen.
+    const retire = (entry: Question) => {
+      if (head.current !== entry) {
+        pending.current = pending.current.filter((waiting) => waiting !== entry);
+        return;
+      }
+      const following = pending.current.shift();
+      head.current = following;
+      applyForm(following?.kind === 'input' ? blankForm(following.fields) : undefined);
+      setAsk(following);
+    };
+    /** Answering is once and for all, whoever gets there first. */
+    const settle = <T,>(entry: () => Question, resolve: (value: T) => void) => {
+      let done = false;
+      return (value: T) => {
+        if (done) return;
+        done = true;
+        resolve(value);
+        retire(entry());
+      };
+    };
+
     runtime.setEscalator({
       ask: (question) =>
         new Promise<boolean>((resolve) => {
-          const entry: PendingAsk = {
+          let entry: Question;
+          const answer = settle<boolean>(() => entry, resolve);
+          entry = {
+            kind: 'ask',
             summary: question.summary,
             detail: question.detail,
             rule: question.rule,
             agentId: question.context.agentId,
-            answer: (allowed) => {
-              resolve(allowed);
-              const next = pending.current.shift();
-              setAsk(next);
-            },
+            answer,
           };
-          question.signal.addEventListener('abort', () => entry.answer(false), { once: true });
-          setAsk((current) => {
-            if (current) {
-              pending.current.push(entry);
-              return current;
-            }
-            return entry;
+          question.signal.addEventListener('abort', () => answer(false), { once: true });
+          show(entry);
+        }),
+      input: (question) =>
+        new Promise<InputAnswer>((resolve) => {
+          let entry: Question;
+          const answer = settle<InputAnswer>(() => entry, resolve);
+          entry = {
+            kind: 'input',
+            summary: question.summary,
+            agentId: question.context.agentId,
+            fields: question.fields,
+            answer,
+          };
+          question.signal.addEventListener('abort', () => answer({ action: 'cancel' }), {
+            once: true,
           });
+          show(entry);
         }),
     });
     return () => runtime.setEscalator(undefined);
@@ -758,8 +841,28 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     // sits where a click was measured against. Answering it is the only input
     // that lands.
     if (ask) {
-      if (char === 'y' || char === 'Y') ask.answer(true);
-      if (char === 'n' || char === 'N' || key.escape) ask.answer(false);
+      if (ask.kind === 'ask') {
+        if (char === 'y' || char === 'Y') ask.answer(true);
+        if (char === 'n' || char === 'N' || key.escape) ask.answer(false);
+        return;
+      }
+      // Esc is a refusal, not a dismissal: the agent is told a person said no,
+      // which is a different thing from nobody having been there.
+      if (key.escape) {
+        ask.answer({ action: 'decline' });
+        return;
+      }
+      // A mouse report is printable text, and a form has a text field in it:
+      // without this, moving the pointer types coordinates into the answer.
+      if (isMouseReport(char)) return;
+      const state = formRef.current;
+      const field = state && ask.fields[state.index];
+      if (!state || !field) return;
+      const next = typed(ask.fields, state, field, char, key);
+      // Answering re-points the form at whatever question comes next, so the
+      // last field must not write over it on the way out.
+      if (next.done) ask.answer({ action: 'accept', content: next.values });
+      else applyForm(next.state);
       return;
     }
     if (isMouseReport(char)) {
@@ -1009,7 +1112,11 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       ) : null}
 
       {ask ? (
-        <Ask ask={ask} />
+        ask.kind === 'ask' ? (
+          <Ask ask={ask} />
+        ) : (
+          <Elicit question={ask} form={form} />
+        )
       ) : (
         <Prompt
           draft={draft}
@@ -1739,7 +1846,7 @@ function elapsed(ms: number): string {
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
-function Ask({ ask }: { ask: PendingAsk }): React.JSX.Element {
+function Ask({ ask }: { ask: Extract<Question, { kind: 'ask' }> }): React.JSX.Element {
   return (
     <Box
       flexDirection="column"
@@ -1768,6 +1875,236 @@ function Ask({ ask }: { ask: PendingAsk }): React.JSX.Element {
       </Box>
     </Box>
   );
+}
+
+/**
+ * A form opens on its first field, carrying whatever default the agent
+ * suggested — so Enter alone is the answer the agent expected, and typing over
+ * it is the answer it did not.
+ */
+function blankForm(fields: readonly InputField[]): FormState {
+  return {
+    index: 0,
+    values: {},
+    buffer: openingBuffer(fields[0]),
+    chosen: openingChoice(fields[0]),
+    error: undefined,
+  };
+}
+
+function openingBuffer(field: InputField | undefined): string {
+  if (!field || field.default === undefined) return '';
+  if (field.kind === 'string' || field.kind === 'number' || field.kind === 'integer') {
+    return String(field.default);
+  }
+  return '';
+}
+
+function openingChoice(field: InputField | undefined): readonly string[] {
+  return field?.kind === 'multiselect' && Array.isArray(field.default) ? field.default : [];
+}
+
+/** What a keypress does to the form; `done` closes it with the whole answer. */
+type Typed =
+  | { done: false; state: FormState }
+  | { done: true; values: Record<string, InputValue> };
+
+/**
+ * One keypress against the field being filled. Every field kind is answered by
+ * something a terminal can send without a mouse: a digit for a choice, y or n
+ * for a boolean, typed text for the rest, and Enter to move on. Nothing here
+ * can skip a required field, because a form returned half-filled is worse for
+ * the agent than one it never got.
+ */
+function typed(
+  fields: readonly InputField[],
+  state: FormState,
+  field: InputField,
+  char: string,
+  key: { return?: boolean; backspace?: boolean; delete?: boolean },
+): Typed {
+  const advance = (value: InputValue | undefined): Typed => {
+    const values =
+      value === undefined ? { ...state.values } : { ...state.values, [field.key]: value };
+    const index = state.index + 1;
+    if (index >= fields.length) return { done: true, values };
+    return {
+      done: false,
+      state: {
+        index,
+        values,
+        buffer: openingBuffer(fields[index]),
+        chosen: openingChoice(fields[index]),
+        error: undefined,
+      },
+    };
+  };
+  const stay = (error?: string): Typed => ({ done: false, state: { ...state, error } });
+
+  switch (field.kind) {
+    case 'boolean':
+      if (char === 'y' || char === 'Y') return advance(true);
+      if (char === 'n' || char === 'N') return advance(false);
+      if (key.return && typeof field.default === 'boolean') return advance(field.default);
+      if (key.return && !field.required) return advance(undefined);
+      return stay(key.return ? 'y or n' : state.error);
+
+    case 'enum': {
+      const picked = numbered(char, field.options?.length ?? 0);
+      if (picked !== undefined) return advance(field.options![picked]!.value);
+      if (key.return) {
+        if (typeof field.default === 'string') return advance(field.default);
+        if (!field.required) return advance(undefined);
+        return stay('pick one');
+      }
+      return stay(state.error);
+    }
+
+    case 'multiselect': {
+      const picked = numbered(char, field.options?.length ?? 0);
+      if (picked !== undefined) {
+        const value = field.options![picked]!.value;
+        const chosen = state.chosen.includes(value)
+          ? state.chosen.filter((entry) => entry !== value)
+          : [...state.chosen, value];
+        return { done: false, state: { ...state, chosen, error: undefined } };
+      }
+      if (key.return) {
+        if (state.chosen.length === 0 && field.required) return stay('pick at least one');
+        return advance(state.chosen.length === 0 ? undefined : [...state.chosen]);
+      }
+      return stay(state.error);
+    }
+
+    default: {
+      if (key.return) {
+        const text = state.buffer.trim();
+        if (text === '') {
+          if (field.required) return stay('this one is needed');
+          return advance(undefined);
+        }
+        if (field.kind === 'string') return advance(text);
+        const number = Number(text);
+        if (!Number.isFinite(number)) return stay('a number, please');
+        if (field.kind === 'integer' && !Number.isInteger(number)) return stay('a whole number');
+        return advance(number);
+      }
+      if (key.backspace || key.delete) {
+        return {
+          done: false,
+          state: { ...state, buffer: [...state.buffer].slice(0, -1).join(''), error: undefined },
+        };
+      }
+      // Control bytes are not text: an arrow key arrives as an escape sequence
+      // and would otherwise be typed into the answer.
+      const printable = [...char].filter((glyph) => glyph >= ' ' && glyph !== '').join('');
+      if (printable === '') return stay(state.error);
+      return {
+        done: false,
+        state: { ...state, buffer: state.buffer + printable, error: undefined },
+      };
+    }
+  }
+}
+
+/** `1`–`9` as an index into a list of that many options. */
+function numbered(char: string, length: number): number | undefined {
+  if (char.length !== 1 || char < '1' || char > '9') return undefined;
+  const index = Number(char) - 1;
+  return index < length ? index : undefined;
+}
+
+/**
+ * An agent that stopped to ask something, and the field it is waiting on. The
+ * fields already answered stay on screen: what the agent is being told is as
+ * much a part of the question as what it asked.
+ */
+function Elicit({
+  question,
+  form,
+}: {
+  question: Extract<Question, { kind: 'input' }>;
+  form: FormState | undefined;
+}): React.JSX.Element {
+  const state = form ?? blankForm(question.fields);
+  const field = question.fields[state.index];
+
+  return (
+    <Box
+      flexDirection="column"
+      flexShrink={0}
+      marginTop={1}
+      borderStyle="round"
+      borderColor="cyan"
+      paddingX={1}
+    >
+      <Text>
+        <Text color={agentColour(question.agentId)} bold>
+          {question.agentId}
+        </Text>{' '}
+        asks: {question.summary}
+      </Text>
+
+      {question.fields.slice(0, state.index).map((answered) => (
+        <Text key={answered.key} color={INK}>
+          {`${answered.label}: ${said(state.values[answered.key])}`}
+        </Text>
+      ))}
+
+      {field ? (
+        <Box flexDirection="column" marginTop={1}>
+          <Text>
+            {field.label}
+            {field.required ? '' : ' (optional)'}
+          </Text>
+          {field.description ? <Text color={INK}>{field.description}</Text> : null}
+          {field.options?.map((option, index) => (
+            <Text key={option.value} color={INK}>
+              {`  ${index + 1}) ${
+                field.kind === 'multiselect'
+                  ? `${state.chosen.includes(option.value) ? '×' : ' '} `
+                  : ''
+              }${option.label}`}
+            </Text>
+          ))}
+          {field.kind === 'string' || field.kind === 'number' || field.kind === 'integer' ? (
+            <Text>
+              <Text color={INK_FAINT}>{`${PROMPT_CHAR} `}</Text>
+              {state.buffer}
+              <Text color={INK_FAINT}>▏</Text>
+            </Text>
+          ) : null}
+          {state.error ? <Text color="red">{state.error}</Text> : null}
+          <Box marginTop={1}>
+            <Text>
+              <Text color={INK}>{hint(field)}</Text>
+              <Text color={INK_FAINT}>{'   ·   '}</Text>
+              <Text color="red">esc</Text> <Text color={INK}>refuse to answer</Text>
+            </Text>
+          </Box>
+        </Box>
+      ) : null}
+    </Box>
+  );
+}
+
+function hint(field: InputField): string {
+  switch (field.kind) {
+    case 'boolean':
+      return 'y / n';
+    case 'enum':
+      return 'a number to pick';
+    case 'multiselect':
+      return 'numbers to toggle · enter when done';
+    default:
+      return 'type, then enter';
+  }
+}
+
+function said(value: InputValue | undefined): string {
+  if (value === undefined) return '—';
+  if (Array.isArray(value)) return value.join(', ');
+  return String(value);
 }
 
 function tildify(dir: string): string {

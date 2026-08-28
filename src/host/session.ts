@@ -119,6 +119,13 @@ export class HostSession {
     readonly sessionId: string,
     private readonly transport: SessionTransport,
     private readonly onUpdate: (update: SessionUpdate) => void,
+    /**
+     * Whether a person is currently being asked something on this agent's
+     * behalf. An agent blocked on a question of its own sends no updates and
+     * makes no progress, and neither of those is the agent's fault — so the
+     * timers below stand still until the answer comes back.
+     */
+    private readonly blocked: () => boolean = () => false,
   ) {}
 
   /**
@@ -220,10 +227,31 @@ export class HostSession {
     if (options.signal?.aborted) turn.abort();
     else options.signal?.addEventListener('abort', abortOnCaller, { once: true });
 
-    const deadline = setTimeout(() => turn.abort(), options.turnTimeoutMs);
-    const idle = setInterval(() => {
-      if (Date.now() - this.lastUpdateAt > options.idleTimeoutMs) turn.abort();
-    }, Math.min(options.idleTimeoutMs, 5_000));
+    // Both clocks are read from one tick so both can be stopped by one
+    // condition. Time spent waiting on a person is not time the agent had:
+    // the idle deadline is pushed along while it lasts and the wall clock
+    // discounts it, or a question left up for two minutes would end the turn
+    // that asked it — and the answer would land on a session already cancelled.
+    const startedAt = Date.now();
+    let blockedFor = 0;
+    let blockedSince: number | undefined;
+    const clock = setInterval(
+      () => {
+        const now = Date.now();
+        if (this.blocked()) {
+          blockedSince ??= now;
+          this.lastUpdateAt = now;
+          return;
+        }
+        if (blockedSince !== undefined) {
+          blockedFor += now - blockedSince;
+          blockedSince = undefined;
+        }
+        if (now - this.lastUpdateAt > options.idleTimeoutMs) turn.abort();
+        else if (now - startedAt - blockedFor > options.turnTimeoutMs) turn.abort();
+      },
+      Math.min(options.idleTimeoutMs, options.turnTimeoutMs, 5_000),
+    );
 
     try {
       const pending = stopReason();
@@ -254,8 +282,7 @@ export class HostSession {
       }
       return settled;
     } finally {
-      clearTimeout(deadline);
-      clearInterval(idle);
+      clearInterval(clock);
       options.signal?.removeEventListener('abort', abortOnCaller);
       this.turn = undefined;
       this.busy = false;

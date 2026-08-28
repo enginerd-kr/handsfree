@@ -4,6 +4,7 @@ import path from 'node:path';
 import { ConfigSchema, type Config } from '../src/config/schema.js';
 import { createRuntime, type Runtime } from '../src/runtime.js';
 import type { ChatClient, ChatMessage } from '../src/brain/client.js';
+import type { Escalator } from '../src/policy/types.js';
 import type { FakeAgent } from './fake-agent.js';
 
 export interface HarnessOptions {
@@ -18,6 +19,8 @@ export interface HarnessOptions {
     orchestration: Record<string, unknown>;
   }>;
   llm?: ChatClient;
+  /** The human seat. Without one every `ask` is a denial, as it is headless. */
+  escalator?: Escalator;
   /** Where command files are looked for. Defaults to the process's own cwd. */
   cwd?: string;
 }
@@ -48,6 +51,7 @@ export function harness(options: HarnessOptions): Harness {
   const runtime = createRuntime({
     config,
     llm: options.llm,
+    ...(options.escalator === undefined ? {} : { escalator: options.escalator }),
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
     createTarget: (agentId) => {
       const agent = options.agents[agentId];

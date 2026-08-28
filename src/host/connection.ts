@@ -13,6 +13,7 @@ import {
 } from '@agentclientprotocol/sdk';
 import type { HostContext } from '../capabilities/context.js';
 import { debug } from '../debug.js';
+import { createElicitationHandler } from '../capabilities/elicit.js';
 import { createFsHandlers } from '../capabilities/fs.js';
 import { createPermissionHandler } from '../capabilities/permission.js';
 import { TerminalRegistry } from '../capabilities/terminal.js';
@@ -95,24 +96,38 @@ export class AgentConnection {
     const sessions = new Map<string, HostSession>();
     const permission = createPermissionHandler(host);
     const files = createFsHandlers(host);
+    const elicit = caps.elicitation ? createElicitationHandler(host) : undefined;
     const terminals = caps.terminal ? new TerminalRegistry(host) : undefined;
 
+    // Every handler is given the request's own signal. A question put to a
+    // person outlives nothing: when the agent withdraws the request the
+    // question comes down with it, rather than waiting out its deadline and
+    // answering into a request that is no longer there.
     const app: ClientApp = client({ name: 'handsfree' })
-      .onRequest(methods.client.session.requestPermission, (ctx) => permission(ctx.params))
+      .onRequest(methods.client.session.requestPermission, (ctx) =>
+        permission(ctx.params, ctx.signal),
+      )
       .onNotification(methods.client.session.update, (ctx) => {
         route(sessions, host, agentId, ctx.params);
       });
 
     if (caps.readTextFile) {
-      app.onRequest(methods.client.fs.readTextFile, (ctx) => files.readTextFile(ctx.params));
+      app.onRequest(methods.client.fs.readTextFile, (ctx) =>
+        files.readTextFile(ctx.params, ctx.signal),
+      );
     }
     if (caps.writeTextFile) {
-      app.onRequest(methods.client.fs.writeTextFile, (ctx) => files.writeTextFile(ctx.params));
+      app.onRequest(methods.client.fs.writeTextFile, (ctx) =>
+        files.writeTextFile(ctx.params, ctx.signal),
+      );
+    }
+    if (elicit) {
+      app.onRequest(methods.client.elicitation.create, (ctx) => elicit(ctx.params, ctx.signal));
     }
     if (terminals) {
       const handlers = terminals.handlers();
       app
-        .onRequest(methods.client.terminal.create, (ctx) => handlers.create(ctx.params))
+        .onRequest(methods.client.terminal.create, (ctx) => handlers.create(ctx.params, ctx.signal))
         .onRequest(methods.client.terminal.output, (ctx) => handlers.output(ctx.params))
         .onRequest(methods.client.terminal.waitForExit, (ctx) => handlers.waitForExit(ctx.params))
         .onRequest(methods.client.terminal.kill, (ctx) => handlers.kill(ctx.params))
@@ -131,6 +146,11 @@ export class AgentConnection {
           clientCapabilities: {
             fs: { readTextFile: caps.readTextFile, writeTextFile: caps.writeTextFile },
             terminal: caps.terminal,
+            // Form only. A URL question would send the user somewhere handsfree
+            // cannot follow, and a capability we cannot honour is one we do not
+            // claim — an agent that knows it can ask is an agent that stops
+            // guessing when it should be asking.
+            ...(caps.elicitation ? { elicitation: { form: {} } } : {}),
           },
         }),
         target.broken,
@@ -270,6 +290,7 @@ export class AgentConnection {
         },
       },
       onUpdate,
+      () => this.host.policy.isWaiting(this.agentId),
     );
     this.sessions.set(sessionId, session);
     return session;

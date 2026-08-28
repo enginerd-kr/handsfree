@@ -1,6 +1,7 @@
 import type { Config } from '../config/schema.js';
 import type { ConfigLocation } from '../config/load.js';
 import { createRuntime } from '../runtime.js';
+import { stdinSeat } from '../ui/stdin-seat.js';
 import { describeRecord } from '../ui/view-model.js';
 import type { TranscriptRecord } from '../workspace/transcript.js';
 
@@ -13,8 +14,10 @@ export interface RunOptions {
 }
 
 /**
- * One turn, no terminal UI. Nothing here can prompt a human, so every escalated
- * permission request is denied — the same rule a CI job gets.
+ * One turn, no terminal UI. There is still a person here when the command was
+ * typed at a terminal, and an agent that stops mid-turn asks them on stderr;
+ * piped or in CI there is nobody to ask, and every escalation is denied — the
+ * rule a CI job has always had.
  */
 export async function run(
   config: Config,
@@ -22,8 +25,10 @@ export async function run(
   options: RunOptions,
   write: (line: string) => void,
 ): Promise<number> {
+  const seat = stdinSeat();
   const runtime = createRuntime({
     config,
+    ...(seat === undefined ? {} : { escalator: seat }),
     ...(options.runId === undefined ? {} : { runId: options.runId }),
     ...(options.configSources === undefined ? {} : { configSources: options.configSources }),
   });

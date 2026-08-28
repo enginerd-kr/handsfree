@@ -4,7 +4,10 @@ import {
   PROTOCOL_VERSION,
   type AgentApp,
   type AgentContext,
+  type ClientCapabilities,
   type ContentBlock,
+  type CreateElicitationResponse,
+  type ElicitationSchema,
   type PermissionOption,
   type RequestPermissionResponse,
   type StopReason,
@@ -33,6 +36,16 @@ export type Act =
       options?: PermissionOption[];
       /** Recorded so tests can assert on what the host answered. */
       onAnswer?: (optionId: string | 'cancelled') => void;
+    }
+  | {
+      do: 'elicit';
+      message: string;
+      /** The form the agent wants filled, as it would put it on the wire. */
+      schema?: ElicitationSchema;
+      /** Anything but `form` is a mode handsfree never advertised. */
+      mode?: string;
+      url?: string;
+      onAnswer: (response: CreateElicitationResponse) => void;
     }
   | { do: 'read'; path: string; onResult: (result: { ok: boolean; detail: string }) => void }
   | { do: 'write'; path: string; content: string; onResult: (result: { ok: boolean; detail: string }) => void }
@@ -73,6 +86,8 @@ export interface FakeAgent {
   prompts: string[];
   /** Every model the host set, over either wire, in order. */
   modelSets: string[];
+  /** What the host said it could do, as it said it at `initialize`. */
+  seen(): ClientCapabilities | undefined;
 }
 
 const DEFAULT_OPTIONS: PermissionOption[] = [
@@ -86,6 +101,7 @@ export function fakeAgent(options: FakeAgentOptions): FakeAgent {
   const modelSets: string[] = [];
   let turn = 0;
   let sessionCounter = 0;
+  let seen: ClientCapabilities | undefined;
 
   const wire = options.modelWire ?? 'config_option';
   const roster = options.models ?? [];
@@ -122,15 +138,18 @@ export function fakeAgent(options: FakeAgentOptions): FakeAgent {
   };
 
   const app = agent({ name: options.name ?? 'fake-agent' })
-    .onRequest(methods.agent.initialize, () => ({
-      protocolVersion: PROTOCOL_VERSION,
-      agentInfo: { name: options.name ?? 'fake-agent', version: options.version ?? '1.0.0' },
-      agentCapabilities: {
-        loadSession: options.loadSession ?? false,
-        promptCapabilities: { embeddedContext: true },
-      },
-      authMethods: [],
-    }))
+    .onRequest(methods.agent.initialize, (ctx) => {
+      seen = ctx.params.clientCapabilities;
+      return {
+        protocolVersion: PROTOCOL_VERSION,
+        agentInfo: { name: options.name ?? 'fake-agent', version: options.version ?? '1.0.0' },
+        agentCapabilities: {
+          loadSession: options.loadSession ?? false,
+          promptCapabilities: { embeddedContext: true },
+        },
+        authMethods: [],
+      };
+    })
     .onRequest(methods.agent.session.new, () => ({
       sessionId: `fake-${++sessionCounter}`,
       ...advertised(),
@@ -173,6 +192,7 @@ export function fakeAgent(options: FakeAgentOptions): FakeAgent {
     app,
     prompts,
     modelSets,
+    seen: () => seen,
     target(): ConnectionTarget {
       return {
         description: 'fake agent (in process)',
@@ -245,6 +265,22 @@ async function perform(
         act.onAnswer?.(
           response.outcome.outcome === 'selected' ? response.outcome.optionId : 'cancelled',
         );
+        break;
+      }
+
+      case 'elicit': {
+        const mode = act.mode ?? 'form';
+        const response = await client.request<CreateElicitationResponse>(
+          methods.client.elicitation.create,
+          {
+            sessionId,
+            message: act.message,
+            ...(mode === 'form'
+              ? { mode, requestedSchema: act.schema ?? { type: 'object', properties: {} } }
+              : { mode, elicitationId: 'elicit-1', url: act.url ?? 'https://example.com' }),
+          },
+        );
+        act.onAnswer(response);
         break;
       }
 

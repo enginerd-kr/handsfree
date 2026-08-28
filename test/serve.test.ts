@@ -6,6 +6,7 @@ import {
   client,
   methods,
   PROTOCOL_VERSION,
+  type CreateElicitationResponse,
   type SessionNotification,
 } from '@agentclientprotocol/sdk';
 import { ConfigSchema } from '../src/config/schema.js';
@@ -144,5 +145,119 @@ describe('handsfree as an ACP agent', () => {
 
     expect(asked[0]).toContain('Do something unusual');
     expect(answers).toEqual(['no']);
+  });
+
+  it('carries a sub-agent’s own question up to an editor that renders forms', async () => {
+    const project = tempDir('handsfree-project-');
+    const root = tempDir('handsfree-root-');
+    const answers: CreateElicitationResponse[] = [];
+    const sub = fakeAgent({
+      script: () => [
+        {
+          do: 'elicit',
+          message: 'Rewrite the module or patch it?',
+          schema: {
+            type: 'object',
+            properties: {
+              approach: { type: 'string', title: 'Which approach?', enum: ['rewrite', 'patch'] },
+            },
+            required: ['approach'],
+          },
+          onAnswer: (response) => answers.push(response),
+        },
+      ],
+    });
+
+    const config = ConfigSchema.parse({
+      workspaceRoot: root,
+      agents: { claude: { command: 'unused' } },
+    });
+    config.workspaceRoot = root;
+
+    const served = createServeApp(config, {
+      llm: scriptedModel([
+        JSON.stringify({ action: 'delegate', agent: 'claude', task: 'Fix the module' }),
+        JSON.stringify({ action: 'answer', message: 'Patched it.' }),
+      ]),
+      createTarget: () => sub.target(),
+    });
+
+    const questions: string[] = [];
+    await client({ name: 'editor' })
+      .onNotification(methods.client.session.update, () => {})
+      .onRequest(methods.client.elicitation.create, (ctx) => {
+        questions.push(ctx.params.message);
+        return { action: 'accept' as const, content: { approach: 'patch' } };
+      })
+      .connectWith(served.app, async (ctx) => {
+        await ctx.request(methods.agent.initialize, {
+          protocolVersion: PROTOCOL_VERSION,
+          clientCapabilities: { elicitation: { form: {} } },
+        });
+        const session = await ctx.request(methods.agent.session.new, {
+          cwd: project,
+          mcpServers: [],
+        });
+        return ctx.request(methods.agent.session.prompt, {
+          sessionId: session.sessionId,
+          prompt: [{ type: 'text', text: 'fix it' }],
+        });
+      });
+
+    await served.dispose();
+
+    expect(questions[0]).toContain('Rewrite the module or patch it?');
+    expect(answers).toEqual([{ action: 'accept', content: { approach: 'patch' } }]);
+  });
+
+  it('cancels the question when the editor never said it could show one', async () => {
+    const project = tempDir('handsfree-project-');
+    const root = tempDir('handsfree-root-');
+    const answers: CreateElicitationResponse[] = [];
+    const sub = fakeAgent({
+      script: () => [
+        {
+          do: 'elicit',
+          message: 'Rewrite the module or patch it?',
+          schema: { type: 'object', properties: { approach: { type: 'string' } } },
+          onAnswer: (response) => answers.push(response),
+        },
+      ],
+    });
+
+    const config = ConfigSchema.parse({
+      workspaceRoot: root,
+      agents: { claude: { command: 'unused' } },
+    });
+    config.workspaceRoot = root;
+
+    const served = createServeApp(config, {
+      llm: scriptedModel([
+        JSON.stringify({ action: 'delegate', agent: 'claude', task: 'Fix the module' }),
+        JSON.stringify({ action: 'answer', message: 'Could not ask.' }),
+      ]),
+      createTarget: () => sub.target(),
+    });
+
+    await client({ name: 'editor' })
+      .onNotification(methods.client.session.update, () => {})
+      .connectWith(served.app, async (ctx) => {
+        await ctx.request(methods.agent.initialize, {
+          protocolVersion: PROTOCOL_VERSION,
+          clientCapabilities: {},
+        });
+        const session = await ctx.request(methods.agent.session.new, {
+          cwd: project,
+          mcpServers: [],
+        });
+        return ctx.request(methods.agent.session.prompt, {
+          sessionId: session.sessionId,
+          prompt: [{ type: 'text', text: 'fix it' }],
+        });
+      });
+
+    await served.dispose();
+
+    expect(answers).toEqual([{ action: 'cancel' }]);
   });
 });

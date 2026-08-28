@@ -90,14 +90,21 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     const profile = config.agents[agentId];
     if (!profile) throw new Error(`No agent named "${agentId}" is configured.`);
     if (!profile.enabled) throw new Error(`Agent "${agentId}" is switched off in config.`);
+    // Its own in-memory transcript, so planning chatter never renders as agent
+    // output — but its remarks are not chatter: a question the orchestrator was
+    // refused, or a file it wrote, is something the user has to be able to see.
+    // Notes cross over; the streamed planning JSON does not.
+    const aside = new Transcript();
+    aside.on('record', (record) => {
+      if (record.type === 'note') transcript.append(record);
+    });
     return new AcpModel({
       agentId,
       profile,
       // Its own agent id, so its sessions never overwrite the saved ids the
-      // pool resumes from — and its own in-memory transcript, so planning
-      // chatter never renders as agent output. Decisions still reach the main
-      // transcript through the shared policy engine.
-      host: { agentId: 'orchestrator', config, workspace, jail, policy, transcript: new Transcript() },
+      // pool resumes from. Decisions reach the main transcript through the
+      // shared policy engine.
+      host: { agentId: 'orchestrator', config, workspace, jail, policy, transcript: aside },
       // Its own model where one is named, since planning is not the work the
       // agents do; otherwise whatever the profile asks for, so that pinning a
       // model for an agent pins it for every session with that agent.

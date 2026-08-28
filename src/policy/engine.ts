@@ -3,7 +3,15 @@ import type { ToolKind } from '@agentclientprotocol/sdk';
 import type { Policy, RuleOutcome } from '../config/schema.js';
 import { Jail } from './jail.js';
 import { checkExec, render, scanScript } from './exec.js';
-import type { AuditEntry, Decision, Escalator, PolicyRequest } from './types.js';
+import type {
+  AuditEntry,
+  Decision,
+  Escalator,
+  InputAnswer,
+  InputField,
+  PolicyRequest,
+  RequestContext,
+} from './types.js';
 
 export interface PolicyEngineOptions {
   policy: Policy;
@@ -19,6 +27,15 @@ interface Ruling {
   reason?: string;
 }
 
+export interface AskOptions {
+  /**
+   * The request the question belongs to. When the agent withdraws it — a
+   * cancelled turn, a dropped connection — the question goes with it, rather
+   * than staying on screen collecting an answer nobody can deliver.
+   */
+  signal?: AbortSignal;
+}
+
 /**
  * One place where every side effect an agent asks for is judged, whichever of
  * the three gates it arrived through. Rules run first and are deterministic;
@@ -31,6 +48,8 @@ export class PolicyEngine {
   private escalator: Escalator | undefined;
   private readonly onDecision: ((entry: AuditEntry) => void) | undefined;
   private readonly now: () => number;
+  /** Open questions per agent, so a turn can be told to stop its clocks. */
+  private readonly waiting = new Map<string, number>();
 
   constructor(options: PolicyEngineOptions) {
     this.policy = options.policy;
@@ -45,9 +64,71 @@ export class PolicyEngine {
     this.escalator = escalator;
   }
 
-  async resolve(request: PolicyRequest): Promise<Decision> {
+  async resolve(request: PolicyRequest, options: AskOptions = {}): Promise<Decision> {
+    return this.settle(request, this.rule(request), options.signal);
+  }
+
+  /**
+   * A question the rules did not raise. The caller has judged the operation
+   * itself and still needs a person — an agent that offers no way to approve
+   * one call is the case this exists for — and the answer is recorded exactly
+   * like every other, because a yes is a yes whoever raised the question.
+   */
+  async confirm(
+    request: PolicyRequest,
+    ruling: { rule: string; reason: string },
+    options: AskOptions = {},
+  ): Promise<Decision> {
+    return this.settle(request, { outcome: 'ask', ...ruling }, options.signal);
+  }
+
+  /**
+   * An agent that stopped to ask the user something. This is not a side effect
+   * and no rule judges it; what it borrows from the gates is the seat, the
+   * deadline, and the hold that keeps a turn alive while a person is reading.
+   * A seat that cannot take questions cancels rather than inventing an answer.
+   */
+  async elicit(
+    context: RequestContext,
+    question: { summary: string; fields: InputField[] },
+    options: AskOptions = {},
+  ): Promise<InputAnswer> {
+    const escalator = this.policy.escalation.includes('user') ? this.escalator : undefined;
+    if (!escalator?.input) return { action: 'cancel' };
+
+    const controller = this.deadline(options.signal);
+    const release = this.hold(context.agentId);
+    try {
+      return await Promise.race([
+        escalator.input({ ...question, context, signal: controller.signal }),
+        aborted(controller.signal).then((): InputAnswer => {
+          throw new Error('timed out');
+        }),
+      ]);
+    } catch {
+      return { action: 'cancel' };
+    } finally {
+      controller.done();
+      release();
+    }
+  }
+
+  /**
+   * True while a person is being asked something about this agent. A turn's
+   * clocks stand still for that: an agent blocked on a question sends no
+   * updates, and a timer that cannot tell waiting from wedged will cut the
+   * turn down while the user is still reading the question.
+   */
+  isWaiting(agentId: string): boolean {
+    return (this.waiting.get(agentId) ?? 0) > 0;
+  }
+
+  private async settle(
+    request: PolicyRequest,
+    ruling: Ruling,
+    signal: AbortSignal | undefined,
+  ): Promise<Decision> {
     const summary = describe(request, this.jail);
-    const ruling = this.rule(request);
 
     let decision: Decision;
     if (ruling.outcome === 'allow') {
@@ -55,7 +136,7 @@ export class PolicyEngine {
     } else if (ruling.outcome === 'deny') {
       decision = { verdict: 'deny', rule: ruling.rule, reason: ruling.reason };
     } else {
-      decision = await this.escalate(request, ruling, summary);
+      decision = await this.escalate(request, ruling, summary, signal);
     }
 
     this.onDecision?.({
@@ -71,6 +152,7 @@ export class PolicyEngine {
     request: PolicyRequest,
     ruling: Ruling,
     summary: string,
+    signal: AbortSignal | undefined,
   ): Promise<Decision> {
     const escalator = this.policy.escalation.includes('user') ? this.escalator : undefined;
     if (!escalator) {
@@ -81,8 +163,8 @@ export class PolicyEngine {
       };
     }
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.policy.decisionTimeoutMs);
+    const controller = this.deadline(signal);
+    const release = this.hold(request.agentId);
     try {
       // The deadline is enforced here rather than inside the escalator. An
       // escalator that ignores the signal — a wedged UI, a bad implementation —
@@ -116,8 +198,45 @@ export class PolicyEngine {
         escalated: true,
       };
     } finally {
-      clearTimeout(timer);
+      controller.done();
+      release();
     }
+  }
+
+  /**
+   * The clock a question is asked under: our own decision timeout, and the
+   * caller's signal folded in so a withdrawn request takes its question down
+   * with it.
+   */
+  private deadline(signal: AbortSignal | undefined): {
+    signal: AbortSignal;
+    done: () => void;
+  } {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.policy.decisionTimeoutMs);
+    const relay = () => controller.abort();
+    if (signal?.aborted) controller.abort();
+    else signal?.addEventListener('abort', relay);
+    return {
+      signal: controller.signal,
+      done: () => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', relay);
+      },
+    };
+  }
+
+  /** Marks this agent as waiting on a person until the returned call is made. */
+  private hold(agentId: string): () => void {
+    this.waiting.set(agentId, (this.waiting.get(agentId) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const left = (this.waiting.get(agentId) ?? 1) - 1;
+      if (left > 0) this.waiting.set(agentId, left);
+      else this.waiting.delete(agentId);
+    };
   }
 
   private rule(request: PolicyRequest): Ruling {

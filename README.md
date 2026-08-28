@@ -4,7 +4,7 @@ An orchestration model — a local model by default, or a frontier agent over AC
 
 The agents run in their own default permission mode. No `--dangerously-skip-permissions`, no `--yolo`, no `danger-full-access`. Where those flags would put an approval, handsfree puts a policy engine, and where the policy engine cannot decide, it puts you.
 
-This works because all three agents speak the [Agent Client Protocol](https://agentclientprotocol.com). handsfree is an ACP **client**: it starts each agent as a child process, answers its `session/request_permission` calls, and — because it also *implements* `fs/*` and `terminal/*` — is the thing that actually reads the file, writes the file, and runs the command.
+This works because all three agents speak the [Agent Client Protocol](https://agentclientprotocol.com). handsfree is an ACP **client**: it starts each agent as a child process, answers its `session/request_permission` calls, and — because it also *implements* `fs/*` and `terminal/*` — is the thing that actually reads the file, writes the file, and runs the command. An agent that stops for something other than permission — a question of its own, over `elicitation/create` — is put in front of you the same way.
 
 ```
         you
@@ -17,6 +17,7 @@ This works because all three agents speak the [Agent Client Protocol](https://ag
     │    fs/read_text_file           → policy      │
     │    fs/write_text_file          → policy      │
     │    terminal/*                  → policy      │
+    │    elicitation/create          → you         │
     └────┬──────────────┬──────────────┬───────────┘
    claude-agent-acp  gemini --acp   codex-acp
 ```
@@ -60,6 +61,27 @@ handsfree                      # terminal UI
 handsfree run "add a test"     # one turn, no UI
 handsfree serve --acp          # be an ACP agent, for an editor to drive
 ```
+
+## When an agent stops
+
+An agent stops mid-turn for one of two reasons, and both of them end up in front of you.
+
+**It wants permission.** The rules run first; only what they cannot settle is escalated. In the terminal that is a `y`/`n` box, one question at a time, in the order they arrived:
+
+```
+┌ claude wants to write notes.txt ──────────────┐
+│ rule: tool.write                              │
+│ y allow once   ·   n refuse                   │
+└───────────────────────────────────────────────┘
+```
+
+Only `allow_once` is ever selected. Where an agent offers nothing but a standing approval, that is not quietly taken and not quietly refused: you are told in as many words that saying yes approves it for the rest of the session, and only your yes widens it.
+
+**It has a question of its own.** Over `elicitation/create` an agent can ask before it guesses — which of two approaches, a name, a yes. handsfree advertises form mode, renders the form a field at a time, and hands the answers back into the same turn; `esc` is a refusal the agent is told about, which is not the same as nobody having been there. Switch it off with `capabilities.elicitation` and an agent that needs an answer has to end its turn to ask for one.
+
+While either question is open the turn's clocks stop. An agent waiting on a person sends no updates and makes no progress, and a timer that cannot tell waiting from wedged would cancel the very turn that asked — so the idle deadline is held and the wall clock discounts the wait. The decision timeout (`policy.decisionTimeoutMs`, two minutes) is the one clock that does run, and a question nobody answers is refused. If the agent withdraws the request first, the question comes down with it rather than collecting an answer that has nowhere to land.
+
+Who holds the seat depends on how handsfree was started: the terminal UI, the editor when it is `serve --acp`, or stderr for `handsfree run` at a terminal. Piped or in CI there is nobody, and every escalation is a denial.
 
 ## Naming the agent, and the model
 
@@ -260,7 +282,7 @@ One pitfall it calls out explicitly, because it is invisible otherwise: agents a
 
 ## As an agent
 
-`handsfree serve --acp` turns the whole thing around: an editor drives handsfree, handsfree drives the agents, and an escalated permission request travels up to the editor. The routing, the boundary and the gates are unchanged — only the occupant of the human seat differs.
+`handsfree serve --acp` turns the whole thing around: an editor drives handsfree, handsfree drives the agents, and an escalated permission request travels up to the editor. A sub-agent's own question travels the same way, as an `elicitation/create` of ours — but only where the editor said at `initialize` that it renders forms; an editor that did not is left out of that seat rather than sent a question it would drop. The routing, the boundary and the gates are unchanged — only the occupant of the human seat differs.
 
 ## Development
 

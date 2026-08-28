@@ -6,12 +6,15 @@ import {
   PROTOCOL_VERSION,
   type AgentApp,
   type AgentContext,
+  type ClientCapabilities,
+  type CreateElicitationResponse,
+  type ElicitationPropertySchema,
   type RequestPermissionResponse,
 } from '@agentclientprotocol/sdk';
 import type { Config } from '../config/schema.js';
 import type { ConfigLocation } from '../config/load.js';
 import { createRuntime, type Runtime, type RuntimeOptions } from '../runtime.js';
-import type { Escalator } from '../policy/types.js';
+import type { Escalator, InputField, InputValue } from '../policy/types.js';
 import type { TranscriptRecord } from '../workspace/transcript.js';
 import { VERSION } from '../version.js';
 
@@ -35,14 +38,21 @@ export interface ServeApp {
 export function createServeApp(config: Config, overrides: Partial<RuntimeOptions> = {}): ServeApp {
   const sessions = new Map<string, ServedSession>();
   let counter = 0;
+  // What the editor said it can do. A question can only be passed up to a seat
+  // that has somewhere to put it, so this decides whether handsfree can carry
+  // an agent's own question upstream or has to cancel it.
+  let upstream: ClientCapabilities = {};
 
   const app = agent({ name: 'handsfree' })
-    .onRequest(methods.agent.initialize, () => ({
-      protocolVersion: PROTOCOL_VERSION,
-      agentInfo: { name: 'handsfree', title: 'handsfree', version: VERSION },
-      agentCapabilities: { loadSession: false, promptCapabilities: { embeddedContext: true } },
-      authMethods: [],
-    }))
+    .onRequest(methods.agent.initialize, (ctx) => {
+      upstream = ctx.params.clientCapabilities ?? {};
+      return {
+        protocolVersion: PROTOCOL_VERSION,
+        agentInfo: { name: 'handsfree', title: 'handsfree', version: VERSION },
+        agentCapabilities: { loadSession: false, promptCapabilities: { embeddedContext: true } },
+        authMethods: [],
+      };
+    })
     .onRequest(methods.agent.session.new, (ctx) => {
       const sessionId = `handsfree-${++counter}`;
       // The editor's project is both the jail and where its command files
@@ -53,7 +63,7 @@ export function createServeApp(config: Config, overrides: Partial<RuntimeOptions
         cwd: ctx.params.cwd,
         ...overrides,
       });
-      runtime.setEscalator(upstreamEscalator(ctx.client, sessionId));
+      runtime.setEscalator(upstreamEscalator(ctx.client, sessionId, upstream));
 
       const forward = (record: TranscriptRecord) => {
         const update = toUpdate(record);
@@ -117,8 +127,12 @@ export async function serve(
  * client driving it. The answer is still applied by our policy engine, and it is
  * still recorded as ours.
  */
-function upstreamEscalator(client: AgentContext, sessionId: string): Escalator {
-  return {
+function upstreamEscalator(
+  client: AgentContext,
+  sessionId: string,
+  upstream: ClientCapabilities,
+): Escalator {
+  const escalator: Escalator = {
     async ask(question) {
       const response = await client.request<RequestPermissionResponse>(
         methods.client.session.requestPermission,
@@ -139,6 +153,74 @@ function upstreamEscalator(client: AgentContext, sessionId: string): Escalator {
       return response.outcome.outcome === 'selected' && response.outcome.optionId === 'allow';
     },
   };
+
+  // A question travels the same way an approval does — one hop further up the
+  // chain — but only where the editor said it renders forms. An editor that
+  // cannot show one is left out of the seat entirely rather than sent a
+  // question it will drop on the floor.
+  if (upstream.elicitation?.form) {
+    escalator.input = async (question) => {
+      const properties: Record<string, ElicitationPropertySchema> = {};
+      for (const field of question.fields) properties[field.key] = propertyOf(field);
+
+      const response = await client.request<CreateElicitationResponse>(
+        methods.client.elicitation.create,
+        {
+          sessionId,
+          mode: 'form',
+          message: `${question.context.agentId}: ${question.summary}`,
+          requestedSchema: {
+            type: 'object',
+            properties,
+            required: question.fields.filter((field) => field.required).map((field) => field.key),
+          },
+        },
+      );
+
+      if (response.action !== 'accept') {
+        return { action: response.action === 'decline' ? 'decline' : 'cancel' };
+      }
+      // The editor answers in the schema's own terms; anything it invented is
+      // dropped, because the agent is only expecting what it asked for.
+      // `action: "accept"` narrows to the accepting variant, but the union
+      // carries an open-ended one too, so the content arrives untyped.
+      const answered =
+        (response as { content?: Record<string, InputValue> | null }).content ?? {};
+      const content: Record<string, InputValue> = {};
+      for (const field of question.fields) {
+        const value = answered[field.key];
+        if (value !== undefined) content[field.key] = value;
+      }
+      return { action: 'accept', content };
+    };
+  }
+
+  return escalator;
+}
+
+/** One field, back in the JSON Schema the editor is going to render. */
+function propertyOf(field: InputField): ElicitationPropertySchema {
+  const base = {
+    title: field.label,
+    ...(field.description ? { description: field.description } : {}),
+  };
+  switch (field.kind) {
+    case 'boolean':
+      return { type: 'boolean', ...base };
+    case 'number':
+    case 'integer':
+      return { type: field.kind, ...base };
+    case 'enum':
+      return { type: 'string', ...base, enum: (field.options ?? []).map((option) => option.value) };
+    case 'multiselect':
+      return {
+        type: 'array',
+        ...base,
+        items: { type: 'string', enum: (field.options ?? []).map((option) => option.value) },
+      };
+    default:
+      return { type: 'string', ...base };
+  }
 }
 
 /** Our transcript, re-expressed in the vocabulary the editor already renders. */

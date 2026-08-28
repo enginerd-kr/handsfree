@@ -302,6 +302,72 @@ describe('PolicyEngine', () => {
     expect(decision.reason).toContain('ui gone');
   });
 
+  it('takes the question down when the agent withdraws the request', async () => {
+    // Otherwise the question sits there for its whole deadline and the answer
+    // lands on a request that is no longer open.
+    const withdrawn = new AbortController();
+    const policy = engine({ decisionTimeoutMs: 60_000 }, { ask: () => new Promise(() => {}) });
+    setTimeout(() => withdrawn.abort(), 10);
+    const decision = await policy.resolve(
+      { kind: 'tool', toolKind: 'other', title: 'Something unusual', locations: [], rawInput: null, ...where },
+      { signal: withdrawn.signal },
+    );
+    expect(decision).toMatchObject({ verdict: 'deny', reason: 'no answer in time' });
+  });
+
+  it('says an agent is waiting for exactly as long as its question is open', async () => {
+    let answer: (allowed: boolean) => void = () => {};
+    const policy = engine({}, { ask: () => new Promise<boolean>((resolve) => (answer = resolve)) });
+    expect(policy.isWaiting('claude')).toBe(false);
+
+    const pending = policy.resolve({
+      kind: 'tool',
+      toolKind: 'other',
+      title: 'Something unusual',
+      locations: [],
+      rawInput: null,
+      ...where,
+    });
+    await Promise.resolve();
+    expect(policy.isWaiting('claude')).toBe(true);
+    // Another agent's turn keeps its own clocks running.
+    expect(policy.isWaiting('gemini')).toBe(false);
+
+    answer(true);
+    await pending;
+    expect(policy.isWaiting('claude')).toBe(false);
+  });
+
+  it('asks a question of its own only when a seat can take one', async () => {
+    const fields = [{ key: 'why', label: 'Why?', kind: 'string' as const, required: true }];
+    const alone = engine({}, { ask: async () => true });
+    expect(await alone.elicit(where, { summary: 'which way?', fields })).toEqual({
+      action: 'cancel',
+    });
+
+    const seated = engine(
+      {},
+      { ask: async () => true, input: async () => ({ action: 'accept', content: { why: 'a' } }) },
+    );
+    expect(await seated.elicit(where, { summary: 'which way?', fields })).toEqual({
+      action: 'accept',
+      content: { why: 'a' },
+    });
+  });
+
+  it('cancels a question nobody answers in time', async () => {
+    const policy = engine(
+      { decisionTimeoutMs: 20 },
+      { ask: async () => true, input: () => new Promise(() => {}) },
+    );
+    expect(
+      await policy.elicit(where, {
+        summary: 'which way?',
+        fields: [{ key: 'why', label: 'Why?', kind: 'string', required: true }],
+      }),
+    ).toEqual({ action: 'cancel' });
+  });
+
   it('records every decision, allowed or refused', async () => {
     const audit: AuditEntry[] = [];
     const policy = engine({}, undefined, audit);

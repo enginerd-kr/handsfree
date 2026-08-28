@@ -7,7 +7,8 @@ import { VERSION } from './version.js';
 const USAGE = `handsfree — an ACP host for frontier coding agents
 
   handsfree                     start the terminal UI
-  handsfree run "<prompt>"      one turn, no UI (every escalation is denied)
+  handsfree run "<prompt>"      one turn, no UI (asks on stderr at a terminal,
+                                denies every escalation when piped or in CI)
   handsfree doctor              handshake with each configured agent
   handsfree serve --acp         speak ACP on stdio, for an editor to drive
 

@@ -206,6 +206,7 @@ describe('Conversation', () => {
       app: undefined as never,
       prompts: [],
       modelSets: [],
+      seen: () => undefined,
       target: () => ({
         description: 'broken adapter',
         connect(): never {

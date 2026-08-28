@@ -1299,4 +1299,95 @@ describe('terminal UI', () => {
       app.unmount();
     }
   });
+  it('puts a permission question on screen and sends the answer back', async () => {
+    const answers: string[] = [];
+    const h = harness({
+      agents: {
+        claude: fakeAgent({
+          script: () => [
+            {
+              do: 'ask',
+              title: 'Do something unusual',
+              kind: 'other',
+              onAnswer: (id) => answers.push(id),
+            },
+          ],
+        }),
+      },
+      llm: scriptedModel([
+        JSON.stringify({ action: 'delegate', agent: 'claude', kind: 'change', task: 'go' }),
+        JSON.stringify({ action: 'answer', message: 'done.' }),
+      ]),
+    });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      const turn = h.runtime.conversation.send('do the unusual thing');
+      await waitFor(() => app.lastFrame(), 'allow once');
+
+      app.stdin.write('y');
+      await turn;
+      expect(answers).toEqual(['once']);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('fills in the form an agent stopped to ask, and hands it back', async () => {
+    const answers: unknown[] = [];
+    const h = harness({
+      agents: {
+        claude: fakeAgent({
+          script: () => [
+            {
+              do: 'elicit',
+              message: 'Rewrite the module or patch it?',
+              schema: {
+                type: 'object',
+                properties: {
+                  approach: {
+                    type: 'string',
+                    title: 'Which approach?',
+                    enum: ['rewrite', 'patch'],
+                  },
+                  name: { type: 'string', title: 'Name it' },
+                },
+                required: ['approach'],
+              },
+              onAnswer: (response) => answers.push(response),
+            },
+          ],
+        }),
+      },
+      llm: scriptedModel([
+        JSON.stringify({ action: 'delegate', agent: 'claude', kind: 'change', task: 'fix it' }),
+        JSON.stringify({ action: 'answer', message: 'done.' }),
+      ]),
+    });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      const turn = h.runtime.conversation.send('fix the module');
+      await waitFor(() => app.lastFrame(), 'Which approach?');
+      expect(app.lastFrame()).toContain('2) patch');
+
+      app.stdin.write('2');
+      // The second field is optional and free text; what is typed is the answer.
+      await waitFor(() => app.lastFrame(), 'Name it');
+      app.stdin.write('notes');
+      await waitFor(() => app.lastFrame(), 'notes');
+      app.stdin.write('\r');
+
+      await turn;
+      expect(answers).toEqual([
+        { action: 'accept', content: { approach: 'patch', name: 'notes' } },
+      ]);
+    } finally {
+      app.unmount();
+    }
+  });
 });

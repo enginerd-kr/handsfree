@@ -4,6 +4,7 @@ import type {
   RequestPermissionResponse,
 } from '@agentclientprotocol/sdk';
 import { pathsFromRawInput } from '../policy/engine.js';
+import type { PolicyRequest } from '../policy/types.js';
 import type { HostContext } from './context.js';
 
 /**
@@ -13,11 +14,15 @@ import type { HostContext } from './context.js';
  * Two invariants shape the answer:
  *   - only `allow_once` is ever selected, because a standing approval is a
  *     decision about future work we have not seen;
- *   - if the agent offers no way to say "just this once", the request is
- *     cancelled rather than widened to fit.
+ *   - where the agent offers no way to say "just this once", widening it is a
+ *     decision only a person may make, so the person is asked in as many words
+ *     — and with nobody there the request is cancelled rather than widened.
  */
 export function createPermissionHandler(host: HostContext) {
-  return async (params: RequestPermissionRequest): Promise<RequestPermissionResponse> => {
+  return async (
+    params: RequestPermissionRequest,
+    signal?: AbortSignal,
+  ): Promise<RequestPermissionResponse> => {
     const call = params.toolCall;
     // Adapters are inconsistent about `locations`: claude-code-acp sends none at
     // all and puts the file in `rawInput`. Both are gathered, so the workspace
@@ -27,7 +32,7 @@ export function createPermissionHandler(host: HostContext) {
       ...pathsFromRawInput(call.rawInput ?? null),
     ].filter(Boolean);
 
-    const decision = await host.policy.resolve({
+    const request: PolicyRequest = {
       kind: 'tool',
       agentId: host.agentId,
       sessionId: params.sessionId,
@@ -35,17 +40,46 @@ export function createPermissionHandler(host: HostContext) {
       title: call.title ?? call.name ?? 'unnamed tool call',
       locations: [...new Set(locations)],
       rawInput: call.rawInput ?? null,
-    });
+    };
+    const ask = { ...(signal ? { signal } : {}) };
+    const decision = await host.policy.resolve(request, ask);
 
     if (decision.verdict === 'allow') {
-      const option = pick(params.options, 'allow_once');
-      if (option) return { outcome: { outcome: 'selected', optionId: option.optionId } };
+      const once = pick(params.options, 'allow_once');
+      if (once) return { outcome: { outcome: 'selected', optionId: once.optionId } };
+
+      // No single-use approval on offer. The rules cleared the operation, so
+      // the only question left is whether to hand over the standing approval
+      // the agent asked for — which is a person's call, never ours.
+      const always = pick(params.options, 'allow_always');
+      if (always) {
+        const widened = await host.policy.confirm(
+          request,
+          {
+            rule: 'tool.sessionWideOnly',
+            reason: `${host.agentId} offers no single-use approval — approving means approving this for the whole session`,
+          },
+          ask,
+        );
+        if (widened.verdict === 'allow') {
+          host.transcript.append({
+            type: 'note',
+            level: 'warn',
+            text:
+              `approved "${request.title}" for the rest of ${host.agentId}'s session — ` +
+              'it offered no way to approve just this once.',
+          });
+          return { outcome: { outcome: 'selected', optionId: always.optionId } };
+        }
+        return { outcome: { outcome: 'cancelled' } };
+      }
+
       host.transcript.append({
         type: 'note',
         level: 'warn',
         text:
-          `${host.agentId} offered no single-use approval for "${call.title ?? 'tool call'}", ` +
-          'so it was cancelled rather than approved for the whole session.',
+          `${host.agentId} offered no way to approve "${request.title}", ` +
+          'so it was cancelled.',
       });
       return { outcome: { outcome: 'cancelled' } };
     }
