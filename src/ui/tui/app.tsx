@@ -3,7 +3,15 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, Transform, useApp, useInput, useStdout } from 'ink';
 import type { Runtime } from '../../runtime.js';
 import { debugDestination } from '../../debug.js';
-import { buildView, workingAgents, type Tone, type ViewItem } from '../view-model.js';
+import {
+  buildView,
+  turnPhase,
+  workingAgents,
+  type Brief,
+  type Tone,
+  type TurnPhase,
+  type ViewItem,
+} from '../view-model.js';
 import type { ModelChoice } from '../../host/models.js';
 import {
   findCommand,
@@ -38,6 +46,7 @@ import {
   agentColour,
   BAND,
   BRAND,
+  BRIEFINGS,
   COLOUR,
   columns,
   DOT_BUSY,
@@ -46,6 +55,7 @@ import {
   HOVER_BAND,
   INK,
   INK_FAINT,
+  type Look,
   MASCOT,
   MASCOT_STAGE,
   mascot,
@@ -92,8 +102,21 @@ function between([low, high]: readonly [number, number]): number {
 const WANDER_STEP_MS = 90;
 const WANDER_PAUSE_MS = [1200, 3500] as const;
 const WANDER_HOME_MS = [6000, 14000] as const;
+/**
+ * The breather while a turn is running. Shorter than the idle one, because
+ * the mark has something to say now and a briefing that lands a quarter of a
+ * minute after the phase turned is a report on the past.
+ */
+const WANDER_BRIEF_MS = [1500, 4000] as const;
 const WANDER_OPEN_MS = [1500, 3500] as const;
 const SAY_MS = [1800, 3200] as const;
+
+/**
+ * How long the mark keeps the sign-off to hand after a turn ends — one
+ * breather and one outing over, so the word actually goes out, and not so
+ * long that the mark is still reporting a turn nobody remembers.
+ */
+const SIGN_OFF_MS = 12000;
 
 /**
  * The poses: how long a sit on the ground lasts, how long the mark stands at
@@ -268,8 +291,34 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   const [hoveredTask, setHoveredTask] = useState<number | undefined>();
   // Who has a task open right now, replayed from the same records the view is.
   const [working, setWorking] = useState<ReadonlySet<string>>(() => new Set());
+  // How far the running turn has got, replayed the same way, for the mark to
+  // brief. It is read whether or not a turn is running; what a phase means
+  // once one has finished is `brief`'s business, not this one's.
+  const [phase, setPhase] = useState<TurnPhase>('start');
   const pending = useRef<PendingAsk[]>([]);
   const busy = startedAt !== undefined;
+
+  // The mark's last word on a turn. A turn ending leaves no record of its own
+  // — the spinner going out is the whole of the news — so the sign-off is
+  // held here for long enough that one outing can carry it, and then the mark
+  // has nothing to report again.
+  const [signedOff, setSignedOff] = useState(false);
+  const ran = useRef(false);
+  useEffect(() => {
+    if (busy) {
+      ran.current = true;
+      setSignedOff(false);
+      return;
+    }
+    // Nothing has run yet: the opening frame is not the end of a turn.
+    if (!ran.current) return;
+    ran.current = false;
+    setSignedOff(true);
+    const timer = setTimeout(() => setSignedOff(false), SIGN_OFF_MS);
+    return () => clearTimeout(timer);
+  }, [busy]);
+  /** What the mark has to report: the running turn's phase, or that it is over. */
+  const brief: Brief | undefined = busy ? phase : signedOff ? 'done' : undefined;
 
   // A drag in flight: the cell the button went down on, and whether the
   // pointer has moved since. Press and release in place is the click it always
@@ -307,6 +356,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
         }),
       );
       setWorking(workingAgents(records));
+      setPhase(turnPhase(records));
     };
     render();
     runtime.transcript.on('record', render);
@@ -901,7 +951,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   // Claude Code's chat sits under its welcome mark.
   return (
     <Box flexDirection="column" height={rows - 1}>
-      <Header runtime={runtime} />
+      <Header runtime={runtime} brief={brief} />
 
       {/*
         The transcript's window: a fixed pane the prompt sits under, with the
@@ -987,8 +1037,17 @@ function useBlink(): boolean {
   return shut;
 }
 
-/** Where the mark stands on its stage, how it holds itself, and what, if anything, it is saying. */
-type Pose = { x: number; stance?: Stance; say?: string; side?: 'left' | 'right' };
+/**
+ * Where the mark stands on its stage, how it holds itself, which way it is
+ * looking, and what, if anything, it is saying.
+ */
+type Pose = {
+  x: number;
+  stance?: Stance;
+  look?: Look;
+  say?: string;
+  side?: 'left' | 'right';
+};
 
 /**
  * The mark's wandering, one timer at a time, chained: a breather at the
@@ -999,23 +1058,42 @@ type Pose = { x: number; stance?: Stance; say?: string; side?: 'left' | 'right' 
  * goes out the side the mark has space on, so it lands left of the mark as
  * readily as right. The stage itself never moves — `stage` clips the walk
  * at its left edge — so the margin holds however far the mark goes.
+ *
+ * `brief` is what there is to report, if anything. While it is set the mark
+ * speaks the phase rather than its own idle sayings, breathes shorter
+ * between outings, and takes the first outing after a phase turns to say so
+ * — the news is what a briefing is for, and the roulette is no way to
+ * deliver it. Everything else about the wander is unchanged: it walks, sits
+ * and jumps through a turn exactly as it does through the quiet.
  */
-function useWander(): Pose {
+function useWander(brief?: Brief): Pose {
   const [pose, setPose] = useState<Pose>({ x: WANDER_HOME });
+  // The chain of timers is set up once and outlives every render, so what it
+  // reads has to be a ref rather than the closed-over prop.
+  const briefRef = useRef(brief);
+  briefRef.current = brief;
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>;
+    // The phase the last briefing announced, so a turn is reported when it
+    // moves on and not once a roll of the dice happens to allow it.
+    let told: Brief | undefined;
     // The one column the mark actually stands on; every chained step moves
     // it one cell and shows that cell, so a walk can start from anywhere.
     let at = WANDER_HOME;
+    // The eyes lead the walk: a mark whose face never turns reads as a logo
+    // being slid across the row rather than as something going somewhere.
+    // They hold that way through the pause the walk ends on — only the next
+    // pose puts them back straight — so a step and a stop are the same mark.
     const walk = (to: number, then: () => void) => {
       if (at === to) return then();
+      const look: Look = to > at ? 'right' : 'left';
       at += Math.sign(to - at);
-      setPose({ x: at });
+      setPose({ x: at, look });
       timer = setTimeout(() => walk(to, then), WANDER_STEP_MS);
     };
     const rest = () => {
       setPose({ x: at });
-      timer = setTimeout(outing, between(WANDER_HOME_MS));
+      timer = setTimeout(outing, between(briefRef.current ? WANDER_BRIEF_MS : WANDER_HOME_MS));
     };
     // Anything worth watching happens on stage: a word, a jump, or a sit
     // from an empty stage reads as a glitch rather than a joke, so offstage
@@ -1029,13 +1107,17 @@ function useWander(): Pose {
     // so the mark never shuffles to make space. Which side only matters
     // when both fit.
     const speak = (then: () => void) => {
-      const saying = SAYINGS[Math.floor(Math.random() * SAYINGS.length)] ?? '';
+      const phase = briefRef.current;
+      told = phase;
+      const words: readonly string[] = phase ? BRIEFINGS[phase] : SAYINGS;
+      const saying = words[Math.floor(Math.random() * words.length)] ?? '';
       const width = columns(saying);
       const fitsRight = at + WANDER_SPAN + 1 + width <= MASCOT_STAGE;
       const fitsLeft = at - 1 - width >= 0;
       const side =
         fitsRight && fitsLeft ? (Math.random() < 0.5 ? 'right' : 'left') : fitsRight ? 'right' : 'left';
-      setPose({ x: at, say: saying, side });
+      // Looking at its own word, whichever side it went out.
+      setPose({ x: at, say: saying, side, look: side });
       timer = setTimeout(then, between(SAY_MS));
     };
     // A stance held where the mark stands, then let go.
@@ -1062,6 +1144,11 @@ function useWander(): Pose {
       }, between(WANDER_PAUSE_MS));
     };
     const outing = () => {
+      // News beats the roulette: a phase nobody has been told about goes out
+      // on the next outing whatever it was going to be. Between phases the
+      // mark still speaks now and then, so a long stretch of one phase is
+      // not a mark that has gone quiet.
+      if (briefRef.current !== told) return seen(speak, onward);
       const roll = Math.random();
       if (roll < 0.2) return seen(speak, onward);
       if (roll < 0.34) return seen(jump, onward);
@@ -1094,9 +1181,9 @@ function useWander(): Pose {
  * measured against — so every line truncates rather than wraps, and the tail
  * of the path is the part worth keeping.
  */
-function Header({ runtime }: { runtime: Runtime }): React.JSX.Element {
-  const { x, stance, say, side } = useWander();
-  const mark = stage(mascot(stance, useBlink()), x, say, side);
+function Header({ runtime, brief }: { runtime: Runtime; brief?: Brief }): React.JSX.Element {
+  const { x, stance, look, say, side } = useWander(brief);
+  const mark = stage(mascot(stance, useBlink(), look), x, say, side);
   const agents = Object.entries(runtime.config.agents)
     .filter(([, profile]) => profile.enabled)
     .map(([id]) => id);

@@ -1,4 +1,4 @@
-import type { Marker, Tone } from '../view-model.js';
+import type { Brief, Marker, Tone } from '../view-model.js';
 
 /** A bright gray. handsfree keeps one accent and spends it on who is speaking. */
 export const BRAND = '#d9d9d9';
@@ -139,13 +139,23 @@ export const RESULT_INDENT = ' ';
  * a row of feet, and a row of nothing. Every part keeps the same nine cells,
  * so no pose can shift what sits beside or below the mark; the header's row
  * count is what a click is measured against.
+ *
+ * The eyes are what say which way the mark is going. A quadrant is the
+ * smallest a pair of eyes can move and the largest they can move and still
+ * be a face — one quadrant over, both of them, and the mark is plainly
+ * looking that way — so the glance is a quadrant either side of straight
+ * out: the hole slides across its own cell and the far eye takes the next
+ * cell along. The two glances are each other's mirror; straight out is its
+ * own.
  */
-const HEAD = ' ▐▛███▜▌ ';
+const HEAD_AHEAD = ' ▐▛███▜▌ ';
+const HEAD_LEFT = ' ▐▜██▛█▌ ';
+const HEAD_RIGHT = ' ▐█▜██▛▌ ';
 const HEAD_SHUT = ' ▐█████▌ ';
 const ARMS_UP = '▝▜█████▛▘';
 const ARMS_DOWN = '▗▜█████▛▖';
 const FEET = '  ▘▘ ▝▝  ';
-const AIR = ' '.repeat([...HEAD].length);
+const AIR = ' '.repeat([...HEAD_AHEAD].length);
 
 /**
  * The stances the mark holds: upright with its arms raised, at ease with
@@ -154,9 +164,25 @@ const AIR = ' '.repeat([...HEAD].length);
  */
 export type Stance = 'stand' | 'easy' | 'sit' | 'air';
 
-/** The mark in a stance, eyes open or shut — always three rows of nine cells. */
-export function mascot(stance: Stance = 'stand', shut = false): readonly [string, string, string] {
-  const head = shut ? HEAD_SHUT : HEAD;
+/** Where the mark is looking: straight out, or a quadrant to one side. */
+export type Look = 'ahead' | 'left' | 'right';
+
+const HEAD: Record<Look, string> = {
+  ahead: HEAD_AHEAD,
+  left: HEAD_LEFT,
+  right: HEAD_RIGHT,
+};
+
+/**
+ * The mark in a stance, eyes open or shut and turned where it is headed —
+ * always three rows of nine cells.
+ */
+export function mascot(
+  stance: Stance = 'stand',
+  shut = false,
+  look: Look = 'ahead',
+): readonly [string, string, string] {
+  const head = shut ? HEAD_SHUT : HEAD[look];
   switch (stance) {
     case 'easy':
       return [head, ARMS_DOWN, FEET];
@@ -172,11 +198,48 @@ export function mascot(stance: Stance = 'stand', shut = false): readonly [string
 export const MASCOT = mascot();
 
 /**
- * What the mark says when the mood takes it: a greeting, a hurry-up, an
- * offer. Kept short — a saying has to sit beside the mark without leaning
- * into the header's text.
+ * What the mark says when the mood takes it, with nothing to report: a
+ * greeting, a hurry-up, an offer, an idle thought. Every one is kept to four
+ * hangul glyphs or their width in Latin — the stage is sized off the widest
+ * of them, and a saying that leans into the header's text costs the name and
+ * the path beside it their room.
  */
-export const SAYINGS = ['Hi', '허리업', '말만해'] as const;
+export const SAYINGS = [
+  'Hi',
+  '허리업',
+  '말만해',
+  '가보자고',
+  '심심해',
+  '뭐 할까',
+  '준비됐어',
+  '한 방에',
+  '쉬엄쉬엄',
+  '고고씽',
+  '천천히',
+  '딴짓 중',
+  '눈 붙임',
+  'zzz',
+  'ping!',
+  '오케이',
+  '커맨드?',
+  '스트레칭',
+  '물 마셔',
+  '갑니다',
+] as const;
+
+/**
+ * What it says instead while there is a turn to report on: where the work
+ * stands, in the same breath a saying takes. The phases are the ones the
+ * transcript can tell apart — nothing delegated yet, a task running, the end
+ * in sight, and the turn over — and each keeps a handful of wordings so a
+ * long run does not repeat itself into a status light.
+ */
+export const BRIEFINGS: Record<Brief, readonly string[]> = {
+  start: ['시작!', '접수!', '출발!', '가봅시다'],
+  work: ['작업 중', '진행 중', '열일 중'],
+  nearly: ['거의 다', '곧 끝나', '막바지', '마무리!'],
+  done: ['다 됐어', '완료!', '끝!', '수고!'],
+};
 
 /** Display columns of a piece of text — hangul and its CJK neighbours sit two columns to Latin's one. */
 const WIDE = /[ᄀ-ᅟ⺀-鿿가-힣豈-﫿＀-｠￠-￦]/;
@@ -188,14 +251,16 @@ export function columns(text: string): number {
 
 /**
  * The stage the mark wanders on: its own cells with room on each side for
- * the megaphone's column and the widest thing it says — a saying goes out
+ * the megaphone's column and the widest thing it says, briefings counted in —
+ * a saying goes out
  * whichever side of the mark it fits, and the mark never has to shuffle to
  * make room. The header gives the stage this width outright, so however far
  * the mark roams and whatever it says, the margin before it and the column
  * of text after it never move a cell.
  */
 export const MASCOT_STAGE =
-  [...MASCOT[0]].length + 2 * (1 + Math.max(...SAYINGS.map((saying) => columns(saying))));
+  [...MASCOT[0]].length +
+  2 * (1 + Math.max(...[...SAYINGS, ...Object.values(BRIEFINGS).flat()].map(columns)));
 
 /**
  * The mark standing `x` columns from the left edge of its stage — negative

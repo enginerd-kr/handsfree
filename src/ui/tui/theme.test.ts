@@ -3,6 +3,7 @@ import {
   AGENT_COLOUR,
   agentColour,
   BRAND,
+  BRIEFINGS,
   columns,
   MASCOT,
   MASCOT_STAGE,
@@ -10,23 +11,50 @@ import {
   SAYINGS,
   shimmer,
   stage,
+  type Look,
   type Stance,
 } from './theme.js';
 
+/**
+ * A row of quadrant blocks flipped end to end, each glyph swapped for the one
+ * that is its own reflection — what the mark would look like in a mirror.
+ */
+const REFLECT: Record<string, string> = {
+  '▛': '▜',
+  '▜': '▛',
+  '▙': '▟',
+  '▟': '▙',
+  '▌': '▐',
+  '▐': '▌',
+  '▘': '▝',
+  '▝': '▘',
+  '▖': '▗',
+  '▗': '▖',
+};
+function reflect(line: string): string {
+  return [...line]
+    .reverse()
+    .map((glyph) => REFLECT[glyph] ?? glyph)
+    .join('');
+}
+
 describe('the welcome mark', () => {
   const stances: Stance[] = ['stand', 'easy', 'sit', 'air'];
+  const looks: Look[] = ['ahead', 'left', 'right'];
 
   // The header is a fixed number of rows of a fixed width — that is what a
   // click's row is measured against — so a blink or a pose may only swap
   // glyphs, never a row or a cell.
-  it('keeps its shape through every stance, eyes open or shut', () => {
+  it('keeps its shape through every stance, eyes open, shut, or turned', () => {
     for (const stance of stances) {
       for (const shut of [false, true]) {
-        const posed = mascot(stance, shut);
-        expect(posed).toHaveLength(MASCOT.length);
-        expect(posed.map((line) => [...line].length)).toEqual(
-          MASCOT.map((line) => [...line].length),
-        );
+        for (const look of looks) {
+          const posed = mascot(stance, shut, look);
+          expect(posed).toHaveLength(MASCOT.length);
+          expect(posed.map((line) => [...line].length)).toEqual(
+            MASCOT.map((line) => [...line].length),
+          );
+        }
       }
     }
   });
@@ -63,6 +91,32 @@ describe('the welcome mark', () => {
     expect(bottom.trim()).toBe('');
     expect(top).toBe(mascot()[0]);
     expect(middle).toBe(mascot()[1]);
+  });
+
+  // A glance is the eyes and nothing else: the head is the only row that may
+  // differ, whatever the mark is standing or sitting on.
+  it('turns only its head to look aside', () => {
+    for (const stance of stances) {
+      for (const look of ['left', 'right'] as const) {
+        const ahead = mascot(stance);
+        const aside = mascot(stance, false, look);
+        const changed = ahead.filter((line, row) => line !== aside[row]);
+        expect(changed).toHaveLength(1);
+      }
+    }
+  });
+
+  // The two glances are one face turned, not two faces: each is the other in
+  // a mirror, and looking straight out is its own reflection.
+  it('looks left and right by the same quadrant', () => {
+    expect(reflect(mascot('stand', false, 'left')[0])).toBe(mascot('stand', false, 'right')[0]);
+    expect(reflect(MASCOT[0])).toBe(MASCOT[0]);
+  });
+
+  // Shut, there are no eyes to turn — the head that closed on a glance is the
+  // head that closed looking straight out.
+  it('shows the same shut eyes whichever way it was looking', () => {
+    for (const look of looks) expect(mascot('stand', true, look)).toEqual(mascot('stand', true));
   });
 
   // At ease only the arms move: the nubs at the body's edges drop from the
@@ -121,11 +175,28 @@ describe('the mark on its stage', () => {
   // The stage is sized off the sayings themselves — hangul at two columns a
   // glyph — with room for the widest one on each side of the mark, so a word
   // goes out wherever the mark stands without it shuffling to make space.
+  // A briefing is a saying like any other and has to fit the same room.
   it('gives every saying room on both sides of the mark', () => {
     expect(columns('Hi')).toBe(2);
     expect(columns('허리업')).toBe(6);
-    for (const saying of SAYINGS) {
+    for (const saying of [...SAYINGS, ...Object.values(BRIEFINGS).flat()]) {
       expect(span + 2 * (1 + columns(saying))).toBeLessThanOrEqual(MASCOT_STAGE);
+    }
+  });
+});
+
+describe('what the mark says', () => {
+  it('never repeats itself in the idle sayings', () => {
+    expect(new Set(SAYINGS).size).toBe(SAYINGS.length);
+  });
+
+  // Every phase the transcript can report has to have words for it — a phase
+  // that came back empty would put the mark's megaphone up around nothing.
+  it('has a handful of wordings for every phase of a turn', () => {
+    for (const [phase, words] of Object.entries(BRIEFINGS)) {
+      expect(words.length, phase).toBeGreaterThan(1);
+      expect(new Set(words).size, phase).toBe(words.length);
+      for (const word of words) expect(word.trim(), phase).not.toBe('');
     }
   });
 });

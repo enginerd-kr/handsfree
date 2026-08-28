@@ -3,6 +3,7 @@ import type {
   ContentBlock,
   Diff,
   PlanEntry,
+  SessionUpdate,
   StopReason,
   ToolCallContent,
   ToolCallStatus,
@@ -379,12 +380,7 @@ export function buildView(
           case 'plan_update': {
             closeBlocks();
             closeTool();
-            const entries =
-              update.sessionUpdate === 'plan'
-                ? update.entries
-                : update.plan.type === 'items'
-                  ? update.plan.entries
-                  : undefined;
+            const entries = planEntries(update);
             const planId =
               update.sessionUpdate === 'plan_update' && 'planId' in update.plan
                 ? update.plan.planId
@@ -634,6 +630,58 @@ function trimBlank(lines: ViewLine[]): ViewLine[] {
 function clip(text: string, max: number): string {
   const flat = text.replace(/\t/g, '  ').replace(/\r/g, '');
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+/** The checklist a plan update carries, where it carries one at all. */
+function planEntries(update: SessionUpdate): readonly PlanEntry[] | undefined {
+  if (update.sessionUpdate === 'plan') return update.entries;
+  if (update.sessionUpdate === 'plan_update' && update.plan.type === 'items') {
+    return update.plan.entries;
+  }
+  return undefined;
+}
+
+/**
+ * Where a running turn stands. Three beats is all a glance wants, and all the
+ * transcript can honestly tell apart.
+ */
+export type TurnPhase = 'start' | 'work' | 'nearly';
+
+/** What the mark briefs: where the turn stands, or that it is over. */
+export type Brief = TurnPhase | 'done';
+
+/** How much of a plan has to be ticked off before the end is in sight. */
+const NEARLY = 2 / 3;
+
+/**
+ * How far the running turn has got, read off the transcript rather than off
+ * the clock — a turn is done when the work is, not when a timer says so.
+ * Nothing delegated yet is the start; a task still open is the work itself,
+ * and the plan the agent keeps beside it, where it keeps one, is what says
+ * the end is in sight; every task stopped leaves only handsfree's own
+ * write-up, which is as near done as this can claim while a turn still runs.
+ *
+ * Only the records since the last prompt count — the phase is about this
+ * turn — and the newest plan is the one read, whichever agent posted it: the
+ * checklist on screen is the one a briefing has to agree with.
+ */
+export function turnPhase(records: readonly TranscriptRecord[]): TurnPhase {
+  const turn = records.slice(records.findLastIndex((record) => record.type === 'user') + 1);
+  const open = new Set<number>();
+  let delegated = 0;
+  let plan: readonly PlanEntry[] | undefined;
+  for (const record of turn) {
+    if (record.type === 'delegation') {
+      delegated++;
+      open.add(record.taskId);
+    } else if (record.type === 'stop') open.delete(record.taskId);
+    else if (record.type === 'session_update') plan = planEntries(record.update) ?? plan;
+  }
+  if (delegated === 0) return 'start';
+  if (open.size === 0) return 'nearly';
+  if (!plan?.length) return 'work';
+  const done = plan.filter((entry) => entry.status === 'completed').length;
+  return done >= plan.length * NEARLY ? 'nearly' : 'work';
 }
 
 /**

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Transcript } from '../workspace/transcript.js';
-import { buildView, workingAgents } from './view-model.js';
+import { buildView, turnPhase, workingAgents } from './view-model.js';
 
 const WORKSPACE = '/ws';
 
@@ -475,5 +475,72 @@ describe('workingAgents', () => {
     t.append({ type: 'delegation', taskId: 2, agentId: 'gemini', sessionId: 's', task: 'sort' });
     t.append({ type: 'stop', taskId: 1, agentId: 'claude', sessionId: 's', stopReason: 'cancelled' });
     expect([...workingAgents(t.all())]).toEqual(['gemini']);
+  });
+});
+
+describe('turnPhase', () => {
+  // A prompt with nothing delegated under it yet is the start of the work,
+  // however long handsfree has been thinking about it.
+  it('reads a turn with nothing delegated yet as the start', () => {
+    const t = transcript();
+    t.append({ type: 'user', text: 'fix the header' });
+    t.append({ type: 'assistant', text: 'On it.' });
+    expect(turnPhase(t.all())).toBe('start');
+  });
+
+  it('reads an open task as the work itself', () => {
+    const t = transcript();
+    t.append({ type: 'user', text: 'fix the header' });
+    t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'fix it' });
+    expect(turnPhase(t.all())).toBe('work');
+  });
+
+  // The agent's own checklist is the only honest measure of how far in a
+  // task is; two of three ticked off is what puts the end in sight.
+  it('follows the agent\'s plan while a task runs', () => {
+    const t = transcript();
+    t.append({ type: 'user', text: 'fix the header' });
+    t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'fix it' });
+    const plan = (done: number) => ({
+      type: 'session_update' as const,
+      agentId: 'claude',
+      sessionId: 's',
+      update: {
+        sessionUpdate: 'plan' as const,
+        entries: ['read', 'edit', 'test'].map((content, index) => ({
+          content,
+          priority: 'medium' as const,
+          status: index < done ? ('completed' as const) : ('pending' as const),
+        })),
+      },
+    });
+    t.append(plan(1));
+    expect(turnPhase(t.all())).toBe('work');
+    t.append(plan(2));
+    expect(turnPhase(t.all())).toBe('nearly');
+  });
+
+  // Every task stopped leaves only handsfree's own write-up, which is as
+  // near done as this can say while the turn is still running.
+  it('reads every task stopped as nearly done', () => {
+    const t = transcript();
+    t.append({ type: 'user', text: 'fix the header' });
+    t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'fix it' });
+    t.append({ type: 'delegation', taskId: 2, agentId: 'codex', sessionId: 's2', task: 'test it' });
+    t.append({ type: 'stop', taskId: 1, agentId: 'claude', sessionId: 's', stopReason: 'end_turn' });
+    expect(turnPhase(t.all())).toBe('work');
+    t.append({ type: 'stop', taskId: 2, agentId: 'codex', sessionId: 's2', stopReason: 'end_turn' });
+    expect(turnPhase(t.all())).toBe('nearly');
+  });
+
+  // The phase is about this turn: what the last one delegated and finished
+  // has no bearing on a prompt that has only just landed.
+  it('forgets the turn before the last prompt', () => {
+    const t = transcript();
+    t.append({ type: 'user', text: 'fix the header' });
+    t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'fix it' });
+    t.append({ type: 'stop', taskId: 1, agentId: 'claude', sessionId: 's', stopReason: 'end_turn' });
+    t.append({ type: 'user', text: 'now the footer' });
+    expect(turnPhase(t.all())).toBe('start');
   });
 });
