@@ -182,10 +182,11 @@ describe('the mark on its stage', () => {
     expect(spoken[2]).toBe(`${' '.repeat(6)}/${MASCOT[2]}`);
   });
 
-  // The stage is sized off the sayings themselves — hangul at two columns a
-  // glyph — with room for the widest one on each side of the mark, so a word
-  // goes out wherever the mark stands without it shuffling to make space.
-  // A briefing is a saying like any other and has to fit the same room.
+  // The stage is sized off the sayings themselves — counted in columns, so a
+  // wide glyph counts for the two it takes — with room for the widest one on
+  // each side of the mark, so a word goes out wherever the mark stands without
+  // it shuffling to make space. A briefing is a saying like any other and has
+  // to fit the same room.
   it('gives every saying room on both sides of the mark', () => {
     expect(columns('Hi')).toBe(2);
     expect(columns('허리업')).toBe(6);

@@ -219,32 +219,31 @@ export const MASCOT = mascot();
 
 /**
  * What the mark says when the mood takes it, with nothing to report: a
- * greeting, a hurry-up, an offer, an idle thought. Every one is kept to four
- * hangul glyphs or their width in Latin — the stage is sized off the widest
- * of them, and a saying that leans into the header's text costs the name and
- * the path beside it their room.
+ * greeting, a hurry-up, an offer, an idle thought. Every one is kept to eight
+ * columns — the stage is sized off the widest of them, and a saying that leans
+ * into the header's text costs the name and the path beside it their room.
  */
 export const SAYINGS = [
   'Hi',
-  '허리업',
-  '말만해',
-  '가보자고',
-  '심심해',
-  '뭐 할까',
-  '준비됐어',
-  '한 방에',
-  '쉬엄쉬엄',
-  '고고씽',
-  '천천히',
-  '딴짓 중',
-  '눈 붙임',
+  'hurry!',
+  'just say',
+  "let's go",
+  'bored',
+  'what now',
+  'ready',
+  'one shot',
+  'easy now',
+  'zoom',
+  'slowly',
+  'idling',
+  'napping',
   'zzz',
   'ping!',
-  '오케이',
-  '커맨드?',
-  '스트레칭',
-  '물 마셔',
-  '갑니다',
+  'okay',
+  'command?',
+  'stretch',
+  'hydrate',
+  'on it',
 ] as const;
 
 /**
@@ -255,10 +254,10 @@ export const SAYINGS = [
  * long run does not repeat itself into a status light.
  */
 export const BRIEFINGS: Record<Brief, readonly string[]> = {
-  start: ['시작!', '접수!', '출발!', '가봅시다'],
-  work: ['작업 중', '진행 중', '열일 중'],
-  nearly: ['거의 다', '곧 끝나', '막바지', '마무리!'],
-  done: ['다 됐어', '완료!', '끝!', '수고!'],
+  start: ['go!', 'got it', 'starting', 'off I go'],
+  work: ['working', 'running', 'busy'],
+  nearly: ['nearly', 'almost', 'last bit', 'wrapping'],
+  done: ['done', 'all done', 'finished', 'nice one'],
 };
 
 /** Display columns of a piece of text — hangul and its CJK neighbours sit two columns to Latin's one. */

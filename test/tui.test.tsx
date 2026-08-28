@@ -175,11 +175,11 @@ describe('terminal UI', () => {
 
     const app = render(<App runtime={h.runtime} />);
     try {
-      const frame = await waitFor(() => app.lastFrame(), '안녕하세요?');
+      const frame = await waitFor(() => app.lastFrame(), 'Hello.');
       // A window with room for all of it gets all of it: what handsfree does
       // with a line, and every shape a line can take.
-      expect(frame).toContain('말하듯');
-      expect(frame).toContain('다음과 같이 입력해보세요.');
+      expect(frame).toContain('as you would say it');
+      expect(frame).toContain('Try a line like one of these.');
       expect(frame).toContain('/agents');
       // The planner by the name a mention gives it, and the agent on a model
       // off its own roster — not a fixed cast written into the greeting.
@@ -190,7 +190,7 @@ describe('terminal UI', () => {
       // line sent takes the pane back.
       await h.runtime.conversation.send('hi');
       const after = await waitFor(() => app.lastFrame(), 'Hello there.');
-      expect(after).not.toContain('안녕하세요?');
+      expect(after).not.toContain('What are we working on today?');
     } finally {
       app.unmount();
     }
@@ -388,7 +388,8 @@ describe('terminal UI', () => {
 
       await press('\x05', '\x7f'); // ctrl+e, then backspace eats the o
       await waitFor(plain, `${PROMPT_CHAR} ell`);
-      expect(plain()).not.toContain('ello');
+      // On the draft line, that is: the greeting above it says hello too.
+      expect(plain()).not.toContain(`${PROMPT_CHAR} ello`);
     } finally {
       app.unmount();
     }

@@ -1684,10 +1684,10 @@ const WELCOME_MARGIN = 2;
 const NOTE_GAP = 4;
 
 /** The hello: the line that greets, and the line that asks. */
-const GREETING = ['안녕하세요?', '오늘은 어떤 작업을 해볼까요.'] as const;
+const GREETING = ['Hello.', 'What are we working on today?'] as const;
 
 /** The line that hands the examples over, so a list of quotes reads as an offer. */
-const INVITATION = '다음과 같이 입력해보세요.';
+const INVITATION = 'Try a line like one of these.';
 
 /**
  * What happens to a line once it is sent, in the one sentence worth reading
@@ -1695,7 +1695,8 @@ const INVITATION = '다음과 같이 입력해보세요.';
  * suits. It is why a plain request needs no address at all — the first example
  * under it is that sentence made into a line.
  */
-const ABOUT = '말하듯 적어주시면 계획을 세워 알맞은 에이전트에게 맡깁니다.';
+const ABOUT =
+  'Write it as you would say it; handsfree plans it and picks the agent for it.';
 
 /** One example line as it would be typed, and what that shape of line does. */
 interface Opening {
@@ -1720,20 +1721,20 @@ function openings(runtime: Runtime, agents: readonly string[]): readonly Opening
   const second = agents[1] ?? first;
   const model = runtime.pool.currentModel(second) ?? runtime.pool.models(second)[0]?.value;
   return [
-    { line: '테스트 깨진 것 좀 고쳐줘', note: '맡길 곳은 계획하는 쪽이 고릅니다' },
-    { line: `@${ORCHESTRATOR} 뭐부터 할지 정리해줘`, note: '계획하는 쪽을 직접 부릅니다' },
-    { line: `@${first} 이 파일 요약해줘`, note: '에이전트를 골라 곧장 맡깁니다' },
+    { line: 'fix the failing tests', note: 'the planner picks who takes it' },
+    { line: `@${ORCHESTRATOR} plan this out`, note: 'call the planner yourself' },
+    { line: `@${first} summarise this file`, note: 'straight to an agent' },
     // Only where it says something the row above it did not: one agent, no
     // roster and no pinned model leaves the two lines spelling the same thing.
     ...(model || second !== first
       ? [
           {
-            line: `@${model ? `${second}:${model}` : second} 테스트부터 하나 짜줘`,
-            note: model ? '모델까지 지정할 수 있습니다' : '다른 에이전트에게 곧장',
+            line: `@${model ? `${second}:${model}` : second} write a test first`,
+            note: model ? 'name a model after the colon' : 'or to another agent',
           },
         ]
       : []),
-    { line: '/agents', note: '슬래시는 명령 · 지금 부를 수 있는 에이전트' },
+    { line: '/agents', note: 'a command · who you can call' },
   ];
 }
 
