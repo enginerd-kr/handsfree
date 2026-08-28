@@ -57,6 +57,12 @@ export type Act =
     }
   | { do: 'tool'; toolCallId: string; title: string; kind: ToolKind; locations?: string[] }
   | { do: 'stall'; ms: number }
+  /**
+   * The turn fails outright rather than ending. What a dying adapter looks
+   * like from the host's side: the prompt request rejects, so the host never
+   * learns whether the prompt was read before the process went.
+   */
+  | { do: 'fail'; message: string }
   | { do: 'stop'; reason: StopReason };
 
 export interface FakeAgentOptions {
@@ -347,6 +353,9 @@ async function perform(
           );
         });
         break;
+
+      case 'fail':
+        throw new Error(act.message);
 
       case 'stop':
         return act.reason;

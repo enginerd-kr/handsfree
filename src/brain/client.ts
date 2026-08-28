@@ -135,7 +135,12 @@ export class LocalModel implements ChatClient {
             { signal },
           )
           .catch(async (err: unknown) => {
-            if (!withUsage || !isUsageRejection(err)) throw err;
+            // Any refusal of the request's *shape* is taken as a refusal of
+            // the one thing we added to it. A server that rejects
+            // `stream_options` without naming it would otherwise fail every
+            // planning call for the rest of the run, and a token count is
+            // never worth that — so the count is what gets dropped.
+            if (!withUsage || signal?.aborted || !isRequestRejection(err)) throw err;
             this.usageInStream = false;
             return this.client.chat.completions.create({ ...request, stream: true }, { signal });
           });
@@ -172,11 +177,10 @@ function isFormatRejection(err: unknown): boolean {
   return /response_format|json_schema|json_object|schema/i.test(error.message ?? '');
 }
 
-/** True when the endpoint refused `stream_options`, not the request around it. */
-function isUsageRejection(err: unknown): boolean {
-  const error = err as { status?: number; message?: string };
-  if (error.status !== undefined && error.status !== 400 && error.status !== 422) return false;
-  return /stream_options|include_usage/i.test(error.message ?? '');
+/** True when the endpoint rejected the request as malformed rather than failing on it. */
+function isRequestRejection(err: unknown): boolean {
+  const status = (err as { status?: number }).status;
+  return status === 400 || status === 422;
 }
 
 /** Keeps the system prompt and the most recent window. */

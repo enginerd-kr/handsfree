@@ -699,6 +699,83 @@ describe('Conversation', () => {
     expect(system).not.toContain('"gemini": fast on single files\n  (');
   });
 
+  it('leaves the history empty when a clear lands in the middle of a turn', async () => {
+    // `/clear` never queues behind a turn, so this sequence is reachable: the
+    // agent is still working when the slate is wiped.
+    const agent = fakeAgent({ script: () => [{ do: 'stall', ms: 60 }, { do: 'say', text: 'done' }] });
+    const llm = scriptedModel([delegate('Sleep on it'), answer('all done.'), answer('fresh start.')]);
+    const h = harness({ agents: { claude: agent }, llm });
+    open = h;
+
+    const turn = h.runtime.conversation.send('take your time');
+    while (!h.runtime.transcript.all().some((record) => record.type === 'delegation')) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    await h.runtime.conversation.send('/clear');
+    await turn;
+
+    await h.runtime.conversation.send('hello again');
+
+    const after = llm.seen.at(-1) ?? [];
+    // The cleared conversation is a system prompt and one line, not the
+    // wreckage of a turn that outlived it — and never two users in a row.
+    expect(after.map((message) => message.role)).toEqual(['system', 'user']);
+    expect(after[1]?.content).toBe('hello again');
+  });
+
+  it('briefs an agent from scratch after a clear that landed mid-task', async () => {
+    const agent = fakeAgent({ script: () => [{ do: 'stall', ms: 60 }, { do: 'say', text: 'done' }] });
+    const llm = scriptedModel([delegate('Sleep on it'), answer('all done.'), answer('ok.')]);
+    const h = harness({ agents: { claude: agent }, llm });
+    open = h;
+
+    const turn = h.runtime.conversation.send('take your time');
+    while (!h.runtime.transcript.all().some((record) => record.type === 'delegation')) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    await h.runtime.conversation.send('/clear');
+    await turn;
+
+    await h.runtime.conversation.send('@claude something new');
+
+    // The note said the agents would be briefed from scratch. They are: the
+    // finishing task must not put back what the clear took away.
+    expect(agent.prompts[1]).toContain('handsfree approves or refuses');
+    // And nothing from before the line is carried across to it.
+    expect(agent.prompts[1]).not.toContain('Since your last task:');
+  });
+
+  it('repeats a handoff the agent never got, rather than losing it', async () => {
+    let edited = '';
+    const claude = fakeAgent({
+      script: () => [
+        { do: 'tool', toolCallId: 't1', title: 'w', kind: 'edit', status: 'completed', locations: [edited] },
+        { do: 'say', text: 'Added parse().' },
+      ],
+    });
+    // gemini's first turn fails outright, the way a dying adapter does, so the
+    // brief it carried is not known to have been read; the second one works.
+    const gemini = fakeAgent({
+      script: (_prompt, turn) =>
+        turn === 0 ? [{ do: 'fail', message: 'adapter went away' }] : [{ do: 'say', text: 'ok' }],
+    });
+    const llm = scriptedModel([answer('a'), answer('b'), answer('c')]);
+    const h = harness({ agents: { claude, gemini }, llm });
+    open = h;
+    edited = path.join(h.workspaceDir, 'a.ts');
+
+    await h.runtime.conversation.send('@claude add parse()');
+    await h.runtime.conversation.send('@gemini test it');
+    await h.runtime.conversation.send('@gemini test it again');
+
+    // The mark did not move past a brief nobody is known to have read, so what
+    // claude changed is still told to gemini on the next attempt.
+    expect(gemini.prompts.at(-1)).toContain('claude');
+    expect(gemini.prompts.at(-1)).toContain('changed a.ts');
+    // A session that may have lost the rules is given them again.
+    expect(gemini.prompts.at(-1)).toContain('handsfree approves or refuses');
+  });
+
   it('records the workspace path it gave the model', async () => {
     const agent = fakeAgent({ script: () => [] });
     const llm = scriptedModel([answer('ok')]);

@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { EventEmitter } from 'node:events';
-import type { SessionUpdate, StopReason } from '@agentclientprotocol/sdk';
+import type { SessionUpdate, StopReason, ToolCallStatus, ToolKind } from '@agentclientprotocol/sdk';
 import type { AuditEntry } from '../policy/types.js';
 
 export type TranscriptBody =
@@ -130,27 +130,53 @@ export function agentText(records: readonly TranscriptRecord[]): string {
   return text.trim();
 }
 
+/** What a tool call has said about itself so far, across all of its updates. */
+interface ToolCallState {
+  kind: ToolKind | undefined;
+  status: ToolCallStatus | undefined;
+  paths: string[];
+}
+
 /**
  * Files that are different because of these records: what handsfree itself
  * wrote on the agent's behalf, and what the agent reported editing, moving or
  * deleting. A read is a `touchedFiles` entry and not one of these — the next
  * agent needs to know what changed, not what was looked at.
+ *
+ * A tool call is assembled from every record that carries its id, because
+ * every field of a `tool_call_update` but the id is optional: the usual shape
+ * is an opening `tool_call` that names the kind and an update that names the
+ * paths, and reading either alone finds a call with no kind or a kind with no
+ * paths. A call that ended in `failed` is left out — an edit that did not
+ * happen is not a file the next agent has to re-read, and telling it otherwise
+ * is worse than telling it nothing.
  */
 export function changedFiles(records: readonly TranscriptRecord[]): string[] {
-  const seen = new Set<string>();
+  const calls = new Map<string, ToolCallState>();
+  const written: string[] = [];
   for (const record of records) {
     if (record.type === 'decision') {
       const { entry } = record;
-      if (entry.verdict === 'allow' && entry.request.kind === 'fs.write') seen.add(entry.request.path);
+      if (entry.verdict === 'allow' && entry.request.kind === 'fs.write') written.push(entry.request.path);
       continue;
     }
     if (record.type !== 'session_update') continue;
     const update = record.update;
     if (update.sessionUpdate !== 'tool_call' && update.sessionUpdate !== 'tool_call_update') continue;
-    if (update.kind !== 'edit' && update.kind !== 'delete' && update.kind !== 'move') continue;
+    const state = calls.get(update.toolCallId) ?? { kind: undefined, status: undefined, paths: [] };
+    if (update.kind) state.kind = update.kind;
+    if (update.status) state.status = update.status;
     for (const location of update.locations ?? []) {
-      if (location?.path) seen.add(location.path);
+      if (location?.path && !state.paths.includes(location.path)) state.paths.push(location.path);
     }
+    calls.set(update.toolCallId, state);
+  }
+
+  const seen = new Set<string>(written);
+  for (const state of calls.values()) {
+    if (state.kind !== 'edit' && state.kind !== 'delete' && state.kind !== 'move') continue;
+    if (state.status === 'failed') continue;
+    for (const path of state.paths) seen.add(path);
   }
   return [...seen];
 }

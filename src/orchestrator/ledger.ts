@@ -6,6 +6,8 @@ export interface LedgerTask {
   outcome: TaskOutcome;
   /** The seq of the task's `stop` record: what "since" is measured against. */
   seq: number;
+  /** The session it ran in, so a record can say what *this* session is holding. */
+  sessionId: string;
 }
 
 /** How many tasks the run state spells out before older ones become a count. */
@@ -35,25 +37,31 @@ export function floorOf(records: readonly TranscriptRecord[]): number {
  * record the same way the planner was told about it the first time. Nothing
  * here is remembered in a second place: a restart that replays the file, or a
  * test that fabricates one, sees the same ledger the live run did.
+ *
+ * A task belongs to the period it was *handed out* in, not the one it happened
+ * to finish in. `/clear` can land in the middle of a running task, and a ledger
+ * keyed on the stop would keep exactly that one task and drop everything
+ * around it — a clean slate with a single stranger standing on it.
  */
 export function tasksSince(records: readonly TranscriptRecord[], after: number): LedgerTask[] {
-  const open = new Map<number, { at: number; startedAt: number }>();
+  const open = new Map<number, { at: number; startedAt: number; seq: number }>();
   const tasks: LedgerTask[] = [];
   for (let at = 0; at < records.length; at++) {
     const record = records[at]!;
     if (record.type === 'delegation') {
-      open.set(record.taskId, { at, startedAt: record.at });
+      open.set(record.taskId, { at, startedAt: record.at, seq: record.seq });
       continue;
     }
     if (record.type !== 'stop') continue;
     const start = open.get(record.taskId);
     open.delete(record.taskId);
-    if (!start || record.seq <= after) continue;
+    if (!start || start.seq <= after) continue;
     const slice = records.slice(start.at, at + 1);
     const delegation = slice[0];
     if (delegation?.type !== 'delegation') continue;
     tasks.push({
       seq: record.seq,
+      sessionId: record.sessionId,
       outcome: summarise(
         record.taskId,
         record.agentId,
@@ -109,6 +117,17 @@ export interface AgentRecord {
 }
 
 /**
+ * The session an agent is on now, as the record has it: the one its most
+ * recent task ran in. What an earlier session read is not what this one holds.
+ */
+function currentSession(tasks: readonly LedgerTask[], agentId: string): string | undefined {
+  for (let at = tasks.length - 1; at >= 0; at--) {
+    if (tasks[at]!.outcome.agentId === agentId) return tasks[at]!.sessionId;
+  }
+  return undefined;
+}
+
+/**
  * The run so far, per agent. This is what makes a role actionable at the moment
  * of choosing: the role says what an agent is for, and this says what it
  * already has loaded — and an agent that has the files a task concerns is the
@@ -116,12 +135,20 @@ export interface AgentRecord {
  */
 export function agentRecords(tasks: readonly LedgerTask[]): Map<string, AgentRecord> {
   const records = new Map<string, AgentRecord>();
-  for (const { outcome } of tasks) {
+  const live = new Map<string, string | undefined>();
+  for (const { outcome, sessionId } of tasks) {
     const record = records.get(outcome.agentId) ?? { tasks: 0, files: [], trouble: false };
     record.tasks++;
     if (outcome.status !== 'done') record.trouble = true;
-    for (const file of outcome.files) {
-      if (!record.files.includes(file)) record.files.push(file);
+    if (!live.has(outcome.agentId)) live.set(outcome.agentId, currentSession(tasks, outcome.agentId));
+    // Only what the session it is on has seen. A session that had to be
+    // replaced took its context with it, and a roster line claiming the new
+    // one already has those files open would send work to an agent that would
+    // have to read them all over again.
+    if (sessionId === live.get(outcome.agentId)) {
+      for (const file of outcome.files) {
+        if (!record.files.includes(file)) record.files.push(file);
+      }
     }
     records.set(outcome.agentId, record);
   }

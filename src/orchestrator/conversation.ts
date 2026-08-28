@@ -114,6 +114,14 @@ export class Conversation {
   private turn: AbortController | undefined;
   private inflight: Promise<void> | undefined;
   private readonly briefed = new Map<string, Briefing>();
+  /**
+   * Which conversation this is. `/clear` does not queue behind a turn — it is
+   * over the moment it runs — so a turn can outlive the history it was
+   * started against. Everything that writes back into that history checks the
+   * epoch it began under first, and an orphaned turn finishes, reports, and
+   * leaves no trace in the conversation that replaced it.
+   */
+  private epoch = 0;
 
   constructor(private readonly deps: ConversationDeps) {}
 
@@ -126,6 +134,7 @@ export class Conversation {
   }
 
   reset(): void {
+    this.epoch++;
     this.messages = [];
     // The ground rules go with the history. An agent that keeps its session
     // across a clear would otherwise never hear them again, and the first
@@ -217,6 +226,8 @@ export class Conversation {
      */
     let opening: ChatMessage | undefined;
     let closing: string | undefined;
+    const epoch = this.epoch;
+    let history: ChatMessage[] = this.messages;
 
     try {
       // Inside the turn, and holding its signal: expansion can run a command,
@@ -230,8 +241,14 @@ export class Conversation {
         );
       }
       this.ensureSystemPrompt(agents);
+      // The turn holds the history it was started against, rather than
+      // reaching for `this.messages` each time it has something to add. A
+      // `/clear` mid-turn puts a new array there, and a turn that followed it
+      // would go on planning against a conversation with no system prompt in
+      // it — the one thing it must never be asked to do.
+      history = this.messages;
       opening = { role: 'user', content: prompt };
-      this.push(opening);
+      history.push(opening);
 
       // A line that leads with "@agent" has already chosen its recipient, so
       // the planner is never consulted: what follows the name is the task,
@@ -242,7 +259,7 @@ export class Conversation {
       const mention = invoked ? undefined : parseMention(prompt, agents);
       if (mention) {
         delegations++;
-        this.push({
+        history.push({
           role: 'assistant',
           content: JSON.stringify({
             action: 'delegate',
@@ -261,7 +278,7 @@ export class Conversation {
           mention.model,
         );
         outcomes.push(outcome);
-        this.push({
+        history.push({
           role: 'user',
           content: `TASK RESULT\n${renderOutcome(outcome, workspace.dir).slice(0, config.limits.maxResultChars)}`,
         });
@@ -272,13 +289,13 @@ export class Conversation {
         if (turn.signal.aborted) break;
 
         const stream = this.newStream();
-        const planned = await this.plan(agents, turn.signal, stream);
+        const planned = await this.plan(history, agents, turn.signal, stream);
         if (!planned.ok) {
           stream.retract();
           notes.push(`The orchestration model did not produce a usable next step (${planned.error}).`);
           break;
         }
-        this.push({ role: 'assistant', content: JSON.stringify(planned.step) });
+        history.push({ role: 'assistant', content: JSON.stringify(planned.step) });
 
         if (planned.step.action === 'answer') {
           stream.end(planned.step.message);
@@ -303,7 +320,7 @@ export class Conversation {
           turn.signal,
         );
         outcomes.push(outcome);
-        this.push({
+        history.push({
           role: 'user',
           content: `TASK RESULT\n${renderOutcome(outcome, workspace.dir).slice(0, config.limits.maxResultChars)}`,
         });
@@ -334,7 +351,7 @@ export class Conversation {
         closing = JSON.stringify({ action: 'answer', message: summary });
         stream.end(summary);
       }
-      if (opening) this.settle(opening, closing);
+      if (opening) this.settle(epoch, history, opening, closing);
       this.turn = undefined;
     }
   }
@@ -347,15 +364,25 @@ export class Conversation {
    * turn that stopped before it could reply closes on a line saying so,
    * because two user lines in a row is a shape some chat templates refuse.
    */
-  private settle(opening: ChatMessage, closing: string | undefined): void {
-    const at = this.messages.indexOf(opening);
+  private settle(
+    epoch: number,
+    history: readonly ChatMessage[],
+    opening: ChatMessage,
+    closing: string | undefined,
+  ): void {
+    // The conversation this turn was speaking into is gone: `/clear` replaced
+    // it while the turn was still running. The turn still answered the person
+    // who asked — that went to the transcript — but folding it into a history
+    // that is meant to be empty would put half a turn in a cleared screen.
+    if (epoch !== this.epoch) return;
+    const at = history.indexOf(opening);
     if (at === -1) return;
     const reply = closing ?? JSON.stringify({ action: 'answer', message: '(stopped before finishing)' });
     // A new array rather than a splice: the one being replaced was handed to
     // the planner on every step of this turn, and a client that kept it —
     // anything queueing, retrying or recording — must keep what it was sent.
     this.messages = trimHistory(
-      [...this.messages.slice(0, at), opening, { role: 'assistant', content: reply }],
+      [...history.slice(0, at), opening, { role: 'assistant', content: reply }],
       this.deps.config.orchestration.maxHistoryMessages,
     );
   }
@@ -386,13 +413,18 @@ export class Conversation {
     }
   }
 
-  private async plan(agents: string[], signal: AbortSignal, stream: AnswerStream) {
+  private async plan(
+    history: readonly ChatMessage[],
+    agents: string[],
+    signal: AbortSignal,
+    stream: AnswerStream,
+  ) {
     if (!this.deps.llm) {
       return { ok: false as const, error: 'no orchestration model is configured' };
     }
     try {
       const llm = metered(this.deps.llm, 'plan', this.deps.transcript);
-      return await nextStep(llm, this.messages, agents, signal, stream);
+      return await nextStep(llm, [...history], agents, signal, stream);
     } catch (err) {
       return { ok: false as const, error: (err as Error).message };
     }
@@ -413,6 +445,11 @@ export class Conversation {
     const { config, pool, transcript, workspace } = this.deps;
     const taskId = ++this.taskCounter;
     const startedAt = Date.now();
+    // What is remembered about this agent belongs to the conversation this
+    // task was started in. A `/clear` while it runs empties that, and writing
+    // the briefing back afterwards would quietly restore a session's claim to
+    // have heard rules that were cleared along with everything else.
+    const epoch = this.epoch;
 
     const failed = (err: unknown): TaskOutcome => {
       const outcome = summarise(taskId, agentId, task, 'unresponsive', [], Date.now() - startedAt);
@@ -454,6 +491,11 @@ export class Conversation {
     const first =
       fresh ||
       known.lastStop === 'max_tokens' ||
+      // The last task never reached the agent — the process was dying, or the
+      // session was replaced under it. What it was told is not known, so it is
+      // told again. This is also the case a resumed session lands in: the id
+      // is the one from before, so nothing else here would notice.
+      known.lastStop === 'unresponsive' ||
       known.tasksSinceRules >= config.limits.rebriefEveryTasks;
     const records = transcript.all();
     const since = fresh ? floorOf(records) : known.since;
@@ -495,12 +537,18 @@ export class Conversation {
       sessionId: session.sessionId,
       stopReason: stopReason === 'unresponsive' ? 'cancelled' : stopReason,
     });
-    this.briefed.set(agentId, {
-      sessionId: session.sessionId,
-      tasksSinceRules: first ? 1 : known.tasksSinceRules + 1,
-      lastStop: stopReason,
-      since: stopped.seq,
-    });
+    if (epoch === this.epoch) {
+      this.briefed.set(agentId, {
+        sessionId: session.sessionId,
+        tasksSinceRules: first ? 1 : known.tasksSinceRules + 1,
+        lastStop: stopReason,
+        // The mark only moves for a brief that was actually delivered. A turn
+        // that threw may have died before the prompt went out, and advancing
+        // past a handoff nobody read would lose it for good: what the other
+        // agents changed would sit forever on the wrong side of the line.
+        since: stopReason === 'unresponsive' ? since : stopped.seq,
+      });
+    }
 
     return summarise(
       taskId,
@@ -601,7 +649,5 @@ export class Conversation {
    * every message in it is one the planner needs right now. It is trimmed
    * when the turn settles, after the turn has been folded to two lines.
    */
-  private push(message: ChatMessage): void {
-    this.messages.push(message);
-  }
+
 }

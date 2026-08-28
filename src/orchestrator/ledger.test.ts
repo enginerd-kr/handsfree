@@ -20,9 +20,10 @@ function task(
     edited?: string[];
     read?: string[];
     stopReason?: 'end_turn' | 'refusal' | 'max_tokens';
+    sessionId?: string;
   },
 ): void {
-  const sessionId = `s-${options.agentId}`;
+  const sessionId = options.sessionId ?? `s-${options.agentId}`;
   transcript.append({
     type: 'delegation',
     taskId: options.taskId,
@@ -150,6 +151,20 @@ describe('floorOf', () => {
     const floor = floorOf(transcript.all());
     expect(tasksSince(transcript.all(), floor).map((entry) => entry.outcome.task)).toEqual(['after']);
   });
+
+  it('leaves out a task the clear landed in the middle of', () => {
+    // `/clear` does not queue behind a turn, so this is a real sequence: the
+    // task was handed out before the slate was wiped and finished after.
+    const transcript = new Transcript();
+    transcript.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'straddles' });
+    transcript.append({ type: 'clear' });
+    transcript.append({ type: 'stop', taskId: 1, agentId: 'claude', sessionId: 's', stopReason: 'end_turn' });
+    task(transcript, { taskId: 2, agentId: 'claude', task: 'after' });
+
+    const floor = floorOf(transcript.all());
+    // A clean slate with one stranger standing on it is not a clean slate.
+    expect(tasksSince(transcript.all(), floor).map((entry) => entry.outcome.task)).toEqual(['after']);
+  });
 });
 
 describe('renderRunState', () => {
@@ -204,6 +219,17 @@ describe('agentRecords', () => {
 
     const record = agentRecords(tasksSince(transcript.all(), 0)).get('claude');
     expect(renderAgentRecord(record, '/ws')).toBe('1 task this run; already has a.ts, b.ts open');
+  });
+
+  it('forgets what an earlier session read, which the one on now never saw', () => {
+    const transcript = new Transcript();
+    task(transcript, { taskId: 1, agentId: 'claude', task: 'a', edited: ['/ws/old.ts'], sessionId: 'gone' });
+    task(transcript, { taskId: 2, agentId: 'claude', task: 'b', edited: ['/ws/new.ts'], sessionId: 'live' });
+
+    const record = agentRecords(tasksSince(transcript.all(), 0)).get('claude');
+    // Both tasks count; only the live session's files are claimed to be open.
+    expect(record?.tasks).toBe(2);
+    expect(record?.files).toEqual(['/ws/new.ts']);
   });
 
   it('says nothing about an agent that has not worked yet', () => {
