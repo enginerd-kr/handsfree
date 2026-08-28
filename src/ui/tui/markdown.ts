@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import { marked, type Token, type Tokens } from 'marked';
 import stringWidth from 'string-width';
-import { COLOUR } from './theme.js';
+import { COLOUR, INK, INK_FAINT } from './theme.js';
 
 /**
  * Markdown, rendered the way Claude Code renders its own: not into a tree of
@@ -37,7 +37,7 @@ export interface Highlighter {
 export interface RenderOptions {
   /** Null until `cli-highlight` has loaded, or for good if it never does. */
   highlight?: Highlighter | null;
-  /** Thoughts read as a quieter register, so their styling carries dim. */
+  /** Thoughts read as a quieter register: their styling carries the quiet ink. */
   dim?: boolean;
 }
 
@@ -104,7 +104,7 @@ function formatToken(
   switch (token.type) {
     case 'blockquote': {
       const inner = render(token.tokens ?? [], context);
-      const bar = chalk.dim(QUOTE_BAR);
+      const bar = chalk.hex(INK_FAINT)(QUOTE_BAR);
       return inner
         .split(EOL)
         .map((line) => (stripAnsi(line).trim() ? `${bar} ${chalk.italic(line)}` : line))
@@ -365,7 +365,7 @@ export function renderMarkdown(key: string, text: string, options: RenderOptions
   const context: Context = { highlight: options.highlight ?? null, dim: options.dim === true };
   const signature = `${context.dim ? 'd' : ''}|${context.highlight ? 'h' : ''}`;
 
-  if (!hasMarkdown(text)) return context.dim ? chalk.dim(text) : text;
+  if (!hasMarkdown(text)) return context.dim ? chalk.hex(INK)(text) : text;
   configureMarked();
 
   let entry = cache.get(key);
@@ -396,7 +396,7 @@ export function renderMarkdown(key: string, text: string, options: RenderOptions
   // Trimmed before it is dimmed: chalk closes the run after the last newline,
   // which would put that newline beyond trim's reach.
   const body = (prefixAnsi + render(tokens.slice(settled.length), context)).trim();
-  const result = context.dim ? chalk.dim(body) : body;
+  const result = context.dim ? chalk.hex(INK)(body) : body;
 
   remember(key, { signature, prefix, prefixAnsi, text, result });
   return result;

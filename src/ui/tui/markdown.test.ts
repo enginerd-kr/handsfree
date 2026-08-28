@@ -4,6 +4,7 @@ import wrapAnsi from 'wrap-ansi';
 import type { ViewItem } from '../view-model.js';
 import { heightOf } from './layout.js';
 import { renderMarkdown, resetMarkdownCache } from './markdown.js';
+import { INK } from './theme.js';
 
 /**
  * Nothing under vitest is a terminal, so chalk emits no colour by default and
@@ -23,7 +24,7 @@ beforeEach(() => {
 const BOLD = '\u001B[1m';
 const ITALIC = '\u001B[3m';
 const UNDERLINE = '\u001B[4m';
-const DIM = '\u001B[2m';
+const QUIET = chalk.hex(INK)('').split('\u001B[39m')[0];
 
 /** What the row actually reads as, once the styling is taken back off. */
 function plain(text: string): string {
@@ -95,9 +96,9 @@ describe('markdown', () => {
     expect(md(prose)).toBe(prose);
   });
 
-  it('dims a thought without painting over its styling', () => {
+  it('quiets a thought without painting over its styling', () => {
     const out = renderMarkdown('t', '**loud** thought', { dim: true });
-    expect(out).toContain(DIM);
+    expect(out).toContain(QUIET);
     expect(plain(out)).toBe('loud thought');
   });
 

@@ -34,9 +34,27 @@ export function agentColour(agentId: string): string {
   return BRAND;
 }
 
+/**
+ * The one gray the app sets its quiet text in — every hint, every detail
+ * line, every muted row, the header's second line. The terminal's own `gray`
+ * is whatever the profile made of ANSI 8, and dimming on top of it lands
+ * somewhere darker again, so the two together drifted a long way apart from
+ * screen to screen. This is a fixed value instead: quiet against the brand's
+ * light, but still plainly readable on a dark ground.
+ */
+export const INK = '#9b9b9b';
+
+/**
+ * The single step under it, and the only one — spent where a gray has to say
+ * *less* than the quiet text beside it: a separator between two things, a
+ * label for an agent sitting idle, the pointer while a turn runs. Anything
+ * that wanted to be quieter still gets this, not a dim on top of a gray.
+ */
+export const INK_FAINT = '#7a7a7a';
+
 export const COLOUR: Record<Tone, string | undefined> = {
   normal: undefined,
-  muted: 'gray',
+  muted: INK,
   good: 'green',
   bad: 'red',
   warn: 'yellow',
@@ -69,9 +87,17 @@ export const GLYPH: Record<Marker, string> = {
 
 /**
  * The wash behind a task left open on screen — dark enough to sit under the
- * text rather than compete with it. A hover brightens it to plain gray.
+ * text rather than compete with it. A hover lifts it a step.
  */
 export const BAND = '#3a3a3a';
+
+/**
+ * The wash under the pointer. It used to be the terminal's own `gray`, bright
+ * enough that quiet text laid on it had to be recoloured to survive; this is
+ * the open task's band lifted just far enough to read as a different row, so
+ * the ink above it never has to change.
+ */
+export const HOVER_BAND = '#4f4f4f';
 
 /**
  * The wash behind the user's own lines: a faint lift of white, a step above
@@ -90,17 +116,11 @@ export const PROMPT_BAND = '#454545';
 export const SELECTION = '#264f78';
 
 /**
- * The welcome mark's second ink. The terminal's own `gray` sits too far under
- * the mascot and the agent names to belong with them — this is the header's
- * quiet text, still quiet but in the same light as what it sits beside.
- */
-export const HEADER_INK = '#9b9b9b';
-
-/**
- * The two rules the prompt sits between. They run the whole width, so they
- * read heavier than any text at the same value — this is a step under the
- * header's ink for that reason, and it is the same line whether or not a turn
- * is running; only its dimming says which.
+ * The two rules the prompt sits between — the one gray that is not text. They
+ * run the whole width, so they read heavier than any text at the same value,
+ * and they sit a step under the faint ink for that reason. The rule holds this
+ * value whether or not a turn is running: the pointer between the rules is
+ * what dims to say so.
  */
 export const RULE_INK = '#6a6a6a';
 

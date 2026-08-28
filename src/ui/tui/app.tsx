@@ -35,7 +35,9 @@ import {
   DOT_BUSY,
   DOT_IDLE,
   GLYPH,
-  HEADER_INK,
+  HOVER_BAND,
+  INK,
+  INK_FAINT,
   MASCOT,
   MASCOT_STAGE,
   mascot,
@@ -364,8 +366,8 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
           ...placed,
           text: renderMarkdown(placed.key, placed.text, {
             highlight: highlighter,
-            // A thought stays the quieter register, so its dim is baked into
-            // the styling rather than painted over it.
+            // A thought stays the quieter register, so the quiet ink is baked
+            // into the styling rather than painted over it.
             dim: placed.tone === 'muted',
           }),
           // The ANSI carries every colour it needs; an outer one would end at
@@ -795,13 +797,12 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
           {shown.map((item, index) => {
             const hovered = hoveredTask !== undefined && item.taskId === hoveredTask;
             const opened = item.taskId !== undefined && openTasks.has(item.taskId);
-            const band = hovered ? 'gray' : opened ? BAND : undefined;
+            const band = hovered ? HOVER_BAND : opened ? BAND : undefined;
             return (
               <Entry
                 key={item.key}
                 item={item}
                 band={band}
-                hovered={hovered}
                 bridged={band !== undefined && shown[index - 1]?.taskId === item.taskId}
                 agents={agents}
                 top={placements[index]?.top ?? 0}
@@ -991,9 +992,9 @@ function Header({ runtime }: { runtime: Runtime }): React.JSX.Element {
       <Box flexDirection="column" flexShrink={1}>
         <Text wrap="truncate">
           <Text bold>handsfree</Text>
-          <Text color={HEADER_INK}>{` v${VERSION}`}</Text>
+          <Text color={INK}>{` v${VERSION}`}</Text>
         </Text>
-        <Text color={HEADER_INK} wrap="truncate">
+        <Text color={INK} wrap="truncate">
           {`${brain} · `}
           {agents.map((id, index) => (
             <Text key={id}>
@@ -1002,7 +1003,7 @@ function Header({ runtime }: { runtime: Runtime }): React.JSX.Element {
             </Text>
           ))}
         </Text>
-        <Text color={HEADER_INK} wrap="truncate-start">
+        <Text color={INK} wrap="truncate-start">
           {tildify(runtime.workspace.dir)}
         </Text>
       </Box>
@@ -1027,7 +1028,6 @@ function Header({ runtime }: { runtime: Runtime }): React.JSX.Element {
 function Entry({
   item,
   band,
-  hovered,
   bridged,
   agents,
   top,
@@ -1036,7 +1036,6 @@ function Entry({
 }: {
   item: ViewItem;
   band: string | undefined;
-  hovered: boolean;
   bridged: boolean;
   agents: readonly string[];
   /** The item's first screen row, from the same placement a click is aimed by. */
@@ -1066,7 +1065,6 @@ function Entry({
           gutter={gutter}
           tone={item.markerTone}
           accent={accent}
-          hovered={hovered}
           // A gutterless row's text starts where the marks do, so its cells
           // are measured from there.
           highlight={highlightFor(
@@ -1076,12 +1074,12 @@ function Entry({
           )}
         >
           {item.label ? (
-            <Text {...paint(accent ? 'brand' : 'muted', hovered, accent)}>{`${item.label}  `}</Text>
+            <Text {...paint(accent ? 'brand' : 'muted', accent)}>{`${item.label}  `}</Text>
           ) : null}
           {item.marker === 'prompt' ? (
-            <Mentioned text={item.text} tone={item.tone} hovered={hovered} agents={agents} />
+            <Mentioned text={item.text} tone={item.tone} agents={agents} />
           ) : (
-            <Text {...paint(item.tone, hovered)}>{item.text}</Text>
+            <Text {...paint(item.tone)}>{item.text}</Text>
           )}
         </Row>
         {item.lines.map((line, index) => (
@@ -1090,14 +1088,13 @@ function Entry({
             indent={DETAIL_INDENT}
             gutter={index === 0 ? RESULT_GUTTER : RESULT_INDENT}
             tone="muted"
-            hovered={hovered}
             highlight={highlightFor(
               selection,
               at(rows.details[index] ?? 0),
               indent + DETAIL_INDENT + GUTTER,
             )}
           >
-            <Text {...paint(line.tone, hovered)}>{line.text}</Text>
+            <Text {...paint(line.tone)}>{line.text}</Text>
           </Row>
         ))}
       </Box>
@@ -1106,21 +1103,16 @@ function Entry({
 }
 
 /**
- * Gray text on the gray hover band would vanish, so a hovered row keeps its
- * muted lines readable by dimming the terminal's default ink instead.
+ * The colour a row's text is set in. The hover band is dark enough for the
+ * quiet ink to hold on it, so a row reads the same whether or not the pointer
+ * is over it — nothing here has to know.
  *
  * An accent stands in for the house brand only — everything a tone says about
  * status stays exactly as loud as it was, so a failed call inside a Gemini
  * task is still red.
  */
-function paint(
-  tone: Tone,
-  hovered: boolean,
-  accent?: string,
-): { color?: string; dimColor?: boolean } {
-  const colour = accent !== undefined && tone === 'brand' ? accent : COLOUR[tone];
-  if (hovered && colour === 'gray') return { dimColor: true };
-  return { color: colour };
+function paint(tone: Tone, accent?: string): { color?: string } {
+  return { color: accent !== undefined && tone === 'brand' ? accent : COLOUR[tone] };
 }
 
 /**
@@ -1132,23 +1124,21 @@ function paint(
 function Mentioned({
   text,
   tone,
-  hovered,
   agents,
 }: {
   text: string;
   tone: Tone;
-  hovered: boolean;
   agents: readonly string[];
 }): React.JSX.Element {
   const spans = mentionSpans(text, agents);
-  if (spans.length === 0) return <Text {...paint(tone, hovered)}>{text}</Text>;
+  if (spans.length === 0) return <Text {...paint(tone)}>{text}</Text>;
   const chars = [...text];
   const pieces: React.ReactNode[] = [];
   let at = 0;
   for (const span of spans) {
     if (span.start > at) {
       pieces.push(
-        <Text key={at} {...paint(tone, hovered)}>
+        <Text key={at} {...paint(tone)}>
           {chars.slice(at, span.start).join('')}
         </Text>,
       );
@@ -1162,7 +1152,7 @@ function Mentioned({
   }
   if (at < chars.length) {
     pieces.push(
-      <Text key={at} {...paint(tone, hovered)}>
+      <Text key={at} {...paint(tone)}>
         {chars.slice(at).join('')}
       </Text>,
     );
@@ -1177,7 +1167,6 @@ function Mentioned({
 function Row({
   gutter,
   tone,
-  hovered,
   accent,
   indent = 0,
   highlight,
@@ -1185,7 +1174,6 @@ function Row({
 }: {
   gutter: string;
   tone: Tone;
-  hovered: boolean;
   accent?: string;
   indent?: number;
   /**
@@ -1201,7 +1189,7 @@ function Row({
       {/* An empty gutter is no gutter: the text starts where the marks do. */}
       {gutter === '' ? null : (
         <Box flexShrink={0} width={gutter.length + 1}>
-          <Text {...paint(tone, hovered, accent)}>{gutter}</Text>
+          <Text {...paint(tone, accent)}>{gutter}</Text>
         </Box>
       )}
       <Box flexGrow={1}>
@@ -1269,22 +1257,19 @@ function Prompt({
         width="100%"
         borderStyle="round"
         borderColor={RULE_INK}
-        borderDimColor={busy}
         borderLeft={false}
         borderRight={false}
         // The pointer opens the line: nothing sits to the left of it, so the
         // draft starts where the rules above and below it start.
         paddingRight={1}
       >
-        <Text color="gray" dimColor={busy}>
-          {`${PROMPT_CHAR} `}
-        </Text>
+        <Text color={busy ? INK_FAINT : INK}>{`${PROMPT_CHAR} `}</Text>
         <Box flexGrow={1}>
           <DraftLine draft={draft} agents={agents} />
         </Box>
       </Box>
       <Box paddingLeft={2} paddingRight={1} justifyContent="space-between" gap={2}>
-        <Text color="gray" dimColor wrap="truncate">
+        <Text color={INK} wrap="truncate">
           {copied !== undefined
             ? `copied ${copied} line${copied === 1 ? '' : 's'} to the clipboard`
             : !following
@@ -1326,14 +1311,12 @@ function AgentStatus({ status }: { status: readonly AgentStatusEntry[] }): React
       {status.map((agent, index) => (
         <Text key={agent.id}>
           {index > 0 ? (
-            <Text color="gray" dimColor>
-              {' · '}
-            </Text>
+            <Text color={INK_FAINT}>{' · '}</Text>
           ) : null}
           <Text color={agentColour(agent.id)} dimColor={!agent.busy}>
             {agent.busy ? DOT_BUSY : DOT_IDLE}
           </Text>
-          <Text color="gray" dimColor={!agent.busy}>{` ${agent.label}`}</Text>
+          <Text color={agent.busy ? INK : INK_FAINT}>{` ${agent.label}`}</Text>
         </Text>
       ))}
     </Text>
@@ -1369,14 +1352,14 @@ function Suggestions({
         // when chosen — full ink and bold — and steps down to the path's gray
         // otherwise, so the selection reads at a glance.
         const colour =
-          item.kind === 'agent' ? agentColour(item.id) : chosen ? undefined : HEADER_INK;
+          item.kind === 'agent' ? agentColour(item.id) : chosen ? undefined : INK;
         return (
           <Box key={menuLabel(item)} paddingLeft={2}>
             <Text wrap="truncate">
               <Text color={colour} bold={chosen}>
                 {menuLabel(item).padEnd(width)}
               </Text>
-              <Text color="gray" dimColor>
+              <Text color={INK_FAINT}>
                 {item.kind === 'command' && item.command.argumentHint
                   ? `${item.command.argumentHint}  `
                   : ''}
@@ -1454,7 +1437,7 @@ function Working({ startedAt, queued }: { startedAt: number; queued: number }): 
       <Text color={BRAND}>{` ${before}`}</Text>
       <Text color={SHIMMER}>{band}</Text>
       <Text color={BRAND}>{after}</Text>
-      <Text color="gray" dimColor>{` (${facts.join(' · ')})`}</Text>
+      <Text color={INK}>{` (${facts.join(' · ')})`}</Text>
     </Text>
   );
 }
@@ -1482,15 +1465,15 @@ function Ask({ ask }: { ask: PendingAsk }): React.JSX.Element {
         </Text>{' '}
         wants to {ask.summary}
       </Text>
-      {ask.detail ? <Text color="gray">{ask.detail}</Text> : null}
-      <Text color="gray" dimColor>
+      {ask.detail ? <Text color={INK}>{ask.detail}</Text> : null}
+      <Text color={INK}>
         rule: {ask.rule}
       </Text>
       <Box marginTop={1}>
         <Text>
-          <Text color="green">y</Text> <Text color="gray">allow once</Text>
-          <Text color="gray" dimColor>{'   ·   '}</Text>
-          <Text color="red">n</Text> <Text color="gray">refuse</Text>
+          <Text color="green">y</Text> <Text color={INK}>allow once</Text>
+          <Text color={INK_FAINT}>{'   ·   '}</Text>
+          <Text color="red">n</Text> <Text color={INK}>refuse</Text>
         </Text>
       </Box>
     </Box>
