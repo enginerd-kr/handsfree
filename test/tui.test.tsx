@@ -364,6 +364,94 @@ describe('terminal UI', () => {
     }
   });
 
+  it('walks back through what was sent with the arrows, and forward to the draft', async () => {
+    const h = harness({
+      agents: { claude: fakeAgent({ script: () => [] }) },
+      llm: scriptedModel([
+        JSON.stringify({ action: 'answer', message: 'one.' }),
+        JSON.stringify({ action: 'answer', message: 'two.' }),
+      ]),
+    });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    // The prompt's own line, without the styling the cursor is drawn with:
+    // what was sent is also up in the transcript, so the whole frame cannot
+    // say which line the arrows put where.
+    const prompt = () =>
+      (app.lastFrame() ?? '')
+        .replace(/\u001B\[[0-9;]*m/g, '')
+        .split('\n')
+        .find((line) => line.includes(PROMPT_CHAR)) ?? '';
+    const press = async (...keys: string[]) => {
+      for (const key of keys) {
+        app.stdin.write(key);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    };
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      await press(...'first', '\r');
+      await waitFor(() => app.lastFrame(), 'one.');
+      await press(...'second', '\r');
+      await waitFor(() => app.lastFrame(), 'two.');
+      await press(...'half');
+
+      await press('\u001B[A'); // up: the line sent last
+      expect(prompt()).toContain('second');
+      await press('\u001B[A'); // up: the one before it
+      expect(prompt()).toContain('first');
+      await press('\u001B[A'); // nowhere further back to go
+      expect(prompt()).toContain('first');
+
+      await press('\u001B[B'); // down, and back to what was half-written
+      expect(prompt()).toContain('second');
+      await press('\u001B[B');
+      expect(prompt()).toContain('half');
+      expect(prompt()).not.toContain('second');
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('starts the walk afresh once a recalled line is edited', async () => {
+    const h = harness({
+      agents: { claude: fakeAgent({ script: () => [] }) },
+      llm: scriptedModel([JSON.stringify({ action: 'answer', message: 'one.' })]),
+    });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    const prompt = () =>
+      (app.lastFrame() ?? '')
+        .replace(/\u001B\[[0-9;]*m/g, '')
+        .split('\n')
+        .find((line) => line.includes(PROMPT_CHAR)) ?? '';
+    const press = async (...keys: string[]) => {
+      for (const key of keys) {
+        app.stdin.write(key);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    };
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      await press(...'first', '\r');
+      await waitFor(() => app.lastFrame(), 'one.');
+
+      await press('\u001B[A'); // up: `first` is recalled
+      expect(prompt()).toContain('first');
+      await press(...' again'); // edited, so it is a draft of its own now
+      expect(prompt()).toContain('first again');
+      await press('\u001B[B'); // down has nothing to hand back
+      expect(prompt()).toContain('first again');
+      await press('\u001B[A'); // and up starts over from the newest line
+      expect(prompt()).toContain('first');
+      expect(prompt()).not.toContain('again');
+    } finally {
+      app.unmount();
+    }
+  });
+
   it('treats /exit as leaving, not as a prompt for the model', async () => {
     const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
     open = h;

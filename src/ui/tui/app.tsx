@@ -33,6 +33,7 @@ import {
   suggestModels,
 } from '../../mention/mention.js';
 import { copyToClipboard } from './clipboard.js';
+import { NOTHING_SENT, recall, remember, settle, type History } from './history.js';
 import {
   DETAIL_INDENT,
   GUTTER,
@@ -303,13 +304,23 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   const selectedRef = useRef(0);
   const [dismissed, setDismissed] = useState<string | undefined>(undefined);
   const dismissedRef = useRef<string | undefined>(undefined);
+  // What the prompt has sent this run, and how far back through it the arrows
+  // have walked. Nothing on screen is drawn from it — the recalled line is put
+  // in the draft like any other text — so it is a ref rather than state.
+  const historyRef = useRef<History>(NOTHING_SENT);
   const applyDraft = (update: (d: Draft) => Draft) => {
     const next = update(draftRef.current);
     // Every edit aims the menu afresh. A dismissal is keyed by the text it was
     // dismissed for, so it lapses on its own the moment the text moves on.
-    if (next.value !== draftRef.current.value && selectedRef.current !== 0) {
-      selectedRef.current = 0;
-      setSelected(0);
+    if (next.value !== draftRef.current.value) {
+      if (selectedRef.current !== 0) {
+        selectedRef.current = 0;
+        setSelected(0);
+      }
+      // An edit is a line of its own, whatever it was recalled from: the walk
+      // back through what was sent ends here. A step of the walk edits the
+      // draft too, and puts its own history back straight afterwards.
+      historyRef.current = settle(historyRef.current);
     }
     draftRef.current = next;
     setDraft(next);
@@ -770,6 +781,10 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     dismissedRef.current = undefined;
     setDismissed(undefined);
     if (trimmed === '') return;
+    // Sent is sent: it joins the prompt's memory whether it goes to the model,
+    // to an agent, or nowhere but a local command, because the arrows walk
+    // back through what was typed rather than through what became of it.
+    historyRef.current = remember(historyRef.current, trimmed);
     // Whatever was being read further up, the answer to what was just sent is
     // what matters now: sending follows the end again — and forgives whatever
     // scroll was still owed, or the drain would drag the view straight back.
@@ -1010,6 +1025,19 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     }
     if (key.return) {
       submit(draftRef.current.value);
+      return;
+    }
+    // With no menu open the plain arrows are the prompt's memory: up walks
+    // back through the lines this run has sent, down comes forward again and
+    // ends on whatever was half-written when the walk began. The cursor lands
+    // at the end of the recalled line, where the next word would go.
+    if (key.upArrow || key.downArrow || (key.ctrl && (char === 'p' || char === 'n'))) {
+      const back = key.upArrow || char === 'p';
+      const stepped = recall(historyRef.current, draftRef.current.value, back ? 'back' : 'forward');
+      // Nowhere to go: the oldest line is already up, or the draft is.
+      if (!stepped) return;
+      applyDraft(() => ({ value: stepped.value, cursor: [...stepped.value].length }));
+      historyRef.current = stepped.history;
       return;
     }
     if (key.leftArrow) {
