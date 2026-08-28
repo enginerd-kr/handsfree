@@ -99,6 +99,12 @@ handsfree serve --acp          # be an ACP agent, for an editor to drive
 handsfree --sandbox            # an empty scratch workspace instead of this directory
 ```
 
+<p align="center">
+  <img src="docs/screens/welcome.svg" alt="handsfree's opening frame: a greeting, and five example lines — a plain request, the planner addressed, an agent, an agent on a model, and a command" width="100%">
+</p>
+
+Nothing has been said yet, so the transcript says hello instead, and the shapes a line can take are spelled with the agents this run actually has. Every one of them can be sent exactly as it stands. The first line you send takes the pane back for good.
+
 **The directory you start in is the workspace.** That is the checkout the agents read and write, and it is also the boundary: the same policy engine that judges every request judges a path outside it as outside, whatever the agent was told. So `cd` to the project and start there — telling an agent in prose to go and work somewhere else is not a thing that can work, by design.
 
 Two directories are refused rather than attached, because they are not projects: your home directory and the filesystem root. `--sandbox` is the empty workspace under `~/.handsfree/runs/<id>/workspace/`, kept for a turn that has no project to it. Under `handsfree serve --acp` the editor names the directory instead, and it is the editor's project.
@@ -390,7 +396,7 @@ pnpm screenshots     # re-shoot every picture in this README
 
 The suite runs against a scripted in-process ACP agent (`test/fake-agent.ts`), because the interesting cases — a refused command, a path escape, a turn that never ends — are precisely the ones a real adapter will not perform on request.
 
-Both screenshots above are taken the same way. `pnpm screenshots` opens the real TUI on a headless terminal, drives it with keystrokes, and saves the frame ink actually drew as an SVG under `docs/screens/`. The agents are scripted; everything between the keystroke and the pixel — the planner, the policy engine, the renderer — is the shipping code, and the commands that do run, run for real.
+Every screenshot above is taken the same way. `pnpm screenshots` opens the real TUI on a headless terminal, drives it with keystrokes, and saves the frame ink actually drew as an SVG under `docs/screens/`. The agents are scripted; everything between the keystroke and the pixel — the planner, the policy engine, the renderer — is the shipping code, and the commands that do run, run for real.
 
 ## Licence
 

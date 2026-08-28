@@ -42,9 +42,20 @@ const NOTES = {
   gemini: { note: 'fast, good at bulk text and single-file work' },
 };
 
-/** An allowlist worth showing: the tests may run, the push may not. */
+/**
+ * An allowlist worth showing: the tests may run, the push may not. `otherwise`
+ * is spelled out because the shipped default for it is a person, and there is
+ * nobody at this screen — left to the default the push would sit out the
+ * decision timeout and come back as a bare "declined" two minutes later, which
+ * is a picture of nobody answering rather than of the list doing its job.
+ */
 const ALLOWLIST = {
-  exec: { enabled: true, mode: 'allowlist', allow: ['node test.mjs', 'git status'] },
+  exec: {
+    enabled: true,
+    mode: 'allowlist',
+    allow: ['node test.mjs', 'git status'],
+    otherwise: 'deny',
+  },
 };
 
 /** The other way to run it: nothing is pre-approved, so every command comes to you. */
@@ -199,7 +210,36 @@ async function permission(): Promise<void> {
   );
 }
 
+/**
+ * The opening frame, before a word has been typed: the greeting the empty
+ * transcript stands in for, and the examples spelled with this run's own
+ * agents — which is the whole point of it, so the shot uses the same three
+ * the other pictures do rather than a cast of its own.
+ */
+async function welcome(): Promise<void> {
+  await shot(
+    'welcome',
+    96,
+    24,
+    'handsfree — before a word is typed',
+    () =>
+      stage({
+        agents: roster(() => []),
+        profiles: NOTES,
+        policy: ALLOWLIST,
+        // Nothing is sent, so nothing plans; a reply left here could only ever
+        // be one nobody asked for.
+        llm: scripted([]),
+      }),
+    async (session) => {
+      await session.until('/agents');
+      await session.settle(150);
+    },
+  );
+}
+
 process.stdout.write('shooting the README:\n');
+await welcome();
 await turn();
 await permission();
 process.stdout.write('done.\n');
