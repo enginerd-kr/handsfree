@@ -616,6 +616,35 @@ function clip(text: string, max: number): string {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
+/**
+ * The agents with a task open right now: a delegation seen, its stop not yet.
+ * Replayed from the transcript rather than kept as state of its own, for the
+ * same reason the view is — the records already say who is working.
+ */
+export function workingAgents(records: readonly TranscriptRecord[]): ReadonlySet<string> {
+  const open = new Map<number, string>();
+  for (const record of records) {
+    if (record.type === 'delegation') open.set(record.taskId, record.agentId);
+    else if (record.type === 'stop') open.delete(record.taskId);
+  }
+  return new Set(open.values());
+}
+
+/**
+ * The model a launch profile pins, when it pins one: `-m x`, `--model x`,
+ * `--model=x`, or a `-c model=x` config pair. An adapter left to its own
+ * default names no model here, and the caller falls back to the agent's id.
+ */
+export function pinnedModel(args: readonly string[]): string | undefined {
+  for (const [index, arg] of args.entries()) {
+    if (arg === '-m' || arg === '--model') return args[index + 1];
+    if (arg.startsWith('--model=')) return arg.slice('--model='.length);
+    const pair = arg === '-c' || arg === '--config' ? args[index + 1] : arg;
+    if (pair?.startsWith('model=')) return pair.slice('model='.length);
+  }
+  return undefined;
+}
+
 /** One-line rendering for non-interactive output. Returns nothing for noise. */
 export function describeRecord(record: TranscriptRecord, workspaceDir: string): string | undefined {
   switch (record.type) {

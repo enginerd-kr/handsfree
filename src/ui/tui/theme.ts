@@ -47,6 +47,14 @@ export const COLOUR: Record<Tone, string | undefined> = {
 // The filled circle lines up properly on macOS terminals and not much else.
 const DOT = process.platform === 'darwin' ? '⏺' : '●';
 
+/**
+ * The dots under the prompt, one per agent: filled while the agent holds an
+ * open task, outlined while it sits idle. The filled one is the transcript's
+ * own bullet, so the pair never disagrees with the rest of the frame.
+ */
+export const DOT_BUSY = DOT;
+export const DOT_IDLE = '○';
+
 export const GLYPH: Record<Marker, string> = {
   none: ' ',
   // The user's line is marked by its wash now, not by a glyph — no gutter at

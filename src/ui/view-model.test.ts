@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Transcript } from '../workspace/transcript.js';
-import { buildView } from './view-model.js';
+import { buildView, pinnedModel, workingAgents } from './view-model.js';
 
 const WORKSPACE = '/ws';
 
@@ -412,5 +412,40 @@ describe('buildView', () => {
     const t = transcript();
     t.append({ type: 'agent_stderr', agentId: 'claude', text: 'DeprecationWarning: ...' });
     expect(buildView(t.all(), WORKSPACE)).toHaveLength(0);
+  });
+});
+
+describe('workingAgents', () => {
+  it('holds an agent from its delegation to its stop', () => {
+    const t = transcript();
+    expect(workingAgents(t.all()).size).toBe(0);
+
+    t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'dig' });
+    expect([...workingAgents(t.all())]).toEqual(['claude']);
+
+    t.append({ type: 'stop', taskId: 1, agentId: 'claude', sessionId: 's', stopReason: 'end_turn' });
+    expect(workingAgents(t.all()).size).toBe(0);
+  });
+
+  it('keeps one agent working while another finishes', () => {
+    const t = transcript();
+    t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'dig' });
+    t.append({ type: 'delegation', taskId: 2, agentId: 'gemini', sessionId: 's', task: 'sort' });
+    t.append({ type: 'stop', taskId: 1, agentId: 'claude', sessionId: 's', stopReason: 'cancelled' });
+    expect([...workingAgents(t.all())]).toEqual(['gemini']);
+  });
+});
+
+describe('pinnedModel', () => {
+  it('reads the model a profile pins, whichever spelling pins it', () => {
+    expect(pinnedModel(['--experimental-acp', '-m', 'gemini-3.5-flash'])).toBe('gemini-3.5-flash');
+    expect(pinnedModel(['-y', '@zed-industries/codex-acp', '-c', 'model=gpt-5.5'])).toBe('gpt-5.5');
+    expect(pinnedModel(['--model', 'sonnet'])).toBe('sonnet');
+    expect(pinnedModel(['--model=sonnet'])).toBe('sonnet');
+  });
+
+  it('names nothing for a profile that pins nothing', () => {
+    expect(pinnedModel([])).toBeUndefined();
+    expect(pinnedModel(['-y', '@zed-industries/claude-code-acp'])).toBeUndefined();
   });
 });

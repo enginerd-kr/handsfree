@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { disableDebug, enableDebug } from '../src/debug.js';
 import { App } from '../src/ui/tui/app.js';
 import { copyToClipboard } from '../src/ui/tui/clipboard.js';
-import { PROMPT_CHAR } from '../src/ui/tui/theme.js';
+import { DOT_BUSY, DOT_IDLE, PROMPT_CHAR } from '../src/ui/tui/theme.js';
 import { fakeAgent } from './fake-agent.js';
 import { harness, scriptedModel, type Harness } from './harness.js';
 import type { ChatClient } from '../src/brain/client.js';
@@ -73,6 +73,42 @@ describe('terminal UI', () => {
     try {
       const frame = await waitFor(() => app.lastFrame(), PROMPT_CHAR);
       expect(frame).not.toContain('● debug');
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('fills an agent’s dot under the prompt while it holds a task', async () => {
+    const h = harness({
+      agents: { claude: fakeAgent({ script: () => [] }) },
+      llm: scriptedModel([]),
+    });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      // Idle: the roll call names the agent behind an outlined dot.
+      await waitFor(() => app.lastFrame(), `${DOT_IDLE} claude`);
+
+      h.runtime.transcript.append({
+        type: 'delegation',
+        taskId: 1,
+        agentId: 'claude',
+        sessionId: 's',
+        task: 'dig',
+      });
+      const busy = await waitFor(() => app.lastFrame(), 'dig');
+      expect(busy).toContain(`${DOT_BUSY} claude`);
+      expect(busy).not.toContain(`${DOT_IDLE} claude`);
+
+      h.runtime.transcript.append({
+        type: 'stop',
+        taskId: 1,
+        agentId: 'claude',
+        sessionId: 's',
+        stopReason: 'end_turn',
+      });
+      await waitFor(() => app.lastFrame(), `${DOT_IDLE} claude`);
     } finally {
       app.unmount();
     }

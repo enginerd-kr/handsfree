@@ -3,7 +3,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, Transform, useApp, useInput, useStdout } from 'ink';
 import type { Runtime } from '../../runtime.js';
 import { debugDestination } from '../../debug.js';
-import { buildView, type Tone, type ViewItem } from '../view-model.js';
+import { buildView, pinnedModel, workingAgents, type Tone, type ViewItem } from '../view-model.js';
 import {
   findCommand,
   parseSlashCommand,
@@ -32,6 +32,8 @@ import {
   BRAND,
   COLOUR,
   columns,
+  DOT_BUSY,
+  DOT_IDLE,
   GLYPH,
   HEADER_INK,
   MASCOT,
@@ -199,6 +201,8 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   const [ask, setAsk] = useState<PendingAsk | undefined>();
   const [openTasks, setOpenTasks] = useState<ReadonlySet<number>>(() => new Set());
   const [hoveredTask, setHoveredTask] = useState<number | undefined>();
+  // Who has a task open right now, replayed from the same records the view is.
+  const [working, setWorking] = useState<ReadonlySet<string>>(() => new Set());
   const pending = useRef<PendingAsk[]>([]);
   const busy = startedAt !== undefined;
 
@@ -229,13 +233,16 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
 
   // The transcript is the model; the view is a pure function of it.
   useEffect(() => {
-    const render = () =>
+    const render = () => {
+      const records = runtime.transcript.all();
       setItems(
-        buildView(runtime.transcript.all(), runtime.workspace.dir, {
+        buildView(records, runtime.workspace.dir, {
           expandedTasks: openTasks,
           expandHint: EXPAND_HINT,
         }),
       );
+      setWorking(workingAgents(records));
+    };
     render();
     runtime.transcript.on('record', render);
     return () => {
@@ -297,6 +304,17 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   // Who a mention can name. The roster is fixed for the life of the run, so
   // reading it once is enough.
   const agents = useMemo(() => runtime.pool.available(), [runtime]);
+  // The status line under the prompt: each agent as the model its profile pins
+  // — its id when it pins none — and whether it holds an open task right now.
+  const agentStatus = useMemo(
+    () =>
+      agents.map((id) => ({
+        id,
+        label: pinnedModel(runtime.config.agents[id]?.args ?? []) ?? id,
+        busy: working.has(id),
+      })),
+    [agents, working, runtime],
+  );
   /** The rows a half-written draft earns: commands for a slash, agents for an at-sign. */
   const offeredFor = (d: Draft): MenuItem[] => {
     const commands = suggest(d.value, runtime.commands);
@@ -787,6 +805,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
         <Prompt
           draft={draft}
           agents={agents}
+          status={agentStatus}
           startedAt={startedAt}
           queued={queued.length}
           allOpen={allOpen}
@@ -1169,10 +1188,14 @@ function Row({
  * The hint line is also where the transcript says it has stopped following the
  * end — scrolled up, what arrives next lands off screen, and only this says so
  * — and where a finished drag says how much of the transcript it copied.
+ *
+ * Its right edge is the agents' roll call, where Claude Code names its model:
+ * a dot per agent, filled while that agent holds an open task.
  */
 function Prompt({
   draft,
   agents,
+  status,
   startedAt,
   queued,
   allOpen,
@@ -1181,6 +1204,7 @@ function Prompt({
 }: {
   draft: Draft;
   agents: readonly string[];
+  status: readonly AgentStatusEntry[];
   startedAt: number | undefined;
   queued: number;
   allOpen: boolean;
@@ -1224,13 +1248,50 @@ function Prompt({
                 ? `esc to interrupt · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all`
                 : `/ for commands · @ for agents · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all · /exit`}
         </Text>
-        {debugTo ? (
-          <Text color="yellow" wrap="truncate-start">
-            ● debug → {tildify(debugTo)}
-          </Text>
-        ) : null}
+        <Box gap={2}>
+          {debugTo ? (
+            <Text color="yellow" wrap="truncate-start">
+              ● debug → {tildify(debugTo)}
+            </Text>
+          ) : null}
+          <AgentStatus status={status} />
+        </Box>
       </Box>
     </Box>
+  );
+}
+
+/** One agent as the status line tells it: who, what to call them, and whether they are working. */
+interface AgentStatusEntry {
+  id: string;
+  /** The model the profile pins, or the agent's id when it pins none. */
+  label: string;
+  busy: boolean;
+}
+
+/**
+ * The roll call at the hint line's right edge: a dot per enabled agent, filled
+ * and full-strength while that agent holds an open task, outlined and dimmed
+ * while it sits idle. The dot spends the agent's own colour — the same one its
+ * mentions and its task blocks wear — so who is working reads before any label.
+ */
+function AgentStatus({ status }: { status: readonly AgentStatusEntry[] }): React.JSX.Element {
+  return (
+    <Text wrap="truncate">
+      {status.map((agent, index) => (
+        <Text key={agent.id}>
+          {index > 0 ? (
+            <Text color="gray" dimColor>
+              {' · '}
+            </Text>
+          ) : null}
+          <Text color={agentColour(agent.id)} dimColor={!agent.busy}>
+            {agent.busy ? DOT_BUSY : DOT_IDLE}
+          </Text>
+          <Text color="gray" dimColor={!agent.busy}>{` ${agent.label}`}</Text>
+        </Text>
+      ))}
+    </Text>
   );
 }
 
