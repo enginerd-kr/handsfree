@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { describeSources, loadConfig } from './config/load.js';
 import { doctor } from './commands/doctor.js';
 import { run } from './commands/run.js';
@@ -12,7 +16,11 @@ const USAGE = `handsfree — an ACP host for frontier coding agents
   handsfree doctor              handshake with each configured agent
   handsfree serve --acp         speak ACP on stdio, for an editor to drive
 
+The directory you start in is the workspace, and the workspace is the boundary
+the agents work inside: this checkout, not your whole disk.
+
 Options
+  --sandbox                     work in an empty scratch workspace instead of this directory
   --json                        with run: emit the transcript as NDJSON
   --run <id>                    reuse an existing run directory
   --debug                       diagnostics on stderr: launches, environment, handshakes
@@ -27,16 +35,26 @@ interface Args {
   prompt: string;
   json: boolean;
   debug: boolean;
+  /** Work in a fresh empty workspace rather than the directory we were started in. */
+  sandbox: boolean;
   runId: string | undefined;
 }
 
 export function parseArgs(argv: string[]): Args {
-  const args: Args = { command: 'tui', prompt: '', json: false, debug: false, runId: undefined };
+  const args: Args = {
+    command: 'tui',
+    prompt: '',
+    json: false,
+    debug: false,
+    sandbox: false,
+    runId: undefined,
+  };
   const rest: string[] = [];
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === '--json') args.json = true;
+    else if (arg === '--sandbox') args.sandbox = true;
     else if (arg === '--debug') args.debug = true;
     else if (arg === '--acp') args.command = 'serve';
     else if (arg === '--run') args.runId = argv[++i];
@@ -62,6 +80,29 @@ export function parseArgs(argv: string[]): Args {
     }
   }
   return args;
+}
+
+/**
+ * The workspace is the jail, so attaching to a directory hands the agents
+ * everything under it. A home directory or a filesystem root is not a project —
+ * it is every project, plus keys, mail and browser profiles — and landing in one
+ * is far more often a wrong turn than an intention. Refusing is cheap; the two
+ * ways forward are named in the same breath.
+ */
+export function tooBroadToAttach(dir: string, home: string = os.homedir()): string | undefined {
+  const target = path.resolve(dir);
+  const what =
+    target === path.parse(target).root
+      ? 'the filesystem root'
+      : target === path.resolve(home)
+        ? 'your home directory'
+        : undefined;
+  if (!what) return undefined;
+  return (
+    `handsfree will not make ${what} a workspace: the workspace is the boundary ` +
+    'agents work inside, and that one holds everything.\n' +
+    'cd into a project, or pass --sandbox to work in an empty scratch workspace.'
+  );
 }
 
 /**
@@ -131,11 +172,33 @@ async function main(): Promise<number> {
     return serve(config, sources);
   }
 
+  // Work happens where you started, because coding in a directory with no code
+  // in it is not the common case. `--sandbox` is the old empty workspace, for a
+  // turn that has no project.
+  let attachTo: string | undefined;
+  if (!args.sandbox) {
+    attachTo = process.cwd();
+    const refusal = tooBroadToAttach(attachTo);
+    if (refusal) {
+      // `doctor` starts no agent and touches nothing, and it is the command you
+      // reach for when you are checking an install from wherever you happen to
+      // be standing. It reports the sandbox instead of refusing to run.
+      if (args.command !== 'doctor') {
+        process.stderr.write(`${refusal}\n`);
+        return 2;
+      }
+      attachTo = undefined;
+    }
+    if (attachTo) debug('workspace', `attached to ${attachTo}`);
+  }
+
   const write = (line: string) => process.stdout.write(`${line}\n`);
 
   if (args.command === 'doctor') {
     if (sources.length > 0) write(`config: ${describeSources(sources)}`);
-    const reports = await doctor(config, write);
+    const reports = await doctor(config, write, {
+      ...(attachTo === undefined ? {} : { attachTo }),
+    });
     return reports.every((report) => report.ok) ? 0 : 1;
   }
 
@@ -150,6 +213,7 @@ async function main(): Promise<number> {
       {
         json: args.json,
         ...(args.runId === undefined ? {} : { runId: args.runId }),
+        ...(attachTo === undefined ? {} : { attachTo }),
         configSources: sources,
       },
       write,
@@ -160,15 +224,33 @@ async function main(): Promise<number> {
   const { tui } = await import('./commands/tui.js');
   return tui(config, {
     ...(args.runId === undefined ? {} : { runId: args.runId }),
+    ...(attachTo === undefined ? {} : { attachTo }),
     configSources: sources,
   });
 }
 
-main()
-  .then((code) => {
-    process.exitCode = code;
-  })
-  .catch((err: unknown) => {
-    process.stderr.write(`${(err as Error).message}\n`);
-    process.exitCode = 1;
-  });
+// Only when this file *is* the command. Importing it — a test reaching for the
+// argument parser — must not start a session on whatever argv happens to hold.
+// The comparison is made on real paths: an installed `handsfree` is a symlink in
+// a `.bin` directory, and node resolves the module through it but leaves argv
+// spelling it the short way.
+function isEntrypoint(): boolean {
+  const entry = process.argv[1];
+  if (entry === undefined) return false;
+  try {
+    return pathToFileURL(fs.realpathSync(entry)).href === import.meta.url;
+  } catch {
+    return false;
+  }
+}
+
+if (isEntrypoint()) {
+  main()
+    .then((code) => {
+      process.exitCode = code;
+    })
+    .catch((err: unknown) => {
+      process.stderr.write(`${(err as Error).message}\n`);
+      process.exitCode = 1;
+    });
+}

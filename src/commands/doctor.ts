@@ -19,8 +19,19 @@ export interface AgentReport {
  * out during a task. Every check is a real ACP handshake: spawn, initialize,
  * read the capabilities back, shut down.
  */
-export async function doctor(config: Config, log: (line: string) => void): Promise<AgentReport[]> {
-  const runtime = createRuntime({ config, llm: undefined });
+export async function doctor(
+  config: Config,
+  log: (line: string) => void,
+  options: { attachTo?: string } = {},
+): Promise<AgentReport[]> {
+  // Attached to the same directory a real run would use, so the workspace this
+  // prints is the one you would actually get rather than a sandbox nobody asked
+  // for. A diagnostic that reports somewhere else is a diagnostic that lies.
+  const runtime = createRuntime({
+    config,
+    llm: undefined,
+    ...(options.attachTo === undefined ? {} : { attachTo: options.attachTo }),
+  });
   const reports: AgentReport[] = [];
 
   const orchestration = config.orchestration;

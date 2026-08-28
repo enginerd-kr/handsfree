@@ -9,6 +9,8 @@ export interface RunOptions {
   /** Emit the transcript as NDJSON instead of prose. */
   json: boolean;
   runId?: string;
+  /** Work in this existing directory instead of a fresh sandbox. */
+  attachTo?: string;
   /** The files the settings were read from, strongest first, for `/config` to name. */
   configSources?: readonly ConfigLocation[];
 }
@@ -30,6 +32,7 @@ export async function run(
     config,
     ...(seat === undefined ? {} : { escalator: seat }),
     ...(options.runId === undefined ? {} : { runId: options.runId }),
+    ...(options.attachTo === undefined ? {} : { attachTo: options.attachTo }),
     ...(options.configSources === undefined ? {} : { configSources: options.configSources }),
   });
 

@@ -56,7 +56,7 @@ The agent asks. handsfree acts. There is no third path. An agent that stops for 
    claude-agent-acp  gemini --acp   codex-acp
 ```
 
-Agents work in a jail — `~/.handsfree/runs/<id>/workspace/` — and the transcript sits *above* it, because an audit log an agent can edit is not an audit log.
+Agents work in a jail, and the jail is the directory you started handsfree in. The transcript is kept outside it, because an audit log an agent can edit is not an audit log.
 
 ## Install
 
@@ -96,7 +96,12 @@ Adapters are third-party packages that move on their own schedule, so `doctor` p
 handsfree                      # terminal UI
 handsfree run "add a test"     # one turn, no UI
 handsfree serve --acp          # be an ACP agent, for an editor to drive
+handsfree --sandbox            # an empty scratch workspace instead of this directory
 ```
+
+**The directory you start in is the workspace.** That is the checkout the agents read and write, and it is also the boundary: the same policy engine that judges every request judges a path outside it as outside, whatever the agent was told. So `cd` to the project and start there — telling an agent in prose to go and work somewhere else is not a thing that can work, by design.
+
+Two directories are refused rather than attached, because they are not projects: your home directory and the filesystem root. `--sandbox` is the empty workspace under `~/.handsfree/runs/<id>/workspace/`, kept for a turn that has no project to it. Under `handsfree serve --acp` the editor names the directory instead, and it is the editor's project.
 
 ## When an agent stops
 
@@ -190,7 +195,7 @@ The conventions we hold to are in @CONVENTIONS.md.
 
 A refusal is written into the prompt where the output would have been, and the model is told plainly that it was refused rather than being handed a prompt with a hole in it. Out of the box `policy.exec.enabled` is `false`, so every `` !`cmd` `` is refused until you turn it on and say what may run.
 
-One thing worth knowing: they run against **the workspace**, which is the agents' jail — `~/.handsfree/runs/<id>/workspace/`, not your repository. Under `handsfree serve --acp` the editor's project *is* the workspace.
+One thing worth knowing: they run against **the workspace** — the directory you started in, or the empty one under `~/.handsfree` if you passed `--sandbox`.
 
 In the terminal UI, typing `/` opens the list. Escape closes the menu; a second escape still stops whatever is running.
 
@@ -271,12 +276,15 @@ Gemini authenticated by an API key needs that key in handsfree's own environment
 One run, one record:
 
 ```
-~/.handsfree/runs/<id>/transcript.jsonl     every update, every decision
-~/.handsfree/runs/<id>/sessions.json        agent session ids, for resuming
+~/.handsfree/attached/<project>-<hash>/<id>/transcript.jsonl    working in your directory
+~/.handsfree/attached/<project>-<hash>/<id>/sessions.json
+
+~/.handsfree/runs/<id>/transcript.jsonl     --sandbox: the same two, beside the jail
+~/.handsfree/runs/<id>/sessions.json
 ~/.handsfree/runs/<id>/workspace/           the jail — agents' cwd
 ```
 
-The transcript sits *above* the workspace, because an audit log an agent can edit is not an audit log. The UI renders it, the summary is written from it, and tests replay it — there is no second copy of what happened anywhere in the system. Runs older than `cleanupPeriodDays` are swept a beat after startup.
+The record is kept out here either way, never inside the directory being worked on, because an audit log an agent can edit is not an audit log. The UI renders it, the summary is written from it, and tests replay it — there is no second copy of what happened anywhere in the system. Runs older than `cleanupPeriodDays` are swept a beat after startup.
 
 ## Sessions
 

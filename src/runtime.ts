@@ -30,7 +30,11 @@ export interface RuntimeOptions {
   cwd?: string;
   /** Reuse an existing run directory instead of starting a new one. */
   runId?: string;
-  /** Work in a directory that already exists, such as an editor's project root. */
+  /**
+   * Work in a directory that already exists — the directory handsfree was
+   * started in, or an editor's project root. Without one the workspace is a
+   * fresh empty sandbox under the handsfree root.
+   */
   attachTo?: string;
   /** Answers `ask` verdicts. Without one, every escalation is a denial. */
   escalator?: Escalator;
@@ -63,7 +67,7 @@ export interface Runtime {
 export function createRuntime(options: RuntimeOptions): Runtime {
   const { config } = options;
   const workspace = options.attachTo
-    ? Workspace.attach(options.attachTo, config.workspaceRoot)
+    ? Workspace.attach(options.attachTo, config.workspaceRoot, options.runId)
     : Workspace.open(config.workspaceRoot, options.runId);
   const transcript = new Transcript(workspace.transcriptFile);
   const jail = workspace.jail(config.policy);

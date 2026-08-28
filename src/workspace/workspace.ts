@@ -38,13 +38,16 @@ export class Workspace {
   }
 
   /**
-   * A workspace that already exists — an editor's project directory. The record
-   * is kept under the handsfree root rather than inside the project, because a
-   * transcript stored in the jail is a transcript the agent can rewrite.
+   * A workspace that already exists — the directory handsfree was started in,
+   * or an editor's project root. The record is kept under the handsfree root
+   * rather than inside the project, because a transcript stored in the jail is
+   * a transcript the agent can rewrite.
    */
-  static attach(projectDir: string, recordRoot: string): Workspace {
+  static attach(projectDir: string, recordRoot: string, runId?: string): Workspace {
     const dir = fs.realpathSync(projectDir);
-    const runDir = path.join(recordRoot, 'attached', slug(dir), newRunId());
+    // Named per project, so `--run <id>` finds the record of a previous visit to
+    // *this* directory rather than one that happens to share the timestamp.
+    const runDir = path.join(recordRoot, 'attached', slug(dir), runId ?? newRunId());
     fs.mkdirSync(runDir, { recursive: true });
     return new Workspace(runDir, dir);
   }
