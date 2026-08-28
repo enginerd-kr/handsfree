@@ -655,6 +655,10 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     menu[0]?.kind === 'model' ? MODEL_FLOOR : MENU_FLOOR,
   );
   const height = useMemo(() => totalHeight(drawn, columns), [drawn, columns]);
+  // Whether the transcript has anything to show. Empty and with nothing being
+  // asked, the pane carries the greeting instead — this run's first frame, and
+  // the only one it appears on: the first record sent or received retires it.
+  const greeting = items.length === 0 && ask === undefined;
   const furthest = Math.max(0, height - viewport);
   // How far down the transcript the top of the viewport sits, or `undefined`
   // while it follows the end — which is not the same number: pinned to the
@@ -1111,26 +1115,39 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
         replaces; nothing is clickable while one is up, so the rows it takes
         cost no aim.
       */}
-      <Box flexDirection="column" height={viewport} flexShrink={ask ? 1 : 0} overflowY="hidden">
-        <Box flexDirection="column" flexShrink={0} marginTop={top}>
-          {shown.map((item, index) => {
-            const hovered = hoveredTask !== undefined && item.taskId === hoveredTask;
-            const opened = item.taskId !== undefined && openTasks.has(item.taskId);
-            const band = hovered ? HOVER_BAND : opened ? BAND : undefined;
-            return (
-              <Entry
-                key={item.key}
-                item={item}
-                band={band}
-                bridged={band !== undefined && shown[index - 1]?.taskId === item.taskId}
-                agents={agents}
-                top={placements[index]?.top ?? 0}
-                columns={columns}
-                selection={shownSelection}
-              />
-            );
-          })}
-        </Box>
+      <Box
+        flexDirection="column"
+        height={viewport}
+        flexShrink={ask ? 1 : 0}
+        overflowY="hidden"
+        // Nothing has been said yet: the greeting is laid against the foot of
+        // the pane, so it sits on the prompt rather than adrift at the top of
+        // an empty screen. A transcript fills the pane from the top as ever.
+        justifyContent={greeting ? 'flex-end' : 'flex-start'}
+      >
+        {greeting ? (
+          <Welcome runtime={runtime} agents={agents} rows={viewport} />
+        ) : (
+          <Box flexDirection="column" flexShrink={0} marginTop={top}>
+            {shown.map((item, index) => {
+              const hovered = hoveredTask !== undefined && item.taskId === hoveredTask;
+              const opened = item.taskId !== undefined && openTasks.has(item.taskId);
+              const band = hovered ? HOVER_BAND : opened ? BAND : undefined;
+              return (
+                <Entry
+                  key={item.key}
+                  item={item}
+                  band={band}
+                  bridged={band !== undefined && shown[index - 1]?.taskId === item.taskId}
+                  agents={agents}
+                  top={placements[index]?.top ?? 0}
+                  columns={columns}
+                  selection={shownSelection}
+                />
+              );
+            })}
+          </Box>
+        )}
       </Box>
 
       {menu.length > 0 ? (
@@ -1572,6 +1589,152 @@ function Row({
       </Box>
     </Box>
   );
+}
+
+/**
+ * The opening frame's greeting: what the transcript stands in for while it is
+ * still empty. A hello, a sentence on what handsfree does with a line once it
+ * has one, and the shapes a line can take — sat directly on top of the input,
+ * so the first thing read is the first thing that can be typed.
+ *
+ * It is not a transcript row. Nothing here is clickable, selectable or
+ * scrollable, and the moment the first record lands the pane goes back to
+ * being the transcript — which is why the pane, not this, owns the rows.
+ *
+ * `rows` is what the pane can spare, and the block is trimmed to it from the
+ * bottom up: the sentence about the run goes first, then the examples that
+ * matter least. A short window keeps the hello and something to type, rather
+ * than the tail of a block whose head has been clipped away.
+ */
+function Welcome({
+  runtime,
+  agents,
+  rows,
+}: {
+  runtime: Runtime;
+  agents: readonly string[];
+  rows: number;
+}): React.JSX.Element {
+  const examples = openings(runtime, agents);
+  // What is left for the sentence about the run and the examples themselves,
+  // once the hello, the invitation, the blank rows between them and the margin
+  // have all taken theirs. The invitation stays whatever the window does — a
+  // list of quotes nobody offered is a list of quotes nobody reads.
+  const room = rows - GREETING.length - 1 - 1 - 1 - WELCOME_MARGIN;
+  const about = room >= 1 + examples.length;
+  const shown = examples.slice(0, Math.max(1, room - (about ? 1 : 0)));
+  // A line's width on screen is its own plus the two quotes drawn around it.
+  const cells = (line: string): number => columns(line) + 2;
+  const width = Math.max(...shown.map(({ line }) => cells(line)));
+  return (
+    <Box
+      flexDirection="column"
+      flexShrink={0}
+      paddingLeft={2}
+      paddingRight={1}
+      paddingBottom={WELCOME_MARGIN}
+    >
+      {/*
+        The hello, the sentence under it and the invitation are all set in the
+        terminal's own ink — one voice, handsfree's, saying one thing. The gray
+        in this block belongs to the notes beside the examples, which are
+        asides about the line they sit next to rather than part of what is
+        being said.
+      */}
+      {GREETING.map((line) => (
+        <Text key={line} wrap="truncate">
+          {line}
+        </Text>
+      ))}
+      <Box height={1} />
+      {about ? <Text wrap="truncate">{ABOUT}</Text> : null}
+      <Text wrap="truncate">{INVITATION}</Text>
+      <Box height={1} />
+      {shown.map(({ line, note }) => (
+        <Text key={line} wrap="truncate">
+          {/*
+            The quotes are the frame around the example, not part of it, so they
+            are drawn either side of the line rather than inside it: a mention
+            only opens at the start of a word, and a `"` pressed against the `@`
+            is exactly what says this one is an email address instead.
+
+            Inside them the line is dressed exactly as the prompt would dress
+            it — every mention in its agent's own colour — so an example is
+            already the line it is an example of.
+          */}
+          <Text color={BRAND}>{'"'}</Text>
+          <Mentioned text={line} tone="brand" agents={agents} />
+          <Text color={BRAND}>{'"'}</Text>
+          {/*
+            The note is an aside about the line, and it is dressed as one: set
+            off far enough to read as its own column, and opened with the mark
+            a comment is opened with everywhere else.
+          */}
+          <Text color={INK}>{`${' '.repeat(width - cells(line) + NOTE_GAP)}// ${note}`}</Text>
+        </Text>
+      ))}
+    </Box>
+  );
+}
+
+/** The rows of air the greeting keeps between itself and the prompt below it. */
+const WELCOME_MARGIN = 2;
+
+/** The columns between the widest example and the column of notes beside them. */
+const NOTE_GAP = 4;
+
+/** The hello: the line that greets, and the line that asks. */
+const GREETING = ['안녕하세요?', '오늘은 어떤 작업을 해볼까요.'] as const;
+
+/** The line that hands the examples over, so a list of quotes reads as an offer. */
+const INVITATION = '다음과 같이 입력해보세요.';
+
+/**
+ * What happens to a line once it is sent, in the one sentence worth reading
+ * before the first one is: handsfree plans, and hands the work to whoever it
+ * suits. It is why a plain request needs no address at all — the first example
+ * under it is that sentence made into a line.
+ */
+const ABOUT = '말하듯 적어주시면 계획을 세워 알맞은 에이전트에게 맡깁니다.';
+
+/** One example line as it would be typed, and what that shape of line does. */
+interface Opening {
+  line: string;
+  note: string;
+}
+
+/**
+ * The examples, spelled with this run's own names rather than with a fixed
+ * cast: a plain request, which the planner routes for you; the planner
+ * addressed outright; an agent picked by hand; the same with a model behind
+ * its colon, taken from the roster it advertised or from the model its launch
+ * profile pinned it to; and a command, because the slash is the other thing
+ * the prompt answers to. Every one of them is a line that can be sent exactly
+ * as it stands — which is also why the last two go first when the window is
+ * short and the list has to be cut.
+ */
+function openings(runtime: Runtime, agents: readonly string[]): readonly Opening[] {
+  const first = agents[0] ?? runtime.config.orchestration.acp.agent;
+  // A second agent, where the run has one, so the roll's colours are on show
+  // in the examples the way they are in the transcript.
+  const second = agents[1] ?? first;
+  const model = runtime.pool.currentModel(second) ?? runtime.pool.models(second)[0]?.value;
+  return [
+    { line: '테스트 깨진 것 좀 고쳐줘', note: '맡길 곳은 계획하는 쪽이 고릅니다' },
+    { line: `@${ORCHESTRATOR} 뭐부터 할지 정리해줘`, note: '계획하는 쪽을 직접 부릅니다' },
+    { line: `@${first} 이 파일 요약해줘`, note: '에이전트를 골라 곧장 맡깁니다' },
+    // Only where it says something the row above it did not: one agent, no
+    // roster and no pinned model leaves the two lines spelling the same thing.
+    ...(model || second !== first
+      ? [
+          {
+            line: `@${model ? `${second}:${model}` : second} 테스트부터 하나 짜줘`,
+            note: model ? '모델까지 지정할 수 있습니다' : '다른 에이전트에게 곧장',
+          },
+        ]
+      : []),
+    { line: '/agents', note: '슬래시는 명령 · 지금 부를 수 있는 에이전트' },
+  ];
 }
 
 /**

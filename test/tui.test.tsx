@@ -166,6 +166,36 @@ describe('terminal UI', () => {
     }
   });
 
+  it('greets on the opening frame, in lines that can be sent as they stand', async () => {
+    const h = harness({
+      agents: { claude: fakeAgent({ models: ['opus', 'haiku'], script: () => [] }) },
+      llm: scriptedModel([JSON.stringify({ action: 'answer', message: 'Hello there.' })]),
+    });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      const frame = await waitFor(() => app.lastFrame(), '안녕하세요?');
+      // A window with room for all of it gets all of it: what handsfree does
+      // with a line, and every shape a line can take.
+      expect(frame).toContain('말하듯');
+      expect(frame).toContain('다음과 같이 입력해보세요.');
+      expect(frame).toContain('/agents');
+      // The planner by the name a mention gives it, and the agent on a model
+      // off its own roster — not a fixed cast written into the greeting.
+      expect(frame).toContain('@orchestrator');
+      await waitFor(() => app.lastFrame(), '@claude:opus');
+
+      // It is the empty transcript standing in, and nothing more: the first
+      // line sent takes the pane back.
+      await h.runtime.conversation.send('hi');
+      const after = await waitFor(() => app.lastFrame(), 'Hello there.');
+      expect(after).not.toContain('안녕하세요?');
+    } finally {
+      app.unmount();
+    }
+  });
+
   it('renders the transcript as it arrives', async () => {
     const h = harness({
       agents: { claude: fakeAgent({ script: () => [] }) },
@@ -589,7 +619,9 @@ describe('terminal UI', () => {
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
       await waitFor(() => app.lastFrame(), 'me@g');
-      expect(app.lastFrame()).not.toContain('@gemini');
+      // A menu row is a name at the head of its own line; the greeting's
+      // examples spell names too, and they sit inside quotation marks.
+      expect(app.lastFrame()).not.toMatch(/^\s*@gemini/m);
     } finally {
       app.unmount();
     }
@@ -744,7 +776,7 @@ describe('terminal UI', () => {
       // colon lands right against it and opens the model list instead.
       await press('\r');
       await waitFor(plain, `${PROMPT_CHAR} @gemini`);
-      expect(plain()).not.toContain('@gemini ');
+      expect(plain()).not.toContain(`${PROMPT_CHAR} @gemini `);
 
       await press(':');
       // The rows are what the session advertised when it was warmed at launch,
