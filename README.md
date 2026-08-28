@@ -92,7 +92,7 @@ A line that opens with a slash is a command. There are two kinds, and the differ
 | `/help` | every command there is, and where the rest of them come from |
 | `/config` | what handsfree is running with, and which files it read it from |
 | `/agents` | the agents this run can delegate to, and which one is routing |
-| `/reset` | forget the conversation; the agents are briefed from scratch |
+| `/clear` | forget the conversation and the screen with it; the agents are briefed from scratch |
 | `/exit`, `/quit` | leave |
 
 **You write the rest**, as markdown, in `.handsfree/commands/` beside your project or `~/.config/handsfree/commands/` for the ones you want everywhere. The project directory wins a name; the built-ins above win it from both, because a command file often arrives with somebody else's repository and `/exit` meaning anything other than leaving is not a thing a checkout gets to arrange. A sub-directory becomes a namespace: `commands/frontend/deploy.md` is `/frontend:deploy`.

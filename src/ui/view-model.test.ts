@@ -205,6 +205,48 @@ describe('buildView', () => {
     expect(folded[1]?.text).toBe('Done (1s · ctrl+o to expand)');
   });
 
+  it('draws nothing from before a clear, and leaves the note that follows it', () => {
+    const t = transcript();
+    t.append({ type: 'user', text: 'remember this' });
+    t.append({ type: 'assistant', text: 'remembered' });
+    t.append({ type: 'user', text: '/clear' });
+    t.append({ type: 'clear' });
+    t.append({ type: 'note', level: 'info', text: 'context cleared' });
+
+    const view = buildView(t.all(), WORKSPACE);
+    expect(view.map((item) => item.text)).toEqual(['context cleared']);
+  });
+
+  // Clearing is a thing done to the screen, not to the work: a task in flight
+  // keeps sending, and what it sends still belongs to it.
+  it('keeps the rows of a running task its own across a clear', () => {
+    const t = transcript();
+    t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'say hi' });
+    t.append({
+      type: 'session_update',
+      agentId: 'claude',
+      sessionId: 's',
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'still here' } },
+    });
+    t.append({ type: 'clear' });
+    t.append({
+      type: 'session_update',
+      agentId: 'claude',
+      sessionId: 's',
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'and done' } },
+    });
+    t.append({ type: 'stop', taskId: 1, agentId: 'claude', sessionId: 's', stopReason: 'end_turn' });
+
+    const view = buildView(t.all(), WORKSPACE, { expanded: true });
+    expect(view.map((item) => item.text)).toEqual(['and done', 'Done (1s)']);
+    expect(view.map((item) => item.taskId)).toEqual([1, 1]);
+    expect(view.map((item) => item.depth)).toEqual([1, 1]);
+
+    // And the closing row still folds what is left of the task away.
+    const folded = buildView(t.all(), WORKSPACE);
+    expect(folded.map((item) => item.marker)).toEqual(['result']);
+  });
+
   it('never folds a refusal away with the rest of the task', () => {
     const t = transcript();
     t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'do it' });

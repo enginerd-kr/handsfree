@@ -19,6 +19,13 @@ export type TranscriptBody =
    * than crammed into the headline.
    */
   | { type: 'note'; level: 'info' | 'warn' | 'error'; text: string; lines?: string[] }
+  /**
+   * The line `/clear` drew under everything before it. What is above stays in
+   * the file — a run's account of itself is not something a command gets to
+   * rewrite — and what starts over is the view: whatever a reader has already
+   * dealt with leaves the screen, and only what happens after this is drawn.
+   */
+  | { type: 'clear' }
   | { type: 'agent_stderr'; agentId: string; text: string }
   /**
    * `model` is the id the session was switched to for this task, when one was

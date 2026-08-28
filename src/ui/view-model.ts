@@ -296,6 +296,22 @@ export function buildView(
         break;
       }
 
+      case 'clear':
+        // The screen starts over; the run does not. A task still in flight
+        // keeps its depth, its id and its agent, so the rows it goes on to
+        // send are still its own and its closing line still folds them — from
+        // the top of the emptied list, which is where the task now begins.
+        // What the tool calls know about themselves is kept for the same
+        // reason: an update to a call from before the clear draws its row
+        // again complete, rather than as a bare id nobody can read.
+        items.length = 0;
+        byKey.clear();
+        loud.clear();
+        closeBlocks();
+        closeTool();
+        taskStart = depth === 1 ? 0 : -1;
+        break;
+
       case 'agent_stderr':
         break; // Kept in the file, not shown: adapters are chatty on stderr.
 

@@ -20,10 +20,10 @@ export function builtins(): Command[] {
     },
     {
       kind: 'local',
-      name: 'reset',
-      description: 'forget the conversation and start over',
+      name: 'clear',
+      description: 'forget the conversation and clear the screen',
       source: 'builtin',
-      run: () => ({ do: 'reset' }),
+      run: () => ({ do: 'clear' }),
     },
     {
       kind: 'local',

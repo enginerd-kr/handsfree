@@ -97,7 +97,7 @@ export class Conversation {
   reset(): void {
     this.messages = [];
     // The ground rules go with the history. An agent that keeps its session
-    // across a reset would otherwise never hear them again, and the first
+    // across a clear would otherwise never hear them again, and the first
     // brief after starting over would be the one that explains nothing.
     // The counters deliberately do not reset: the view keys rows by them, and
     // a second task 1 would land on the first one's row.
@@ -416,12 +416,16 @@ export class Conversation {
           ...(effect.lines ? { lines: effect.lines } : {}),
         });
         break;
-      case 'reset':
+      case 'clear':
         this.reset();
+        // The mark goes down first so the note is the one row left standing:
+        // a screen wiped without a word for it reads as a command that failed,
+        // and the line about briefing is the one thing worth keeping anyway.
+        transcript.append({ type: 'clear' });
         transcript.append({
           type: 'note',
           level: 'info',
-          text: 'conversation cleared — the agents will be briefed from scratch.',
+          text: 'context cleared — the agents will be briefed from scratch.',
         });
         break;
       case 'quit':

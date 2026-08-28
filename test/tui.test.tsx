@@ -345,7 +345,7 @@ describe('terminal UI', () => {
       const closed = (app.lastFrame() ?? '').split('\n').length;
 
       app.stdin.write('/');
-      await waitFor(() => app.lastFrame(), '/reset');
+      await waitFor(() => app.lastFrame(), '/clear');
       expect(app.lastFrame()).toContain('/help');
 
       // The frame is a fixed height. A menu that grew it would scroll the
@@ -370,9 +370,9 @@ describe('terminal UI', () => {
     try {
       await waitFor(() => app.lastFrame(), PROMPT_CHAR);
       // The bare slash offers everything, shortest name first: exit, help,
-      // reset. Two steps down lands on the third.
+      // clear. Two steps down lands on the third.
       await press('/');
-      await waitFor(() => app.lastFrame(), '/reset');
+      await waitFor(() => app.lastFrame(), '/clear');
       await press('\x1b[B', '\x1b[B', '\r');
 
       await waitFor(() => app.lastFrame(), 'cleared');
@@ -656,10 +656,10 @@ describe('terminal UI', () => {
       await waitFor(() => app.lastFrame(), 'Working…');
 
       await press('/');
-      await waitFor(() => app.lastFrame(), '/reset');
+      await waitFor(() => app.lastFrame(), '/clear');
       await press('\x1b');
       await waitFor(() => app.lastFrame(), 'Working…');
-      expect(app.lastFrame()).not.toContain('/reset');
+      expect(app.lastFrame()).not.toContain('/clear');
 
       // The first escape was spent on the menu; the second reaches the turn.
       await press('\x1b');

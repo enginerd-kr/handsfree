@@ -28,7 +28,8 @@ export interface CommandBase {
  */
 export type CommandEffect =
   | { do: 'say'; text: string; lines?: string[] }
-  | { do: 'reset' }
+  /** Forget the conversation, and take the screen with it. */
+  | { do: 'clear' }
   | { do: 'quit' };
 
 /**

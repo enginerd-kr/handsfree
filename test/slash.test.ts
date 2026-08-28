@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { fakeAgent } from './fake-agent.js';
 import { harness, scriptedModel, type Harness } from './harness.js';
+import { buildView } from '../src/ui/view-model.js';
 import type { TranscriptRecord } from '../src/workspace/transcript.js';
 
 let open: Harness | undefined;
@@ -91,15 +92,23 @@ describe('slash commands', () => {
     expect(h.runtime.transcript.all().some((record) => record.type === 'assistant')).toBe(false);
   });
 
-  it('clears the conversation on /reset and says so', async () => {
+  // The conversation goes, and so does what was drawn before it — the note
+  // saying so is all that is left standing.
+  it('takes the screen with the conversation on /clear', async () => {
     const llm = scriptedModel([answer('one')]);
     const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) }, llm });
     open = h;
 
     await h.runtime.conversation.send('remember this');
-    await h.runtime.conversation.send('/reset');
+    await h.runtime.conversation.send('/clear');
 
-    expect(notes(h).at(-1)?.text).toContain('cleared');
+    const view = buildView(h.runtime.transcript.all(), h.runtime.workspace.dir);
+    expect(view.map((item) => item.text)).toEqual([
+      'context cleared — the agents will be briefed from scratch.',
+    ]);
+    // The file keeps every one of them; only the view started over.
+    expect(h.runtime.transcript.all().some((record) => record.type === 'user')).toBe(true);
+
     // The next turn starts from nothing: only the system prompt and the new ask.
     const after = scriptedModel([answer('two')]);
     (h.runtime.conversation as unknown as { deps: { llm: unknown } }).deps.llm = after;

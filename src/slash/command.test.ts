@@ -9,7 +9,7 @@ import {
 } from './command.js';
 
 function local(name: string, description = '', extra: Partial<Command> = {}): Command {
-  return { kind: 'local', name, description, source: 'builtin', run: () => ({ do: 'reset' }), ...extra } as Command;
+  return { kind: 'local', name, description, source: 'builtin', run: () => ({ do: 'clear' }), ...extra } as Command;
 }
 
 function prompt(name: string, argNames: string[] = []): Command {
