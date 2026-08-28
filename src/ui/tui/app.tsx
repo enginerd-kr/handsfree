@@ -14,7 +14,7 @@ import {
   type ViewItem,
 } from '../view-model.js';
 import type { ModelChoice } from '../../host/models.js';
-import { orchestrationModel, type Config } from '../../config/schema.js';
+import { agentRole, orchestrationModel, type Config } from '../../config/schema.js';
 import {
   findCommand,
   parseSlashCommand,
@@ -584,7 +584,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       note:
         id === ORCHESTRATOR
           ? 'the model that routes — :agent:model moves it'
-          : (runtime.config.agents[id]?.note ?? ''),
+          : agentRole(runtime.config, id),
     }));
   };
   const menu = useMemo(

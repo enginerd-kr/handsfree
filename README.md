@@ -237,6 +237,23 @@ Both are read, so a project file is a layer over the user's rather than a replac
 
 Only what is present is layered, and the merged whole is validated once, so either file may be a fragment. `/config` names the files it read, in the order they won; so does `handsfree doctor`. See `handsfree.config.example.json`; everything has a default.
 
+### What each agent is for
+
+The planner chooses an agent by what it has been told each one is for. That line is a role, and it lives beside the launch profiles rather than inside them:
+
+```json
+"agents": {
+  "codex": { "command": "npx", "args": ["-y", "@agentclientprotocol/codex-acp"] }
+},
+"roles": {
+  "codex": "methodical coding agent, good at tests and refactors"
+}
+```
+
+Outside `agents` on purpose. A profile there is taken whole when files are layered, and a role is the opposite kind of thing — the one line a checkout most wants to say on its own, and restating a command and its arguments to change a sentence is a tax on the only edit worth making. An ordinary object merges name by name, so a project file that re-describes `codex` leaves the user's line for `gemini` standing.
+
+Left out, an agent is described by its profile's `note`, which is where the three shipped agents get theirs. A role naming an agent nothing configures is refused at load rather than dropped: a role that never reaches the planner and a role the planner ignored look the same from where you are sitting. `/agents` prints whichever line is live.
+
 ### The orchestration model
 
 Both ways of running it sit side by side, and `provider` picks the live one:

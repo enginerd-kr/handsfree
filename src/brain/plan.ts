@@ -54,7 +54,7 @@ export function parseStep(text: string, agents: string[]): ParsedStep {
 
 export interface AgentCard {
   id: string;
-  /** What the agent said it is, once connected; falls back to the config note. */
+  /** What the agent is for: its configured role, or the launch profile's note. */
   description: string;
 }
 

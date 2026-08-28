@@ -1,5 +1,5 @@
 import os from 'node:os';
-import { orchestrationModel } from '../config/schema.js';
+import { agentRole, orchestrationModel } from '../config/schema.js';
 import { commandSearchPaths } from './files.js';
 import type { Command, CommandHost } from './command.js';
 
@@ -87,7 +87,10 @@ function agents(host: CommandHost): string[] {
   const lines = Object.entries(host.config.agents).map(([id, profile]) => {
     const state = profile.enabled ? 'on ' : 'off';
     const launch = [profile.command, ...profile.args].join(' ');
-    return `  ${state}  ${id.padEnd(8)}  ${launch}${profile.note ? ` — ${profile.note}` : ''}`;
+    // The role as the planner has it, so a `roles` entry that overrode the
+    // profile's note shows here rather than the line it replaced.
+    const role = agentRole(host.config, id);
+    return `  ${state}  ${id.padEnd(8)}  ${launch}${role ? ` — ${role}` : ''}`;
   });
   lines.push('');
   const planner = orchestrationModel(host.config);

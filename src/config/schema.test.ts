@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AgentProfileSchema,
   ConfigSchema,
+  agentRole,
   assertLaunchArgsAllowed,
   orchestrationModel,
 } from './schema.js';
@@ -105,6 +106,40 @@ describe('proxy', () => {
       agents: { claude: { command: 'agent', env: { HTTPS_PROXY: null } } },
     });
     expect(config.agents['claude']?.env['HTTPS_PROXY']).toBeNull();
+  });
+});
+
+describe('roles', () => {
+  it('starts empty, so an agent is described by its profile note', () => {
+    const config = ConfigSchema.parse({});
+    expect(config.roles).toEqual({});
+    expect(agentRole(config, 'codex')).toBe('methodical coding agent, good at tests and refactors');
+  });
+
+  it('overrides the profile note when one is written', () => {
+    const config = ConfigSchema.parse({ roles: { codex: 'all test work in this repo' } });
+    expect(agentRole(config, 'codex')).toBe('all test work in this repo');
+    // Only the agent it named: the others keep the note they shipped with.
+    expect(agentRole(config, 'gemini')).toBe('fast, good at bulk text and single-file work');
+  });
+
+  it('says nothing about an agent nobody described', () => {
+    const config = ConfigSchema.parse({ agents: { local: { command: 'my-agent' } } });
+    expect(agentRole(config, 'local')).toBe('');
+    expect(agentRole(config, 'absent')).toBe('');
+  });
+
+  it('refuses a role for an agent that is not configured', () => {
+    // Dropping it silently would read exactly like a role the planner ignored.
+    const parsed = ConfigSchema.safeParse({ roles: { aider: 'the one that is not here' } });
+    expect(parsed.success).toBe(false);
+    expect(parsed.success ? '' : parsed.error.issues[0]?.message).toMatch(
+      /no such agent is configured/,
+    );
+  });
+
+  it('refuses an empty role rather than treating it as a role', () => {
+    expect(ConfigSchema.safeParse({ roles: { codex: '' } }).success).toBe(false);
   });
 });
 

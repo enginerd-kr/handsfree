@@ -181,6 +181,25 @@ export const DEV_ALLOWLIST = [
   'make build',
 ];
 
+
+/**
+ * What each agent is for, in the words the planner is given. Keyed by agent id.
+ *
+ * This sits outside `agents` on purpose. A profile under `agents` is taken
+ * whole when two config files are layered — a launch line spliced from two
+ * files is a command nobody wrote — but a role is the opposite kind of thing:
+ * the line a checkout most wants to say on its own, and making it restate the
+ * command and the arguments to do so is a tax on the one edit worth making.
+ * Here it is an ordinary record, so it merges name by name: a project file that
+ * re-describes `codex` leaves the user's line for `gemini` standing.
+ *
+ * A name nothing configures is refused rather than dropped, because a role that
+ * never reaches the planner and a role the planner ignored read the same from
+ * where you are sitting.
+ */
+export const RolesSchema = z.record(z.string(), z.string().min(1)).prefault({});
+export type Roles = z.infer<typeof RolesSchema>;
+
 export const PolicySchema = z
   .object({
     /** Every path an agent touches must resolve inside the session workspace. */
@@ -289,6 +308,7 @@ export const ConfigSchema = z
     orchestration: OrchestrationSchema.prefault({}),
     proxy: ProxySchema,
     agents: z.record(z.string(), AgentProfileSchema).prefault(DEFAULT_AGENTS),
+    roles: RolesSchema,
     capabilities: z
       .object({
         readTextFile: z.boolean().default(true),
@@ -338,6 +358,16 @@ export const ConfigSchema = z
         path: ['agents', ORCHESTRATOR],
       });
     }
+    for (const id of Object.keys(config.roles)) {
+      if (config.agents[id]) continue;
+      ctx.addIssue({
+        code: 'custom',
+        message:
+          `roles describes "${id}", but no such agent is configured. ` +
+          `Configured: ${Object.keys(config.agents).join(', ') || '(none)'}.`,
+        path: ['roles', id],
+      });
+    }
     const { provider, acp } = config.orchestration;
     if (provider === 'acp' && !config.agents[acp.agent]) {
       ctx.addIssue({
@@ -362,4 +392,13 @@ export type AgentId = string;
 export function orchestrationModel(config: Config): string | undefined {
   const { acp } = config.orchestration;
   return acp.model ?? config.agents[acp.agent]?.model;
+}
+
+/**
+ * The one line the planner is told about an agent: the role a config file wrote
+ * for it, and failing that the launch profile's own note. Empty means nobody
+ * said, and the caller decides what an undescribed agent is called.
+ */
+export function agentRole(config: Config, id: AgentId): string {
+  return config.roles[id] ?? config.agents[id]?.note ?? '';
 }

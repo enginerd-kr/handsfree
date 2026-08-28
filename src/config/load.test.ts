@@ -85,6 +85,19 @@ describe('layering', () => {
     expect(config.agents['codex']?.command).toBe('codex');
   });
 
+  it('layers roles name by name, where a profile is taken whole', () => {
+    const { cwd, home } = layout({
+      user: { roles: { claude: 'mine', gemini: 'bulk text' } },
+      project: { roles: { claude: 'this checkout only' } },
+    });
+    const { config } = loadConfig(cwd, home);
+    // The project spoke for claude and stayed quiet about gemini, and unlike an
+    // `agents` profile that leaves the user's other line standing.
+    expect(config.roles).toEqual({ claude: 'this checkout only', gemini: 'bulk text' });
+    // …and it did not have to restate the launch line to say it.
+    expect(config.agents['claude']?.command).toBe('npx');
+  });
+
   it('validates the merged whole, so a layer may be a fragment', () => {
     const { cwd, home } = layout({
       user: { agents: { local: { command: 'my-agent' } } },

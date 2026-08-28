@@ -1,5 +1,5 @@
 import type { StopReason } from '@agentclientprotocol/sdk';
-import type { Config } from '../config/schema.js';
+import { agentRole, type Config } from '../config/schema.js';
 import { trimHistory, type ChatClient, type ChatMessage } from '../brain/client.js';
 import type { OrchestrationChoice } from '../brain/planner.js';
 import { narrate } from '../brain/narrate.js';
@@ -487,7 +487,7 @@ export class Conversation {
   private ensureSystemPrompt(agents: string[]): void {
     const cards: AgentCard[] = agents.map((id) => ({
       id,
-      description: this.deps.config.agents[id]?.note || 'coding agent',
+      description: agentRole(this.deps.config, id) || 'coding agent',
     }));
     const system = planSystemPrompt(cards, this.deps.workspace.dir);
     if (this.messages[0]?.role === 'system') this.messages[0] = { role: 'system', content: system };
