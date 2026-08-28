@@ -63,9 +63,28 @@ A line starting with `/` is a command. `/agents` lists who's on the roster, `/he
 
 The directory you start handsfree in is the workspace — the one place agents read and write.
 
-## Configuration
+## Supported agents
 
-`handsfree.config.json`, project and user, layered. Name each agent's launch command, what it's for, and which model plans:
+| agent | launched as | log in with |
+|---|---|---|
+| claude | `npx -y @agentclientprotocol/claude-agent-acp` | `claude /login` |
+| gemini | `gemini --acp` | `gemini` |
+| codex | `npx -y @agentclientprotocol/codex-acp` | `codex login` |
+
+Any other agent that speaks ACP works the same way — add it under `agents` in the settings file and it joins the roster.
+
+## ACP
+
+Agents plug in over the [Agent Client Protocol](https://agentclientprotocol.com): handsfree starts each one as a child process, and every `fs/*`, `terminal/*` and `session/request_permission` call it makes comes back to handsfree rather than running unsupervised. That's the same seam that lets a new agent join — nothing agent-specific is hardcoded, only the launch command and what it's for.
+
+## Settings
+
+Read from two files and layered, project over user:
+
+```
+./handsfree.config.json                 this checkout, and it wins
+~/.config/handsfree/config.json         you, on this machine
+```
 
 ```json
 "agents": { "codex": { "command": "npx", "args": ["-y", "@agentclientprotocol/codex-acp"] } },
@@ -73,7 +92,7 @@ The directory you start handsfree in is the workspace — the one place agents r
 "orchestration": { "provider": "local", "local": { "baseURL": "http://localhost:1234/v1" } }
 ```
 
-See `handsfree.config.example.json` — everything else has a sensible default.
+`/config` shows what's loaded and from where. See `handsfree.config.example.json` for the full shape — everything else has a sensible default.
 
 ## Development
 
