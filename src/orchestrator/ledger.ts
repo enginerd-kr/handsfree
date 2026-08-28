@@ -14,6 +14,8 @@ const LEDGER_TASKS = 24;
 const HANDOFF_ENTRIES = 10;
 /** How much of an agent's closing account the next agent is handed. */
 const ACCOUNT_CHARS = 300;
+/** How many files a roster line names before the rest become a count. */
+const SESSION_FILES = 6;
 
 /**
  * The seq everything before which is history: the last `/clear`, or the start
@@ -97,6 +99,52 @@ export function renderRunState(tasks: readonly LedgerTask[], workspaceDir: strin
   return lines.join('\n');
 }
 
+/** What one agent has done this run, for the line the planner picks it from. */
+export interface AgentRecord {
+  tasks: number;
+  /** Files its session has seen — read or changed — in the order they turned up. */
+  files: string[];
+  /** Whether anything it was asked to do did not come back done. */
+  trouble: boolean;
+}
+
+/**
+ * The run so far, per agent. This is what makes a role actionable at the moment
+ * of choosing: the role says what an agent is for, and this says what it
+ * already has loaded — and an agent that has the files a task concerns is the
+ * one that needs to read the least to do it.
+ */
+export function agentRecords(tasks: readonly LedgerTask[]): Map<string, AgentRecord> {
+  const records = new Map<string, AgentRecord>();
+  for (const { outcome } of tasks) {
+    const record = records.get(outcome.agentId) ?? { tasks: 0, files: [], trouble: false };
+    record.tasks++;
+    if (outcome.status !== 'done') record.trouble = true;
+    for (const file of outcome.files) {
+      if (!record.files.includes(file)) record.files.push(file);
+    }
+    records.set(outcome.agentId, record);
+  }
+  return records;
+}
+
+/**
+ * An agent's record as the roster says it: how much it has done and what its
+ * session is therefore holding. Empty for an agent that has not worked yet —
+ * a roster line saying so would be a line about nothing.
+ */
+export function renderAgentRecord(record: AgentRecord | undefined, workspaceDir: string): string {
+  if (!record) return '';
+  const shown = record.files.slice(0, SESSION_FILES).map((file) => relative(file, workspaceDir));
+  const more = record.files.length - shown.length;
+  const parts = [`${record.tasks} task${record.tasks === 1 ? '' : 's'} this run`];
+  if (shown.length > 0) {
+    parts.push(`already has ${shown.join(', ')}${more > 0 ? ` and ${more} more` : ''} open`);
+  }
+  if (record.trouble) parts.push('one of them did not finish');
+  return parts.join('; ');
+}
+
 export interface HandoffInput {
   tasks: readonly LedgerTask[];
   /** Who is about to be briefed. Its own tasks are left out: its session remembers them. */
@@ -108,6 +156,12 @@ export interface HandoffInput {
    */
   includeOwn: boolean;
   workspaceDir: string;
+  /**
+   * What each agent is for, as the config has it. A handoff names the role the
+   * first time an agent appears in it: "gemini changed the tests" is a fact
+   * about a stranger until you know what gemini is for.
+   */
+  roleOf?: (agentId: string) => string;
 }
 
 /**
@@ -126,11 +180,17 @@ export function renderHandoff(input: HandoffInput): string {
   const shown = relevant.slice(-HANDOFF_ENTRIES);
   const lines = ['Since your last task:'];
   if (relevant.length > shown.length) lines.push(`- …${relevant.length - shown.length} earlier tasks not listed.`);
+  // Once each: the second entry from the same agent is talking about somebody
+  // the reader has by then been introduced to.
+  const introduced = new Set<string>();
   for (const { outcome } of shown) {
+    const role = introduced.has(outcome.agentId) ? '' : input.roleOf?.(outcome.agentId) ?? '';
+    introduced.add(outcome.agentId);
+    const who = `${outcome.agentId}${role ? ` (${role})` : ''}`;
     const files = outcome.changed.map((file) => relative(file, input.workspaceDir));
     const did = files.length > 0 ? `changed ${files.join(', ')}` : 'changed nothing';
     const status = outcome.status === 'done' ? '' : ` — ${outcome.status}`;
-    lines.push(`- ${outcome.agentId} (task ${outcome.taskId}) ${did}${status}`);
+    lines.push(`- ${who}, task ${outcome.taskId}: ${did}${status}`);
     if (outcome.message !== '') lines.push(`  "${oneLine(outcome.message, ACCOUNT_CHARS)}"`);
   }
   return lines.join('\n');

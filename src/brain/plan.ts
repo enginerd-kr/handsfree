@@ -56,6 +56,12 @@ export interface AgentCard {
   id: string;
   /** What the agent is for: its configured role, or the launch profile's note. */
   description: string;
+  /**
+   * What it has done this run, and what its session is therefore still
+   * holding. Empty for an agent that has not been given anything yet. The role
+   * says what an agent is for; this says what it would not have to read again.
+   */
+  record?: string;
 }
 
 /**
@@ -64,7 +70,9 @@ export interface AgentCard {
  * carried each task are dropped once the turn is over, and this is what stays.
  */
 export function planSystemPrompt(agents: AgentCard[], workspace: string, runState = ''): string {
-  const roster = agents.map((agent) => `- "${agent.id}": ${agent.description}`).join('\n');
+  const roster = agents
+    .map((agent) => `- "${agent.id}": ${agent.description}${agent.record ? `\n  (${agent.record})` : ''}`)
+    .join('\n');
   const first = agents[0]?.id ?? 'claude';
   const memory = runState
     ? `\n\nTasks so far this run (the full record — earlier messages may have been dropped):\n${runState}`
@@ -83,6 +91,7 @@ How the agents work:
 
 Your rules:
 - Delegate work that needs an agent: changing files or code, and anything the user wants a specific agent to say. Answer directly for questions about yourself, and for conversation.
+- Choose the agent by what it is for. Where two would both suit, choose the one that already has the files the task concerns: its session still holds them, so it reads less to begin.
 - Every delegation says what you want back:
   - "answer" — you want the agent's words. It creates nothing. Use this whenever the user says ask, tell, question, or wants an agent's opinion.
   - "change" — you want the workspace changed.

@@ -20,7 +20,14 @@ import {
   type LocalCommand,
 } from '../slash/command.js';
 import { parseMention, parseOrchestration } from '../mention/mention.js';
-import { floorOf, renderHandoff, renderRunState, tasksSince } from './ledger.js';
+import {
+  agentRecords,
+  floorOf,
+  renderAgentRecord,
+  renderHandoff,
+  renderRunState,
+  tasksSince,
+} from './ledger.js';
 import { summarise, renderOutcome, type TaskOutcome } from './outcome.js';
 import { buildBrief, type TaskKind } from './prompts.js';
 import { metered } from './usage.js';
@@ -455,6 +462,7 @@ export class Conversation {
       agentId,
       includeOwn: fresh,
       workspaceDir: workspace.dir,
+      roleOf: (id) => agentRole(config, id),
     });
     const brief = buildBrief({ task, kind, doneWhen, workspaceDir: workspace.dir, first, handoff });
 
@@ -568,12 +576,21 @@ export class Conversation {
    */
   private ensureSystemPrompt(agents: string[]): void {
     const { transcript, workspace } = this.deps;
-    const cards: AgentCard[] = agents.map((id) => ({
-      id,
-      description: agentRole(this.deps.config, id) || 'coding agent',
-    }));
     const records = transcript.all();
-    const runState = renderRunState(tasksSince(records, floorOf(records)), workspace.dir);
+    const tasks = tasksSince(records, floorOf(records));
+    // The roster carries both halves of a routing decision: what each agent is
+    // for, and what it has open. A role picks the agent suited to the work; the
+    // record picks, between two that suit, the one that has already read it.
+    const worked = agentRecords(tasks);
+    const cards: AgentCard[] = agents.map((id) => {
+      const record = renderAgentRecord(worked.get(id), workspace.dir);
+      return {
+        id,
+        description: agentRole(this.deps.config, id) || 'coding agent',
+        ...(record ? { record } : {}),
+      };
+    });
+    const runState = renderRunState(tasks, workspace.dir);
     const system = planSystemPrompt(cards, workspace.dir, runState);
     if (this.messages[0]?.role === 'system') this.messages[0] = { role: 'system', content: system };
     else this.messages.unshift({ role: 'system', content: system });

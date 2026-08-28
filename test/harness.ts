@@ -15,6 +15,8 @@ export interface HarnessOptions {
     limits: Partial<Config['limits']>;
     /** Per-agent profile fields beyond the command — the optional model override. */
     profiles: Record<string, { model?: string }>;
+    /** What each agent is for, as a config file would say it. */
+    roles: Record<string, string>;
     /** Which model plans, for what the status line and `/agents` say about it. */
     orchestration: Record<string, unknown>;
   }>;
@@ -41,6 +43,7 @@ export function harness(options: HarnessOptions): Harness {
         { command: 'unused', args: [], ...(options.config?.profiles?.[id] ?? {}) },
       ]),
     ),
+    ...(options.config?.roles ? { roles: options.config.roles } : {}),
     capabilities: { terminal: true, ...(options.config?.capabilities ?? {}) },
     ...(options.config?.orchestration ? { orchestration: options.config.orchestration } : {}),
     policy: options.config?.policy ?? {},

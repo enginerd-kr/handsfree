@@ -562,7 +562,11 @@ describe('Conversation', () => {
     });
     const gemini = fakeAgent({ script: () => [{ do: 'say', text: 'Wrote three tests.' }] });
     const llm = scriptedModel([answer('done.'), answer('done.')]);
-    const h = harness({ agents: { claude, gemini }, llm });
+    const h = harness({
+      agents: { claude, gemini },
+      llm,
+      config: { roles: { claude: 'general coding agent' } },
+    });
     open = h;
     edited = path.join(h.workspaceDir, 'a.ts');
 
@@ -572,7 +576,7 @@ describe('Conversation', () => {
     // gemini is told what claude changed, and what claude said about it —
     // paths and an account, not the file.
     expect(gemini.prompts[0]).toContain('Since your last task:');
-    expect(gemini.prompts[0]).toContain('claude (task 1) changed a.ts');
+    expect(gemini.prompts[0]).toContain('claude (general coding agent), task 1: changed a.ts');
     expect(gemini.prompts[0]).toContain('empty input returns null');
   });
 
@@ -662,6 +666,37 @@ describe('Conversation', () => {
     expect(usage).toHaveLength(1);
     expect(usage[0]).toMatchObject({ purpose: 'plan' });
     expect(usage[0] && usage[0].type === 'usage' ? usage[0].promptChars : 0).toBeGreaterThan(0);
+  });
+
+  it('offers the planner each agent\'s role and what its session already holds', async () => {
+    let edited = '';
+    const claude = fakeAgent({
+      script: () => [
+        { do: 'tool', toolCallId: 't1', title: 'Write a.ts', kind: 'edit', locations: [edited] },
+        { do: 'say', text: 'done.' },
+      ],
+    });
+    const gemini = fakeAgent({ script: () => [{ do: 'say', text: 'done.' }] });
+    const llm = scriptedModel([answer('done.'), answer('done.')]);
+    const h = harness({
+      agents: { claude, gemini },
+      llm,
+      config: { roles: { claude: 'strong at multi-file edits', gemini: 'fast on single files' } },
+    });
+    open = h;
+    edited = path.join(h.workspaceDir, 'a.ts');
+
+    await h.runtime.conversation.send('@claude add parse()');
+    await h.runtime.conversation.send('what next?');
+
+    const system = llm.seen.at(-1)?.[0]?.content ?? '';
+    // The role says what each is for...
+    expect(system).toContain('"claude": strong at multi-file edits');
+    expect(system).toContain('"gemini": fast on single files');
+    // ...and the record says which one would not have to read the file again.
+    expect(system).toContain('1 task this run; already has a.ts open');
+    // An agent that has done nothing is described, not annotated.
+    expect(system).not.toContain('"gemini": fast on single files\n  (');
   });
 
   it('records the workspace path it gave the model', async () => {

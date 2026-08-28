@@ -254,6 +254,8 @@ Outside `agents` on purpose. A profile there is taken whole when files are layer
 
 Left out, an agent is described by its profile's `note`, which is where the three shipped agents get theirs. A role naming an agent nothing configures is refused at load rather than dropped: a role that never reaches the planner and a role the planner ignored look the same from where you are sitting. `/agents` prints whichever line is live.
 
+The role is also how the agents are introduced to *each other*. A handoff names the agent that produced it the first time it appears — `codex (methodical coding agent, good at tests and refactors) changed …` — because "codex changed the tests" is a fact about a stranger until you know what codex is for.
+
 ### The orchestration model
 
 Both ways of running it sit side by side, and `provider` picks the live one:
@@ -328,11 +330,23 @@ Files changed this run: src/parse.ts, src/parse.test.ts
 
 Within a turn it sees each result in full, agent's words and all. Once the turn closes, the turn folds to the line you typed and the reply you got, because everything else it established is in the ledger above. Nothing is summarised by a model to get there — the ledger is a projection of the transcript, built by code, so it costs nothing and cannot drift from what happened.
 
+The same projection puts a second line under each agent on the roster, so both halves of a routing decision sit where the decision is made:
+
+```
+Agents:
+- "claude": general coding agent, strong at multi-file edits
+  (2 tasks this run; already has src/parse.ts open)
+- "codex": methodical coding agent, good at tests and refactors
+  (1 task this run; already has src/parse.test.ts open)
+```
+
+The [role](#roles) says what an agent is *for*; the line under it says what its session is still *holding*. Where two agents would both suit a task, the planner is told to prefer the one that already has the files it concerns — that agent starts by reading nothing, which is the entire reason the sessions are kept.
+
 **The workspace is how agents reach each other.** An agent's brief ends with what the *others* changed since it last worked:
 
 ```
 Since your last task:
-- claude (task 1) changed src/parse.ts
+- claude (general coding agent, strong at multi-file edits), task 1: changed src/parse.ts
   "Added parse(); empty input returns null."
 ```
 

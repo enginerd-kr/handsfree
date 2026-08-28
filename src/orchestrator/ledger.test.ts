@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { Transcript } from '../workspace/transcript.js';
-import { floorOf, renderHandoff, renderRunState, tasksSince } from './ledger.js';
+import {
+  agentRecords,
+  floorOf,
+  renderAgentRecord,
+  renderHandoff,
+  renderRunState,
+  tasksSince,
+} from './ledger.js';
 
 /** A finished task, written into the record the way a real one is. */
 function task(
@@ -174,6 +181,49 @@ describe('renderRunState', () => {
   });
 });
 
+describe('agentRecords', () => {
+  it('says what each agent has done and what its session is holding', () => {
+    const transcript = new Transcript();
+    task(transcript, { taskId: 1, agentId: 'claude', task: 'a', edited: ['/ws/a.ts'], read: ['/ws/b.ts'] });
+    task(transcript, { taskId: 2, agentId: 'claude', task: 'b', edited: ['/ws/a.ts'] });
+    task(transcript, { taskId: 3, agentId: 'gemini', task: 'c', stopReason: 'refusal' });
+
+    const records = agentRecords(tasksSince(transcript.all(), 0));
+    expect(records.get('claude')).toEqual({
+      tasks: 2,
+      // Read as well as changed: what its session holds is what it has seen.
+      files: ['/ws/a.ts', '/ws/b.ts'],
+      trouble: false,
+    });
+    expect(records.get('gemini')?.trouble).toBe(true);
+  });
+
+  it('renders a record the planner can pick an agent from', () => {
+    const transcript = new Transcript();
+    task(transcript, { taskId: 1, agentId: 'claude', task: 'a', edited: ['/ws/a.ts'], read: ['/ws/b.ts'] });
+
+    const record = agentRecords(tasksSince(transcript.all(), 0)).get('claude');
+    expect(renderAgentRecord(record, '/ws')).toBe('1 task this run; already has a.ts, b.ts open');
+  });
+
+  it('says nothing about an agent that has not worked yet', () => {
+    expect(renderAgentRecord(undefined, '/ws')).toBe('');
+  });
+
+  it('counts the files it stops naming', () => {
+    const transcript = new Transcript();
+    task(transcript, {
+      taskId: 1,
+      agentId: 'claude',
+      task: 'a',
+      edited: ['/ws/1.ts', '/ws/2.ts', '/ws/3.ts', '/ws/4.ts', '/ws/5.ts', '/ws/6.ts', '/ws/7.ts', '/ws/8.ts'],
+    });
+
+    const record = agentRecords(tasksSince(transcript.all(), 0)).get('claude');
+    expect(renderAgentRecord(record, '/ws')).toContain('and 2 more open');
+  });
+});
+
 describe('renderHandoff', () => {
   const transcript = new Transcript();
   task(transcript, {
@@ -195,19 +245,19 @@ describe('renderHandoff', () => {
   it('tells an agent what the others changed, in their own words', () => {
     const handoff = renderHandoff({ tasks, agentId: 'claude', includeOwn: false, workspaceDir: '/ws' });
     expect(handoff).toContain('Since your last task:');
-    expect(handoff).toContain('gemini (task 2) changed a.test.ts');
+    expect(handoff).toContain('gemini, task 2: changed a.test.ts');
     expect(handoff).toContain('Three tests; the blank case fails.');
   });
 
   it("leaves out the agent's own work, which its session already remembers", () => {
     const handoff = renderHandoff({ tasks, agentId: 'claude', includeOwn: false, workspaceDir: '/ws' });
-    expect(handoff).not.toContain('claude (task 1)');
+    expect(handoff).not.toContain('claude, task 1:');
     expect(handoff).not.toContain('empty input returns null');
   });
 
   it('includes its own work when the session is new and remembers nothing', () => {
     const handoff = renderHandoff({ tasks, agentId: 'claude', includeOwn: true, workspaceDir: '/ws' });
-    expect(handoff).toContain('claude (task 1) changed a.ts');
+    expect(handoff).toContain('claude, task 1: changed a.ts');
   });
 
   it('says nothing at all when nothing has happened since', () => {
@@ -218,6 +268,36 @@ describe('renderHandoff', () => {
     const handoff = renderHandoff({ tasks, agentId: 'claude', includeOwn: false, workspaceDir: '/ws' });
     // Short enough that a brief can carry it every task without crowding one out.
     expect(handoff.length).toBeLessThan(400);
+  });
+
+  it('names an agent by its role the first time it appears, and not again', () => {
+    const twice = new Transcript();
+    task(twice, { taskId: 1, agentId: 'gemini', task: 'a', edited: ['/ws/one.ts'] });
+    task(twice, { taskId: 2, agentId: 'gemini', task: 'b', edited: ['/ws/two.ts'] });
+
+    const handoff = renderHandoff({
+      tasks: tasksSince(twice.all(), 0),
+      agentId: 'claude',
+      includeOwn: false,
+      workspaceDir: '/ws',
+      roleOf: () => 'fast, good at bulk text',
+    });
+    expect(handoff).toContain('gemini (fast, good at bulk text), task 1:');
+    // The reader has been introduced; saying it again is a line about nothing.
+    expect(handoff).toContain('gemini, task 2:');
+    expect(handoff.match(/fast, good at bulk text/g)).toHaveLength(1);
+  });
+
+  it('leaves the role out where nothing describes the agent', () => {
+    const handoff = renderHandoff({
+      tasks,
+      agentId: 'claude',
+      includeOwn: false,
+      workspaceDir: '/ws',
+      roleOf: () => '',
+    });
+    expect(handoff).toContain('gemini, task 2:');
+    expect(handoff).not.toContain('()');
   });
 
   it('reports a task that failed as well as one that changed files', () => {
