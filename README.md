@@ -13,7 +13,14 @@ A local model routes your work to frontier coding agents. handsfree owns every s
 </div>
 
 <p align="center">
-  <img src="docs/screens/turn.svg" alt="handsfree routing a task to claude: a thought, a read, a write, an allowed test run, and a refused git push" width="100%">
+  <img src="docs/screens/welcome.svg" alt="handsfree's opening frame: a greeting, and five example lines — a plain request, the planner addressed, an agent, an agent on a model, and a command" width="100%">
+</p>
+
+Nothing has been said yet, so the transcript says hello instead, in the shapes a line can take — spelled with the agents this run actually has. Every one of them can be sent exactly as it stands.
+
+<p align="center">
+  <img src="docs/screens/turn.svg" alt="handsfree routing a task to claude: a thought, a read, a write, an allowed test run, and a refused git push" width="49%">
+  <img src="docs/screens/permission.svg" alt="claude asks to run node test.mjs; handsfree stops the turn and offers allow once or refuse" width="49%">
 </p>
 
 One line in. One agent picked. Every file it read, every file it wrote, every command it ran — approved or refused by handsfree, and written down.
@@ -26,11 +33,7 @@ Every frontier coding CLI ships a switch that turns its own approvals off. `--da
 
 handsfree deletes the reason to flip it.
 
-The agents run in **their own default permission mode**. Where the bypass flag would have put an approval, handsfree puts a policy engine — and where the policy engine cannot decide, it puts you.
-
-<p align="center">
-  <img src="docs/screens/permission.svg" alt="claude asks to run node test.mjs; handsfree stops the turn and offers allow once or refuse" width="100%">
-</p>
+The agents run in **their own default permission mode**. Where the bypass flag would have put an approval, handsfree puts a policy engine — and where the policy engine cannot decide, it puts you, the way the screenshot at the top shows.
 
 Those flags are not merely discouraged. A launch profile carrying one is **refused at config load**, and checked again immediately before `exec`.
 
@@ -99,11 +102,7 @@ handsfree serve --acp          # be an ACP agent, for an editor to drive
 handsfree --sandbox            # an empty scratch workspace instead of this directory
 ```
 
-<p align="center">
-  <img src="docs/screens/welcome.svg" alt="handsfree's opening frame: a greeting, and five example lines — a plain request, the planner addressed, an agent, an agent on a model, and a command" width="100%">
-</p>
-
-Nothing has been said yet, so the transcript says hello instead, and the shapes a line can take are spelled with the agents this run actually has. Every one of them can be sent exactly as it stands. The first line you send takes the pane back for good.
+Opened with nothing typed yet, the transcript greets you instead — the screenshot at the top of this page. The first line you send takes the pane back for good.
 
 **The directory you start in is the workspace.** That is the checkout the agents read and write, and it is also the boundary: the same policy engine that judges every request judges a path outside it as outside, whatever the agent was told. So `cd` to the project and start there — telling an agent in prose to go and work somewhere else is not a thing that can work, by design.
 

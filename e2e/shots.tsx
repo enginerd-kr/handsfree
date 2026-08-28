@@ -173,7 +173,7 @@ async function permission(): Promise<void> {
   await shot(
     'permission',
     96,
-    22,
+    28,
     'handsfree — the decision it will not take for you',
     () => {
       const staged = stage({
