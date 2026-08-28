@@ -145,8 +145,9 @@ export const RESULT_INDENT = ' ';
  * The mark is built from parts so it can hold a pose: a head whose eyes are
  * the corner missing from each of ▛ and ▜ — shut, those corners fill in — a
  * body whose outer nubs are arms riding the top or the bottom of their cell,
- * a row of feet, and a row of nothing. Every part keeps the same nine cells,
- * so no pose can shift what sits beside or below the mark; the header's row
+ * that same body with its underside opened up for the legs it is sat on, a
+ * row of feet, and a row of nothing. Every part keeps the same nine cells, so
+ * no pose can shift what sits beside or below the mark; the header's row
  * count is what a click is measured against.
  *
  * The eyes are what say which way the mark is going. A quadrant is the
@@ -163,13 +164,23 @@ const HEAD_RIGHT = ' ▐█▜██▛▌ ';
 const HEAD_SHUT = ' ▐█████▌ ';
 const ARMS_UP = '▝▜█████▛▘';
 const ARMS_DOWN = '▗▜█████▛▖';
+/*
+ * The sat body: the arms-down row with the underside taken out either side of
+ * its middle, so the ground shows through at two holes and what is left
+ * hanging below the belly is a leg down the centre and a leg at each edge. A
+ * mark simply moved a row down is a mark standing lower — those holes are the
+ * only thing at this size that says it is sitting, and they cost nothing,
+ * since the cells they open were solid body before.
+ */
+const SEATED = '▗▜█▀█▀█▛▖';
 const FEET = '  ▘▘ ▝▝  ';
 const AIR = ' '.repeat([...HEAD_AHEAD].length);
 
 /**
  * The stances the mark holds: upright with its arms raised, at ease with
- * them dropped, sat on the ground — the whole mark a row lower, its feet
- * tucked under it — and mid-jump, feet off the bottom row entirely.
+ * them dropped, sat on the ground — the whole mark a row lower, its legs
+ * folded under it with the floor showing through between them — and mid-jump,
+ * feet off the bottom row entirely.
  */
 export type Stance = 'stand' | 'easy' | 'sit' | 'air';
 
@@ -196,7 +207,7 @@ export function mascot(
     case 'easy':
       return [head, ARMS_DOWN, FEET];
     case 'sit':
-      return [AIR, head, ARMS_DOWN];
+      return [AIR, head, SEATED];
     case 'air':
       return [head, ARMS_UP, AIR];
     default:

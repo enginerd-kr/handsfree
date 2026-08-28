@@ -75,13 +75,23 @@ describe('the welcome mark', () => {
     }
   });
 
-  // Sitting, the whole mark drops a row — head on the middle row, body on
-  // the ground, feet tucked out of sight — and the top row goes empty.
-  it('sits a row lower with its feet tucked under it', () => {
+  // Sitting, the whole mark drops a row — head on the middle row, body on the
+  // ground, feet tucked out of sight — and the top row goes empty. The row it
+  // comes to rest on is the arms-down body opened up either side of its
+  // middle: legs with the ground showing through between them, which is the
+  // only thing at this size that tells a sat mark from one that merely stands
+  // a row lower.
+  it('sits a row lower on legs with the floor showing between them', () => {
     const [top, middle, bottom] = mascot('sit');
+    const dropped = [...mascot('easy')[1]];
+    const seated = [...bottom];
     expect(top.trim()).toBe('');
     expect(middle).toBe(mascot()[0]);
-    expect(bottom.trim()).not.toBe('');
+    // The arms and the shoulder either side of the hole are the arms and
+    // shoulders the mark drops at ease; only the belly between them opens.
+    expect(seated.slice(0, 3)).toEqual(dropped.slice(0, 3));
+    expect(seated.slice(-3)).toEqual(dropped.slice(-3));
+    expect(seated.slice(3, -3).join('')).toBe('▀█▀');
   });
 
   // Mid-jump the feet leave the bottom row entirely; the head and body hold
