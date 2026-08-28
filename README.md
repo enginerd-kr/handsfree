@@ -1,10 +1,44 @@
+<div align="center">
+
 # handsfree
 
-An orchestration model — a local model by default, or a frontier agent over ACP — routes your work to frontier coding agents — Claude Code, Gemini CLI, Codex — and **handsfree owns every side effect they cause**.
+**Run Claude Code, Gemini CLI and Codex at full power — without ever typing `--dangerously-skip-permissions`.**
 
-The agents run in their own default permission mode. No `--dangerously-skip-permissions`, no `--yolo`, no `danger-full-access`. Where those flags would put an approval, handsfree puts a policy engine, and where the policy engine cannot decide, it puts you.
+A local model routes your work to frontier coding agents. handsfree owns every side effect they cause.
 
-This works because all three agents speak the [Agent Client Protocol](https://agentclientprotocol.com). handsfree is an ACP **client**: it starts each agent as a child process, answers its `session/request_permission` calls, and — because it also *implements* `fs/*` and `terminal/*` — is the thing that actually reads the file, writes the file, and runs the command. An agent that stops for something other than permission — a question of its own, over `elicitation/create` — is put in front of you the same way.
+[![ci](https://github.com/enginerd-kr/handsfree/actions/workflows/ci.yml/badge.svg)](https://github.com/enginerd-kr/handsfree/actions/workflows/ci.yml)
+[![licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
+[![node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen.svg)](package.json)
+
+</div>
+
+<p align="center">
+  <img src="docs/screens/turn.svg" alt="handsfree routing a task to claude: a thought, a read, a write, an allowed test run, and a refused git push" width="100%">
+</p>
+
+One line in. One agent picked. Every file it read, every file it wrote, every command it ran — approved or refused by handsfree, and written down.
+
+---
+
+## Why
+
+Every frontier coding CLI ships a switch that turns its own approvals off. `--dangerously-skip-permissions`. `--yolo`. `danger-full-access`. Everyone flips it, because answering the same prompt four hundred times is not work.
+
+handsfree deletes the reason to flip it.
+
+The agents run in **their own default permission mode**. Where the bypass flag would have put an approval, handsfree puts a policy engine — and where the policy engine cannot decide, it puts you.
+
+<p align="center">
+  <img src="docs/screens/permission.svg" alt="claude asks to run node test.mjs; handsfree stops the turn and offers allow once or refuse" width="100%">
+</p>
+
+Those flags are not merely discouraged. A launch profile carrying one is **refused at config load**, and checked again immediately before `exec`.
+
+## How
+
+All three agents speak the [Agent Client Protocol](https://agentclientprotocol.com). handsfree is an ACP **client**: it starts each agent as a child process, answers its `session/request_permission` calls, and — because it also *implements* `fs/*` and `terminal/*` — it is the thing that actually reads the file, writes the file, and runs the command.
+
+The agent asks. handsfree acts. There is no third path. An agent that stops for something other than permission — a question of its own, over `elicitation/create` — is put in front of you the same way.
 
 ```
         you
@@ -22,6 +56,8 @@ This works because all three agents speak the [Agent Client Protocol](https://ag
    claude-agent-acp  gemini --acp   codex-acp
 ```
 
+Agents work in a jail — `~/.handsfree/runs/<id>/workspace/` — and the transcript sits *above* it, because an audit log an agent can edit is not an audit log.
+
 ## Install
 
 ```bash
@@ -36,7 +72,7 @@ You also need whichever agents you plan to use, each logged in with its own CLI:
 | gemini | `gemini --acp` | `gemini` |
 | codex | `npx -y @agentclientprotocol/codex-acp` | `codex login` |
 
-And an orchestration model to do the routing. By default that is a local OpenAI-compatible endpoint (LM Studio, Ollama, llama.cpp) at `http://localhost:1234/v1`; set `orchestration.provider` to `"acp"` and one of the agents above does the routing instead, with no local endpoint at all.
+And an orchestration model to do the routing. By default that is a local OpenAI-compatible endpoint (LM Studio, Ollama, llama.cpp) at `http://localhost:1234/v1` — a 12B model is plenty, because routing is small work. Set `orchestration.provider` to `"acp"` and one of the agents above does the routing instead, with no local endpoint at all.
 
 Check the lot:
 
@@ -66,16 +102,7 @@ handsfree serve --acp          # be an ACP agent, for an editor to drive
 
 An agent stops mid-turn for one of two reasons, and both of them end up in front of you.
 
-**It wants permission.** The rules run first; only what they cannot settle is escalated. In the terminal that is a `y`/`n` box, one question at a time, in the order they arrived:
-
-```
-┌ claude wants to write notes.txt ──────────────┐
-│ rule: tool.write                              │
-│ y allow once   ·   n refuse                   │
-└───────────────────────────────────────────────┘
-```
-
-Only `allow_once` is ever selected. Where an agent offers nothing but a standing approval, that is not quietly taken and not quietly refused: you are told in as many words that saying yes approves it for the rest of the session, and only your yes widens it.
+**It wants permission.** The rules run first; only what they cannot settle is escalated — the `y`/`n` box in the screenshot above, one question at a time, in the order they arrived. Only `allow_once` is ever selected. Where an agent offers nothing but a standing approval, that is not quietly taken and not quietly refused: you are told in as many words that saying yes approves it for the rest of the session, and only your yes widens it.
 
 **It has a question of its own.** Over `elicitation/create` an agent can ask before it guesses — which of two approaches, a name, a yes. handsfree advertises form mode, renders the form a field at a time, and hands the answers back into the same turn; `esc` is a refusal the agent is told about, which is not the same as nobody having been there. Switch it off with `capabilities.elicitation` and an agent that needs an answer has to end its turn to ask for one.
 
@@ -83,13 +110,17 @@ While either question is open the turn's clocks stop. An agent waiting on a pers
 
 Who holds the seat depends on how handsfree was started: the terminal UI, the editor when it is `serve --acp`, or stderr for `handsfree run` at a terminal. Piped or in CI there is nobody, and every escalation is a denial.
 
-## Naming the agent, and the model
+---
 
-`@` at the start of a word opens the roster, and a line that leads with one goes to that agent instead of the planner. A colon after the name picks the model: `@codex:luna rewrite the parser`. Arrows move through either menu, tab or enter fills one in, escape closes it.
+## Name the agent. Name the model.
 
-The models on offer are the agent's own answer, asked for once at startup so the menu is there the moment the colon is. Each adapter above is the one its CLI ships, so the roster it advertises is the CLI's roster and the model it comes up on is the CLI's default — there is nothing to configure and nothing to keep in sync.
+`@` at the start of a word opens the roster, and a line that leads with one goes to that agent instead of the planner.
 
-A typed name is matched against that roster the way it is typed — the id exactly, then as a prefix, then anywhere in it — so `:luna` and `:opus` are enough. Several matches is an error naming them rather than a guess. The switch lands before the task is sent and sticks until another mention moves it. Ids are shown exactly as advertised, brackets and all: `opus[1m]`, `gpt-5.6-terra[max]`.
+A colon after the name picks the model: `@codex:luna rewrite the parser`.
+
+The models on offer are **the agent's own answer**, asked for once at startup so the menu is there the moment the colon is. Each adapter is the one its CLI ships, so the roster it advertises is the CLI's roster and the model it comes up on is the CLI's default — nothing to configure, nothing to keep in sync.
+
+A typed name is matched the way it is typed — the id exactly, then as a prefix, then anywhere in it — so `:luna` and `:opus` are enough. Several matches is an error naming them rather than a guess. The switch lands before the task is sent and sticks until another mention moves it. Ids are shown exactly as advertised, brackets and all: `opus[1m]`, `gpt-5.6-terra[max]`.
 
 To start an agent somewhere other than its own default, name it in the profile:
 
@@ -101,9 +132,9 @@ To start an agent somewhere other than its own default, name it in the profile:
 }
 ```
 
-`model` is optional and matched the same way. Every session with that agent is put on it as it opens — a resumed one included — and a name the agent will not take fails loudly rather than leaving a turn on a model nobody chose. An agent that offers no model selection over ACP says so in place of the menu.
+`model` is optional and matched the same way. Every session with that agent is put on it as it opens — a resumed one included — and a name the agent will not take fails loudly rather than leaving a turn on a model nobody chose.
 
-## Naming the planner
+### Name the planner, too
 
 One name in that roster is not an agent. `@orchestrator:claude:opus` moves the planner itself — the model that routes and summarises — to Claude on Opus, and it walks the same way as any address: `@orchestrator:` offers the agents, and the colon after one offers that agent's models.
 
@@ -112,9 +143,9 @@ One name in that roster is not an agent. `@orchestrator:claude:opus` moves the p
 @orchestrator:codex fix the tests     move it, and ask it that in the same line
 ```
 
-The roll call under the prompt opens with it: a diamond rather than a dot, and the only entry there spelled `agent:model`, because it is the only one that is not an agent. It fills while the planner is the one working — choosing the next step, or writing the answer — and empties once a task is out with an agent, whose own dot fills instead.
+The roll call under the prompt opens with it: a diamond rather than a dot, and the only entry spelled `agent:model`, because it is the only one that is not an agent. It fills while the planner is working — choosing the next step, or writing the answer — and empties once a task is out with an agent, whose own dot fills instead.
 
-The move takes effect for the rest of the run, whichever way the config had it: a local endpoint is put down and the agent picks up the planning. `/agents` and `handsfree doctor` name whatever is planning now, and the config file is where the next run starts from — nothing is written back. The old planner's connection is closed as the new one takes over, so no process is left holding a model nobody is using.
+The move takes effect for the rest of the run, whichever way the config had it: a local endpoint is put down and the agent picks up the planning. `/agents` and `handsfree doctor` name whatever is planning now, and the config file is where the next run starts from — nothing is written back. The old planner's connection is closed as the new one takes over.
 
 A name the agent will not take, one nobody configured, or one switched off is refused and the line stops there: what was asked for was a different planner, and running the work on the old one is not that. `orchestrator` is reserved as an agent id for the same reason a command file cannot be called `/exit`.
 
@@ -163,59 +194,26 @@ One thing worth knowing: they run against **the workspace**, which is the agents
 
 In the terminal UI, typing `/` opens the list. Escape closes the menu; a second escape still stops whatever is running.
 
-## Configuration
+## The policy engine
 
-Drop a `handsfree.config.json` in the working directory or at `~/.config/handsfree/config.json`. See `handsfree.config.example.json`; everything has a default.
-
-The orchestration model is picked by `orchestration.provider`, and both ways of running it sit side by side:
+Three questions, one answer each, and every answer on the record.
 
 ```json
-"orchestration": {
-  "provider": "local",
-  "local": { "baseURL": "http://localhost:1234/v1", "model": "google/gemma-3-12b" },
-  "acp": { "agent": "claude", "model": "haiku" }
+"policy": {
+  "workspaceOnly": true,
+  "fs":   { "read": "allow", "write": "allow", "outside": "deny", "followSymlinks": false },
+  "exec": { "enabled": true, "mode": "allowlist", "allow": ["pnpm test", "git status", "git diff"] },
+  "escalation": ["user"]
 }
 ```
 
-`local` speaks to any OpenAI-compatible endpoint. `acp` drives one of the configured `agents` over ACP in a connection of its own, separate from the sessions that do the work — its planning chatter never lands in a task's context, and it passes through the same policy engine as everything else.
+- **`allow`** — it happens, and the transcript says so.
+- **`deny`** — it does not, and the agent is told why. A refusal is final; asking again will not change it.
+- **`ask`** — the turn stops and the question comes to you, as the screenshot under [Why](#why) shows.
 
-Both name the model that plans: `local.model` is the id the endpoint serves, and `acp.model` is matched against the agent's own roster the way a `:model` mention is, so a prefix is enough. It is worth naming apart from the agents doing the work — routing and summarising is small, frequent work, and the model that is right for it is rarely the one you want editing your files. Left out, the planner takes the agent profile's `model`, and failing that whatever the agent comes up on. A name the agent will not take fails the turn naming its roster, rather than planning on a model nobody chose. `@orchestrator:agent:model` moves it for the rest of a run without touching the file.
+`exec` is off by default: a file-only host has a much smaller blast radius. Commands are run directly rather than through a shell, so a shell operator needs its own verdict, and every path an agent names must resolve inside the workspace — a symlink pointing out of it is not a way around that.
 
-Behind a corporate proxy, configure the proxy here rather than in the shell — agents are spawned directly, so shell aliases never reach them:
-
-```json
-"proxy": {
-  "https": "http://proxy.corp:8080",
-  "noProxy": "localhost,127.0.0.1,.corp.example"
-}
-```
-
-Each key writes both spellings (`HTTPS_PROXY` and `https_proxy`) into every process handsfree starts. A key that is omitted inherits the shell's value; `""` removes the variable entirely. An agent profile's `env` overrides this block per agent, and a `null` value there removes an inherited variable:
-
-```json
-"agents": {
-  "claude": { "command": "npx", "args": ["-y", "@agentclientprotocol/claude-agent-acp"],
-              "env": { "HTTPS_PROXY": null } }
-}
-```
-
-Gemini authenticated by an API key needs that key in handsfree's own environment or in the profile's `env`: agents run in the workspace jail, and the gemini CLI reads `~/.gemini/.env` only from a directory its own trust list knows, which the jail never is.
-
-Gemini authenticated by an API key needs that key in handsfree's own environment or in the profile's `env`: agents run in the workspace jail, and the gemini CLI reads `~/.gemini/.env` only from a directory its own trust list knows, which the jail never is.
-
-Two things are deliberately absent: there is no `permissionMode`, `approvalMode` or `sandbox` setting per agent, and no way to express a bypass flag. Launch arguments are checked at config load and again immediately before `exec`.
-
-## The transcript
-
-One run, one record:
-
-```
-~/.handsfree/runs/<id>/transcript.jsonl     every update, every decision
-~/.handsfree/runs/<id>/sessions.json        agent session ids, for resuming
-~/.handsfree/runs/<id>/workspace/           the jail — agents' cwd
-```
-
-The transcript sits *above* the workspace, because an audit log an agent can edit is not an audit log. The UI renders it, the summary is written from it, and tests replay it — there is no second copy of what happened anywhere in the system.
+Two things are deliberately absent: there is no `permissionMode`, `approvalMode` or `sandbox` setting per agent, and no way to express a bypass flag.
 
 ## Configuration
 
@@ -230,7 +228,9 @@ Both are read, so a project file is a layer over the user's rather than a replac
 
 Only what is present is layered, and the merged whole is validated once, so either file may be a fragment. `/config` names the files it read, in the order they won; so does `handsfree doctor`. See `handsfree.config.example.json`; everything has a default.
 
-The orchestration model is picked by `orchestration.provider`, and both ways of running it sit side by side in the config:
+### The orchestration model
+
+Both ways of running it sit side by side, and `provider` picks the live one:
 
 ```json
 "orchestration": {
@@ -242,9 +242,11 @@ The orchestration model is picked by `orchestration.provider`, and both ways of 
 
 `local` speaks to any OpenAI-compatible endpoint. `acp` drives one of the configured `agents` over ACP in a connection of its own, separate from the sessions that do the work — its planning chatter never lands in a task's context, and it passes through the same policy engine as everything else. (The old top-level `llm` block is still read and treated as `orchestration.local`.)
 
-Both name the model that plans: `local.model` is the id the endpoint serves, and `acp.model` is matched against the agent's own roster the way a `:model` mention is, so a prefix is enough. It is worth naming apart from the agents doing the work — routing and summarising is small, frequent work, and the model that is right for it is rarely the one you want editing your files. Left out, the planner takes the agent profile's `model`, and failing that whatever the agent comes up on. A name the agent will not take fails the turn naming its roster, rather than planning on a model nobody chose. `@orchestrator:agent:model` moves it for the rest of a run without touching the file.
+Both name the model that plans: `local.model` is the id the endpoint serves, and `acp.model` is matched against the agent's own roster the way a `:model` mention is, so a prefix is enough. It is worth naming apart from the agents doing the work — routing and summarising is small, frequent work, and the model that is right for it is rarely the one you want editing your files. Left out, the planner takes the agent profile's `model`, and failing that whatever the agent comes up on.
 
-Behind a corporate proxy, configure the proxy here rather than in the shell — agents are spawned directly, so shell aliases never reach them:
+### Behind a corporate proxy
+
+Configure the proxy here rather than in the shell — agents are spawned directly, so shell aliases never reach them:
 
 ```json
 "proxy": {
@@ -262,7 +264,19 @@ Each key writes both spellings (`HTTPS_PROXY` and `https_proxy`) into every proc
 }
 ```
 
-Two things are deliberately absent: there is no `permissionMode`, `approvalMode` or `sandbox` setting per agent, and no way to express a bypass flag. Launch arguments are checked at config load and again immediately before `exec`.
+Gemini authenticated by an API key needs that key in handsfree's own environment or in the profile's `env`: agents run in the workspace jail, and the gemini CLI reads `~/.gemini/.env` only from a directory its own trust list knows, which the jail never is.
+
+## The transcript
+
+One run, one record:
+
+```
+~/.handsfree/runs/<id>/transcript.jsonl     every update, every decision
+~/.handsfree/runs/<id>/sessions.json        agent session ids, for resuming
+~/.handsfree/runs/<id>/workspace/           the jail — agents' cwd
+```
+
+The transcript sits *above* the workspace, because an audit log an agent can edit is not an audit log. The UI renders it, the summary is written from it, and tests replay it — there is no second copy of what happened anywhere in the system. Runs older than `cleanupPeriodDays` are swept a beat after startup.
 
 ## Sessions
 
@@ -289,9 +303,12 @@ One pitfall it calls out explicitly, because it is invisible otherwise: agents a
 ```bash
 pnpm typecheck
 pnpm test
+pnpm screenshots     # re-shoot every picture in this README
 ```
 
 The suite runs against a scripted in-process ACP agent (`test/fake-agent.ts`), because the interesting cases — a refused command, a path escape, a turn that never ends — are precisely the ones a real adapter will not perform on request.
+
+Both screenshots above are taken the same way. `pnpm screenshots` opens the real TUI on a headless terminal, drives it with keystrokes, and saves the frame ink actually drew as an SVG under `docs/screens/`. The agents are scripted; everything between the keystroke and the pixel — the planner, the policy engine, the renderer — is the shipping code, and the commands that do run, run for real.
 
 ## Licence
 

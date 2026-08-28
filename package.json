@@ -19,7 +19,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "doctor": "tsx src/main.ts doctor"
+    "doctor": "tsx src/main.ts doctor",
+    "screenshots": "tsx e2e/shots.tsx"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.4.0",
