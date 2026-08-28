@@ -60,6 +60,14 @@ export interface ViewItem {
 /** How much of a tool call's own output is worth putting on screen. */
 const MAX_LINE_CHARS = 200;
 
+/**
+ * How many lines of one block a task gets while it is still on screen. A file
+ * read back whole is the ordinary case, and left alone it takes the viewport
+ * with it: the answer scrolls off the top before anyone can read it. So the
+ * head is kept, the rest is counted, and unfolding the task hands it back.
+ */
+const MAX_BLOCK_LINES = 12;
+
 interface ToolState {
   title: string;
   locations: string[];
@@ -90,7 +98,9 @@ export interface ViewOptions {
  * A task is watched while it runs and folded once it ends. What it did is
  * already in handsfree's report by then, so leaving the whole stream on screen
  * only says everything twice — but a refusal never folds, because that is the
- * one thing the report cannot make up for.
+ * one thing the report cannot make up for. While it runs, each of its blocks
+ * is capped at its head: what an agent hands back is often a whole file, and
+ * one of those is the whole screen. Unfolding a task lifts both.
  */
 export function buildView(
   records: readonly TranscriptRecord[],
@@ -126,6 +136,10 @@ export function buildView(
   // Where the current task's rows begin, and which of them survive folding.
   let taskStart = -1;
   const loud = new Set<string>();
+
+  /** Whether a task's rows are shown in full: nothing folded, nothing capped. */
+  const unfolded = (taskId: number): boolean =>
+    options.expanded === true || options.expandedTasks?.has(taskId) === true;
 
   const add = (item: ViewItem): ViewItem => {
     if (depth === 1) {
@@ -274,8 +288,7 @@ export function buildView(
         closeBlocks();
         closeTool();
         const took = taskStartedAt > 0 ? Math.max(1, Math.round((record.at - taskStartedAt) / 1000)) : 0;
-        const open = options.expanded === true || options.expandedTasks?.has(record.taskId) === true;
-        const hidden = open ? 0 : foldTask(items, byKey, loud, taskStart);
+        const hidden = unfolded(record.taskId) ? 0 : foldTask(items, byKey, loud, taskStart);
         // The closing line belongs to the task, so it keeps the task's indent
         // and its id; whatever comes next is handsfree talking again.
         add(
@@ -429,7 +442,18 @@ export function buildView(
     }
   }
 
-  for (const item of items) item.text = item.text.trim();
+  // The cap is spent here rather than as the rows are built, because a
+  // streamed block is only whole once the last record has been read — and
+  // because one place deciding how much of a block is shown is easier to
+  // trust than two. Only a task's own rows are capped: they are the ones a
+  // click can unfold, and handsfree's own answer is the answer.
+  for (const item of items) {
+    item.text = item.text.trim();
+    if (item.taskId === undefined || unfolded(item.taskId)) continue;
+    const tool = tools.get(item.key);
+    if (tool) item.lines = toolLines(tool, workspaceDir, MAX_BLOCK_LINES, options.expandHint);
+    else if (item.prose === true) capText(item, options.expandHint);
+  }
   return items;
 }
 
@@ -539,8 +563,34 @@ function headline(state: ToolState, root: string): string {
  * did about it. The approvals sit outside the cap — they are the shortest lines
  * and the ones a reader is least willing to lose to a long file.
  */
-function toolLines(state: ToolState, root: string): ViewLine[] {
-  return [...detailLines(state.content, root), ...state.notes];
+function toolLines(
+  state: ToolState,
+  root: string,
+  limit = Number.POSITIVE_INFINITY,
+  hint?: string,
+): ViewLine[] {
+  const detail = detailLines(state.content, root);
+  const hidden = detail.length - limit;
+  if (hidden <= 0) return [...detail, ...state.notes];
+  return [...detail.slice(0, limit), more(hidden, hint), ...state.notes];
+}
+
+/**
+ * Trims an agent's own words down to their head. The count goes under the
+ * block on the same gutter a tool call's output uses, so a capped answer and a
+ * capped file read look alike — one thing was left out, and here is how much.
+ */
+function capText(item: ViewItem, hint: string | undefined): void {
+  const lines = item.text.split('\n');
+  if (lines.length <= MAX_BLOCK_LINES) return;
+  item.text = lines.slice(0, MAX_BLOCK_LINES).join('\n').trimEnd();
+  item.lines = [...item.lines, more(lines.length - MAX_BLOCK_LINES, hint)];
+}
+
+/** What stands in for the lines a cap left out, and how to get them back. */
+function more(hidden: number, hint: string | undefined): ViewLine {
+  const how = hint ? ` (${hint})` : '';
+  return { text: `… +${hidden} ${hidden === 1 ? 'line' : 'lines'}${how}`, tone: 'muted' };
 }
 
 /**
@@ -563,7 +613,8 @@ function detailLines(content: readonly ToolCallContent[], root: string): ViewLin
         break;
     }
   }
-  // Every line an agent hands back is shown; the transcript scrolls.
+  // Whole, blank ends aside: what a running task shows of this is the caller's
+  // to decide, and a task unfolded on purpose is asking for all of it.
   return trimBlank(lines);
 }
 

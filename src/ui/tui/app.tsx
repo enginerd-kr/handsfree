@@ -1155,6 +1155,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
           allOpen={allOpen}
           following={scrolled === undefined}
           copied={copied}
+          cwd={runtime.workspace.dir}
         />
       )}
     </Box>
@@ -1325,9 +1326,13 @@ function useWander(brief?: Brief): Pose {
 
 /**
  * The welcome mark, in the shape Claude Code opens with: the condensed logo on
- * the left and three facts beside it — what this is, what is answering, and
- * where it is running. No box and no tips column; the shortcuts already live
- * under the prompt. A blank row and a column of air sit on every side of it.
+ * the left and three facts beside it — what this is, what is answering, and the
+ * run's own directory under the handsfree root, where the transcript and the
+ * session ids are kept and, on a sandbox run, the workspace itself sits. The
+ * directory the agents actually work in is not here: it belongs beside the
+ * prompt, on the line the work is typed on. No box and no tips column; the
+ * shortcuts already live under the prompt. A blank row and a column of air sit
+ * on every side of it.
  *
  * Kept to exactly HEADER_ROWS rows — that constant is what a click's row is
  * measured against — so every line truncates rather than wraps, and the tail
@@ -1368,7 +1373,7 @@ function Header({ runtime, brief }: { runtime: Runtime; brief?: Brief }): React.
           ))}
         </Text>
         <Text color={INK} wrap="truncate-start">
-          {tildify(runtime.workspace.dir)}
+          {tildify(runtime.workspace.runDir)}
         </Text>
       </Box>
     </Box>
@@ -1584,7 +1589,10 @@ function Row({
  *
  * The hint line is also where the transcript says it has stopped following the
  * end — scrolled up, what arrives next lands off screen, and only this says so
- * — and where a finished drag says how much of the transcript it copied.
+ * — and where a finished drag says how much of the transcript it copied. At its
+ * right edge sits the directory the agents work in, so where a line lands is
+ * read on the line it is typed on. The hint keeps its whole line and the path
+ * is what gives way, front first: the tail is the part worth keeping.
  *
  * The agents' roll call sits at the right edge of the status line above the
  * input — each agent as the model it is on, a dot per agent, filled while that
@@ -1600,6 +1608,7 @@ function Prompt({
   allOpen,
   following,
   copied,
+  cwd,
 }: {
   draft: Draft;
   agents: readonly string[];
@@ -1609,6 +1618,8 @@ function Prompt({
   allOpen: boolean;
   following: boolean;
   copied: number | undefined;
+  /** The directory the agents work in, drawn at the hint line's right edge. */
+  cwd: string;
 }): React.JSX.Element {
   // Where debug lines are going, when they are going anywhere. It cannot
   // change while the UI is up, so reading it at render is enough.
@@ -1636,20 +1647,31 @@ function Prompt({
         </Box>
       </Box>
       <Box paddingLeft={2} paddingRight={1} justifyContent="space-between" gap={2}>
-        <Text color={INK} wrap="truncate">
-          {copied !== undefined
-            ? `copied ${copied} line${copied === 1 ? '' : 's'} to the clipboard`
-            : !following
-              ? 'scrolled up · page down or the wheel to follow again'
-              : busy
-                ? `esc to interrupt · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all`
-                : `/ for commands · @ for agents · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all · /exit`}
-        </Text>
-        {debugTo ? (
-          <Text color="yellow" wrap="truncate-start">
-            ● debug → {tildify(debugTo)}
+        <Box flexShrink={0}>
+          <Text color={INK} wrap="truncate">
+            {copied !== undefined
+              ? `copied ${copied} line${copied === 1 ? '' : 's'} to the clipboard`
+              : !following
+                ? 'scrolled up · page down or the wheel to follow again'
+                : busy
+                  ? `esc to interrupt · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all`
+                  : `/ for commands · @ for agents · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all · /exit`}
           </Text>
-        ) : null}
+        </Box>
+        <Box gap={2}>
+          {/* On the rare run with debug on, that notice keeps its whole line
+              too — it is why the run was started this way. */}
+          {debugTo ? (
+            <Box flexShrink={0}>
+              <Text color="yellow" wrap="truncate-start">
+                ● debug → {tildify(debugTo)}
+              </Text>
+            </Box>
+          ) : null}
+          <Text color={INK} wrap="truncate-start">
+            {tildify(cwd)}
+          </Text>
+        </Box>
       </Box>
     </Box>
   );

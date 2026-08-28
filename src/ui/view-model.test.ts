@@ -205,6 +205,86 @@ describe('buildView', () => {
     expect(folded[1]?.text).toBe('Done (1s · ctrl+o to expand)');
   });
 
+  // Asked for a file, an agent hands the file back. Whole, that is the screen.
+  it('keeps a running task to the head of what it says, and counts the rest', () => {
+    const t = transcript();
+    const readme = Array.from({ length: 40 }, (_, line) => `line ${line + 1}`).join('\n');
+    t.append({ type: 'delegation', taskId: 1, agentId: 'gemini', sessionId: 's', task: 'show it' });
+    t.append({
+      type: 'session_update',
+      agentId: 'gemini',
+      sessionId: 's',
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: readme } },
+    });
+
+    const view = buildView(t.all(), WORKSPACE, { expandHint: 'ctrl+o to expand' });
+    expect(view[1]?.text.split('\n')).toHaveLength(12);
+    expect(view[1]?.text.endsWith('line 12')).toBe(true);
+    expect(view[1]?.lines.map((line) => line.text)).toEqual([
+      '… +28 lines (ctrl+o to expand)',
+    ]);
+
+    // Unfolding the task is the way back to all of it.
+    const open = buildView(t.all(), WORKSPACE, { expandedTasks: new Set([1]) });
+    expect(open[1]?.text).toBe(readme);
+    expect(open[1]?.lines).toEqual([]);
+  });
+
+  it('caps a tool call by its own output, keeping the approvals under it', () => {
+    const t = transcript();
+    t.append({ type: 'delegation', taskId: 1, agentId: 'gemini', sessionId: 's', task: 'read it' });
+    t.append({
+      type: 'session_update',
+      agentId: 'gemini',
+      sessionId: 's',
+      update: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 't1',
+        title: 'Read README.md',
+        kind: 'read',
+        status: 'completed',
+        content: [
+          {
+            type: 'content',
+            content: {
+              type: 'text',
+              text: Array.from({ length: 20 }, (_, line) => `line ${line + 1}`).join('\n'),
+            },
+          },
+        ],
+      },
+    });
+    t.append({
+      type: 'decision',
+      agentId: 'gemini',
+      entry: {
+        at: 0,
+        verdict: 'allow',
+        rule: 'fs.read',
+        summary: 'read README.md',
+        request: { kind: 'fs.read', agentId: 'gemini', sessionId: 's', path: '/ws/README.md' },
+      },
+    });
+
+    const view = buildView(t.all(), WORKSPACE, { expandHint: 'ctrl+o to expand' });
+    const lines = view[1]?.lines.map((line) => line.text) ?? [];
+    expect(lines).toHaveLength(14);
+    expect(lines[11]).toBe('line 12');
+    expect(lines[12]).toBe('… +8 lines (ctrl+o to expand)');
+    expect(lines[13]).toBe('✓ read README.md');
+  });
+
+  // Handsfree's own answer is the answer; there is nothing to unfold it from.
+  it('never caps handsfree\'s own reply', () => {
+    const t = transcript();
+    const long = Array.from({ length: 30 }, (_, line) => `line ${line + 1}`).join('\n');
+    t.append({ type: 'assistant', text: long });
+
+    const view = buildView(t.all(), WORKSPACE, { expandHint: 'ctrl+o to expand' });
+    expect(view[0]?.text).toBe(long);
+    expect(view[0]?.lines).toEqual([]);
+  });
+
   it('draws nothing from before a clear, and leaves the note that follows it', () => {
     const t = transcript();
     t.append({ type: 'user', text: 'remember this' });
