@@ -78,19 +78,17 @@ Any other agent that speaks ACP works the same way — add it under `agents` in 
 Agents plug in over the [Agent Client Protocol](https://agentclientprotocol.com): handsfree starts each one as a child process, and every `fs/*`, `terminal/*` and `session/request_permission` call it makes comes back to handsfree rather than running unsupervised. That's the same seam that lets a new agent join — nothing agent-specific is hardcoded, only the launch command and what it's for.
 
 ```
-        you
-         │
+            you
+           │
   orchestration model ── routes, summarises. Never decides permissions.
-         │
-    ┌────┴─────────────────────────────────────────┐
-    │  handsfree · ACP host                        │
-    │    session/request_permission  → policy      │
-    │    fs/read_text_file           → policy      │
-    │    fs/write_text_file          → policy      │
-    │    terminal/*                  → policy      │
-    │    elicitation/create          → you         │
-    └────┬──────────────┬──────────────┬───────────┘
-   claude-agent-acp  gemini --acp   codex-acp
+           │
+    ┌────┴────────────────────────────────────────────┐
+    │   handsfree · ACP host                          │
+    │     session/request_permission   → policy       │
+    │     fs/*                         → policy       │
+    │     terminal/*                   → policy       │
+    └────┬──────────────────┬──────────────┬──────────┘
+         claude-agent-acp   gemini --acp   codex-acp
 ```
 
 ## Settings
