@@ -16,6 +16,12 @@ export interface AcpModelOptions {
    * routing JSON on the user's screen as if an agent had said it.
    */
   host: HostContext;
+  /**
+   * The model the planning sessions are put on, matched against the agent's
+   * roster the way a `:model` mention is. Omitted, the agent stays on whatever
+   * it opened on.
+   */
+  model?: string;
   /** Wall clock for a single reply. */
   timeoutMs: number;
   cancelGraceMs: number;
@@ -55,6 +61,12 @@ export class AcpModel implements ChatClient {
       await this.discard(connection);
       throw err;
     }
+
+    // The model is settled before the prompt goes out, and every session is a
+    // new one, so each reply is planned on the model the config names. A name
+    // the agent will not take fails the turn naming its roster — the
+    // connection is fine, it is the name that is wrong, so it is not discarded.
+    if (this.options.model !== undefined) await session.selectModel(this.options.model);
 
     let stopReason;
     try {

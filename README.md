@@ -81,6 +81,21 @@ To start an agent somewhere other than its own default, name it in the profile:
 
 `model` is optional and matched the same way. Every session with that agent is put on it as it opens — a resumed one included — and a name the agent will not take fails loudly rather than leaving a turn on a model nobody chose. An agent that offers no model selection over ACP says so in place of the menu.
 
+## Naming the planner
+
+One name in that roster is not an agent. `@orchestrator:claude:opus` moves the planner itself — the model that routes and summarises — to Claude on Opus, and it walks the same way as any address: `@orchestrator:` offers the agents, and the colon after one offers that agent's models.
+
+```
+@orchestrator:gemini:flash            plan on Gemini Flash from here on
+@orchestrator:codex fix the tests     move it, and ask it that in the same line
+```
+
+The roll call under the prompt opens with it: a diamond rather than a dot, and the only entry there spelled `agent:model`, because it is the only one that is not an agent. It fills while the planner is the one working — choosing the next step, or writing the answer — and empties once a task is out with an agent, whose own dot fills instead.
+
+The move takes effect for the rest of the run, whichever way the config had it: a local endpoint is put down and the agent picks up the planning. `/agents` and `handsfree doctor` name whatever is planning now, and the config file is where the next run starts from — nothing is written back. The old planner's connection is closed as the new one takes over, so no process is left holding a model nobody is using.
+
+A name the agent will not take, one nobody configured, or one switched off is refused and the line stops there: what was asked for was a different planner, and running the work on the old one is not that. `orchestrator` is reserved as an agent id for the same reason a command file cannot be called `/exit`.
+
 ## Commands
 
 A line that opens with a slash is a command. There are two kinds, and the difference is who answers.
@@ -136,11 +151,13 @@ The orchestration model is picked by `orchestration.provider`, and both ways of 
 "orchestration": {
   "provider": "local",
   "local": { "baseURL": "http://localhost:1234/v1", "model": "google/gemma-3-12b" },
-  "acp": { "agent": "claude" }
+  "acp": { "agent": "claude", "model": "haiku" }
 }
 ```
 
 `local` speaks to any OpenAI-compatible endpoint. `acp` drives one of the configured `agents` over ACP in a connection of its own, separate from the sessions that do the work — its planning chatter never lands in a task's context, and it passes through the same policy engine as everything else.
+
+Both name the model that plans: `local.model` is the id the endpoint serves, and `acp.model` is matched against the agent's own roster the way a `:model` mention is, so a prefix is enough. It is worth naming apart from the agents doing the work — routing and summarising is small, frequent work, and the model that is right for it is rarely the one you want editing your files. Left out, the planner takes the agent profile's `model`, and failing that whatever the agent comes up on. A name the agent will not take fails the turn naming its roster, rather than planning on a model nobody chose. `@orchestrator:agent:model` moves it for the rest of a run without touching the file.
 
 Behind a corporate proxy, configure the proxy here rather than in the shell — agents are spawned directly, so shell aliases never reach them:
 
@@ -197,11 +214,13 @@ The orchestration model is picked by `orchestration.provider`, and both ways of 
 "orchestration": {
   "provider": "local",
   "local": { "baseURL": "http://localhost:1234/v1", "model": "google/gemma-3-12b" },
-  "acp": { "agent": "claude" }
+  "acp": { "agent": "claude", "model": "haiku" }
 }
 ```
 
 `local` speaks to any OpenAI-compatible endpoint. `acp` drives one of the configured `agents` over ACP in a connection of its own, separate from the sessions that do the work — its planning chatter never lands in a task's context, and it passes through the same policy engine as everything else. (The old top-level `llm` block is still read and treated as `orchestration.local`.)
+
+Both name the model that plans: `local.model` is the id the endpoint serves, and `acp.model` is matched against the agent's own roster the way a `:model` mention is, so a prefix is enough. It is worth naming apart from the agents doing the work — routing and summarising is small, frequent work, and the model that is right for it is rarely the one you want editing your files. Left out, the planner takes the agent profile's `model`, and failing that whatever the agent comes up on. A name the agent will not take fails the turn naming its roster, rather than planning on a model nobody chose. `@orchestrator:agent:model` moves it for the rest of a run without touching the file.
 
 Behind a corporate proxy, configure the proxy here rather than in the shell — agents are spawned directly, so shell aliases never reach them:
 

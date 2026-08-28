@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { AgentProfileSchema, ConfigSchema, assertLaunchArgsAllowed } from './schema.js';
+import {
+  AgentProfileSchema,
+  ConfigSchema,
+  assertLaunchArgsAllowed,
+  orchestrationModel,
+} from './schema.js';
 
 describe('launch arguments', () => {
   it.each([
@@ -53,6 +58,13 @@ describe('defaults', () => {
     expect(parsed.model).toBe('opus[1m]');
     expect(AgentProfileSchema.parse({ command: 'agent' }).model).toBeUndefined();
     expect(AgentProfileSchema.safeParse({ command: 'agent', model: '' }).success).toBe(false);
+  });
+
+  it('keeps the planner’s own name free of agents', () => {
+    // `@orchestrator:agent:model` moves the planner; an agent wearing the name
+    // could never be addressed, and the mention would mean two things at once.
+    const parsed = ConfigSchema.safeParse({ agents: { orchestrator: { command: 'agent' } } });
+    expect(parsed.success).toBe(false);
   });
 
   it('keeps command execution off until it is asked for', () => {
@@ -110,5 +122,37 @@ describe('orchestration', () => {
       orchestration: { provider: 'acp', acp: { agent: 'nope' } },
     });
     expect(parsed.success).toBe(false);
+  });
+
+  it('leaves the planner on the agent default when nobody names a model', () => {
+    expect(orchestrationModel(ConfigSchema.parse({ orchestration: { provider: 'acp' } })))
+      .toBeUndefined();
+  });
+
+  it('plans on the model orchestration names', () => {
+    const config = ConfigSchema.parse({
+      orchestration: { provider: 'acp', acp: { agent: 'claude', model: 'haiku' } },
+    });
+    expect(config.orchestration.acp.model).toBe('haiku');
+    expect(orchestrationModel(config)).toBe('haiku');
+    expect(
+      ConfigSchema.safeParse({ orchestration: { acp: { model: '' } } }).success,
+    ).toBe(false);
+  });
+
+  it('falls back to the profile of the agent it plans through', () => {
+    const config = ConfigSchema.parse({
+      orchestration: { provider: 'acp', acp: { agent: 'claude' } },
+      agents: { claude: { command: 'claude', model: 'opus[1m]' } },
+    });
+    expect(orchestrationModel(config)).toBe('opus[1m]');
+  });
+
+  it('lets orchestration disagree with that profile', () => {
+    const config = ConfigSchema.parse({
+      orchestration: { provider: 'acp', acp: { agent: 'claude', model: 'haiku' } },
+      agents: { claude: { command: 'claude', model: 'opus[1m]' } },
+    });
+    expect(orchestrationModel(config)).toBe('haiku');
   });
 });

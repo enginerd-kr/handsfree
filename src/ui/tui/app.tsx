@@ -13,6 +13,7 @@ import {
   type ViewItem,
 } from '../view-model.js';
 import type { ModelChoice } from '../../host/models.js';
+import { orchestrationModel, type Config } from '../../config/schema.js';
 import {
   findCommand,
   parseSlashCommand,
@@ -25,6 +26,8 @@ import {
   completeModel,
   mentionSpans,
   modelTokenAt,
+  ORCHESTRATOR,
+  plannerTokenAt,
   suggestAgents,
   suggestModels,
 } from '../../mention/mention.js';
@@ -59,6 +62,8 @@ import {
   MASCOT,
   MASCOT_STAGE,
   mascot,
+  PLAN_BUSY,
+  PLAN_IDLE,
   type Stance,
   PROMPT_BAND,
   SAYINGS,
@@ -227,7 +232,9 @@ type RosterState = 'ready' | { failed: string };
 
 type MenuItem =
   | { kind: 'command'; command: Command }
-  | { kind: 'agent'; id: string; note: string }
+  // `planner` says the name is being filled in behind `@orchestrator:`, where
+  // the row on screen is a `:segment` of an address rather than an `@` of its own.
+  | { kind: 'agent'; id: string; note: string; planner?: true }
   | { kind: 'model'; agent: string; choice: ModelChoice };
 
 /**
@@ -248,7 +255,7 @@ export function menuFit(kind: MenuItem['kind'], rows: number): number {
 /** What a row is filtered by and measured by: `/name`, `@name` or `:model`. */
 function menuLabel(item: MenuItem): string {
   if (item.kind === 'command') return `/${item.command.name}`;
-  if (item.kind === 'agent') return `@${item.id}`;
+  if (item.kind === 'agent') return item.planner ? `:${item.id}` : `@${item.id}`;
   return `:${item.choice.value}`;
 }
 
@@ -458,6 +465,11 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       })),
     [agents, working, runtime, modelRoster],
   );
+  // The planner leads the roll: it is upstream of every agent on it, and where
+  // the line runs out of room it is the last thing worth losing. It is working
+  // whenever a turn is open and no agent holds a task — choosing what to do
+  // next, or writing the answer; once a task is out, it is waiting like anyone.
+  const status = [plannerStatus(runtime.config, busy && working.size === 0), ...agentStatus];
   /** The rows a half-written draft earns: commands for a slash, agents for an at-sign, models for a colon. */
   const offeredFor = (d: Draft): MenuItem[] => {
     const commands = suggest(d.value, runtime.commands);
@@ -470,10 +482,15 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
         choice,
       }));
     }
+    const planner = plannerTokenAt(d.value, d.cursor);
     return suggestAgents(d.value, d.cursor, agents).map((id) => ({
       kind: 'agent',
       id,
-      note: runtime.config.agents[id]?.note ?? '',
+      ...(planner ? { planner: true as const } : {}),
+      note:
+        id === ORCHESTRATOR
+          ? 'the model that routes — :agent:model moves it'
+          : (runtime.config.agents[id]?.note ?? ''),
     }));
   };
   const menu = useMemo(
@@ -997,7 +1014,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
         <Prompt
           draft={draft}
           agents={agents}
-          status={agentStatus}
+          status={status}
           startedAt={startedAt}
           queued={queued.length}
           allOpen={allOpen}
@@ -1509,6 +1526,30 @@ interface AgentStatusEntry {
   /** The model the agent is on, or its id when the profile names none. */
   label: string;
   busy: boolean;
+  /**
+   * The planner rather than an agent: drawn as a diamond, and first in the
+   * roll. Its `id` is still the agent it plans through, so its mark wears that
+   * agent's colour — the same agent may also stand in the roll on its own,
+   * working a task in a session of its own, and the two are different things.
+   */
+  planner?: true;
+}
+
+/**
+ * The orchestration model as the roll tells it: which agent is planning and on
+ * what, spelled the way the mention that moves it is — `claude:haiku`. A local
+ * endpoint has no agent to name, so it is the model id alone. Read off the
+ * config every render rather than remembered, because that is where
+ * `@orchestrator:agent:model` writes what it moved.
+ */
+function plannerStatus(config: Config, busy: boolean): AgentStatusEntry {
+  const { orchestration } = config;
+  if (orchestration.provider !== 'acp') {
+    return { id: ORCHESTRATOR, label: orchestration.local.model, busy, planner: true };
+  }
+  const agent = orchestration.acp.agent;
+  const on = orchestrationModel(config);
+  return { id: agent, label: on ? `${agent}:${on}` : agent, busy, planner: true };
 }
 
 /**
@@ -1521,12 +1562,18 @@ function AgentStatus({ status }: { status: readonly AgentStatusEntry[] }): React
   return (
     <Text wrap="truncate">
       {status.map((agent, index) => (
-        <Text key={agent.id}>
+        <Text key={agent.planner ? `planner:${agent.id}` : agent.id}>
           {index > 0 ? (
             <Text color={INK_FAINT}>{' · '}</Text>
           ) : null}
           <Text color={agentColour(agent.id)} dimColor={!agent.busy}>
-            {agent.busy ? DOT_BUSY : DOT_IDLE}
+            {agent.planner
+              ? agent.busy
+                ? PLAN_BUSY
+                : PLAN_IDLE
+              : agent.busy
+                ? DOT_BUSY
+                : DOT_IDLE}
           </Text>
           <Text color={agent.busy ? INK : INK_FAINT}>{` ${agent.label}`}</Text>
         </Text>

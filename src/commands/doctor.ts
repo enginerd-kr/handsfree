@@ -1,5 +1,5 @@
 import { PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
-import type { Config } from '../config/schema.js';
+import { orchestrationModel, type Config } from '../config/schema.js';
 import { createRuntime } from '../runtime.js';
 
 export interface AgentReport {
@@ -24,11 +24,12 @@ export async function doctor(config: Config, log: (line: string) => void): Promi
   const reports: AgentReport[] = [];
 
   const orchestration = config.orchestration;
+  const planner = orchestrationModel(config);
   log(`handsfree — ACP v${PROTOCOL_VERSION}`);
   log(`workspace ${runtime.workspace.dir}`);
   log(
     orchestration.provider === 'acp'
-      ? `orchestration: ${orchestration.acp.agent} over ACP`
+      ? `orchestration: ${orchestration.acp.agent} over ACP${planner ? ` on ${planner}` : ''}`
       : `orchestration: ${orchestration.local.model} at ${orchestration.local.baseURL}`,
   );
   log('');

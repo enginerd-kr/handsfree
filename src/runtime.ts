@@ -1,10 +1,12 @@
-import type { Config } from './config/schema.js';
+import { orchestrationModel, type Config } from './config/schema.js';
 import type { ConfigLocation } from './config/load.js';
 import { AcpModel } from './brain/acp.js';
 import { LocalModel, type ChatClient } from './brain/client.js';
+import { Planner, type OrchestrationChoice } from './brain/planner.js';
 import { PolicyEngine } from './policy/engine.js';
 import type { Escalator } from './policy/types.js';
 import { AgentPool, type PoolOptions } from './host/pool.js';
+import { resolveModel } from './host/models.js';
 import { Conversation } from './orchestrator/conversation.js';
 import { Transcript } from './workspace/transcript.js';
 import { pruneOldRuns } from './workspace/prune.js';
@@ -83,15 +85,12 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     transcript,
     createTarget: options.createTarget,
   });
-  let brain: AcpModel | undefined;
-  let llm: ChatClient | undefined;
-  if ('llm' in options) {
-    llm = options.llm;
-  } else if (config.orchestration.provider === 'acp') {
-    const agentId = config.orchestration.acp.agent;
+  /** The planner as an agent over ACP, on the model the config names for it. */
+  const brainFor = (agentId: string, model: string | undefined): AcpModel => {
     const profile = config.agents[agentId];
-    if (!profile) throw new Error(`orchestration wants agent "${agentId}", which is not configured.`);
-    brain = new AcpModel({
+    if (!profile) throw new Error(`No agent named "${agentId}" is configured.`);
+    if (!profile.enabled) throw new Error(`Agent "${agentId}" is switched off in config.`);
+    return new AcpModel({
       agentId,
       profile,
       // Its own agent id, so its sessions never overwrite the saved ids the
@@ -99,14 +98,64 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       // chatter never renders as agent output. Decisions still reach the main
       // transcript through the shared policy engine.
       host: { agentId: 'orchestrator', config, workspace, jail, policy, transcript: new Transcript() },
+      // Its own model where one is named, since planning is not the work the
+      // agents do; otherwise whatever the profile asks for, so that pinning a
+      // model for an agent pins it for every session with that agent.
+      ...(model === undefined ? {} : { model }),
       timeoutMs: config.orchestration.acp.timeoutMs,
       cancelGraceMs: config.limits.cancelGraceMs,
       createTarget: options.createTarget,
     });
-    llm = brain;
+  };
+
+  // Held behind the Planner rather than handed over directly, because
+  // `@orchestrator:agent:model` moves it mid-run and the conversation must not
+  // be rebuilt to follow. A run with no planner at all — `doctor` — keeps none.
+  let planner: Planner | undefined;
+  if ('llm' in options) {
+    if (options.llm) planner = new Planner(options.llm);
+  } else if (config.orchestration.provider === 'acp') {
+    const brain = brainFor(config.orchestration.acp.agent, orchestrationModel(config));
+    planner = new Planner(brain, brain);
   } else {
-    llm = new LocalModel(config.orchestration.local);
+    planner = new Planner(new LocalModel(config.orchestration.local));
   }
+
+  /**
+   * The id the agent actually offers, where a session of its own has already
+   * answered with a roster: someone types `opus` and what is written down
+   * should be `opus[1m]`. Where nothing has answered yet there is nothing to
+   * match against, so the name stands as typed and the planner's own session
+   * settles it at the next turn.
+   */
+  const nameModel = (agentId: string, wanted: string): string => {
+    const roster = pool.models(agentId);
+    return roster.length === 0 ? wanted : resolveModel(wanted, roster, agentId).value;
+  };
+
+  /**
+   * The planner moved to another agent, another model, or both — what
+   * `@orchestrator:agent:model` asks for. It answers with the line to say so,
+   * and throws what a person can act on where the move cannot be made.
+   */
+  const useOrchestration = async ({ agent, model }: OrchestrationChoice): Promise<string> => {
+    if (!planner) throw new Error('there is no orchestration model here to move.');
+    const profile = config.agents[agent];
+    if (!profile) throw new Error(`No agent named "${agent}" is configured.`);
+    if (!profile.enabled) throw new Error(`Agent "${agent}" is switched off in config.`);
+    const named = model === undefined ? undefined : nameModel(agent, model);
+    // Written down before the swap, so everything that reads the config —
+    // /agents, doctor, the fall back to the agent's own profile — is
+    // describing what is actually planning. Nothing after this can fail.
+    const { orchestration } = config;
+    orchestration.provider = 'acp';
+    orchestration.acp.agent = agent;
+    if (named === undefined) delete orchestration.acp.model;
+    else orchestration.acp.model = named;
+    const on = orchestrationModel(config);
+    await planner.replace(brainFor(agent, on));
+    return `orchestration: ${agent} over acp${on ? ` on ${on}` : ''}`;
+  };
   const registry = loadCommands(options.cwd);
   debug(
     'commands',
@@ -146,7 +195,8 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     pool,
     transcript,
     workspace,
-    llm,
+    llm: planner,
+    useOrchestration,
     commands: registry.commands,
     commandHost,
   });
@@ -169,7 +219,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       // period. Only once the turn has settled — nothing left that could
       // append — is the transcript ended.
       const conversationDone = conversation.close();
-      await Promise.all([pool.closeAll(), brain?.close()]);
+      await Promise.all([pool.closeAll(), planner?.close()]);
       await conversationDone;
       await transcript.close();
     },

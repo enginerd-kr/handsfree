@@ -1,6 +1,7 @@
 import type { StopReason } from '@agentclientprotocol/sdk';
 import type { Config } from '../config/schema.js';
 import { trimHistory, type ChatClient, type ChatMessage } from '../brain/client.js';
+import type { OrchestrationChoice } from '../brain/planner.js';
 import { narrate } from '../brain/narrate.js';
 import { nextStep, planSystemPrompt, type AgentCard, type AnswerStream } from '../brain/plan.js';
 import { SessionUnresponsiveError } from '../host/session.js';
@@ -18,7 +19,7 @@ import {
   type CommandHost,
   type LocalCommand,
 } from '../slash/command.js';
-import { parseMention } from '../mention/mention.js';
+import { parseMention, parseOrchestration } from '../mention/mention.js';
 import { summarise, renderOutcome, type TaskOutcome } from './outcome.js';
 import { buildBrief, type TaskKind } from './prompts.js';
 
@@ -28,6 +29,13 @@ export interface ConversationDeps {
   transcript: Transcript;
   workspace: Workspace;
   llm: ChatClient | undefined;
+  /**
+   * Moves the orchestration model, for `@orchestrator:agent:model`, answering
+   * with the line that says where it went. Absent where there is nothing to
+   * move — a run started without a planner at all — and the address is then
+   * answered by saying so rather than by silently doing nothing.
+   */
+  useOrchestration?: (choice: OrchestrationChoice) => Promise<string>;
   commands: readonly Command[];
   /** A context for a command to act in, named after the command doing the asking. */
   commandHost: (agentId: string) => CommandHost;
@@ -154,16 +162,30 @@ export class Conversation {
       return;
     }
 
+    // What the model is actually asked. For a command file that is its
+    // expanded body; the record above keeps the line the user typed, because
+    // a transcript of expansions is not a transcript of the conversation.
+    let prompt = text;
+
+    // `@orchestrator:agent:model` moves the planner itself, and is answered
+    // here rather than routed anywhere: no agent is woken and nothing is
+    // delegated. Whatever follows the address — where anything does — is then
+    // the first thing the new planner is asked, so a move and a task can be
+    // the one line.
+    if (!invoked) {
+      const moved = parseOrchestration(text, agents);
+      if (moved) {
+        if (!(await this.moveOrchestration(moved)) || moved.rest === '') return;
+        prompt = moved.rest;
+      }
+    }
+
     const turn = new AbortController();
     this.turn = turn;
     const outcomes: TaskOutcome[] = [];
     const notes: string[] = [];
     let answered = false;
     let delegations = 0;
-    // What the model is actually asked. For a command file that is its
-    // expanded body; the record above keeps the line the user typed, because
-    // a transcript of expansions is not a transcript of the conversation.
-    let prompt = text;
 
     try {
       // Inside the turn, and holding its signal: expansion can run a command,
@@ -277,6 +299,32 @@ export class Conversation {
         stream.end(summary);
       }
       this.turn = undefined;
+    }
+  }
+
+  /**
+   * The planner moved, and said where to. A refusal — an agent nobody
+   * configured, one switched off, a model it does not offer — stops the line
+   * there: what was asked for was a different planner, and running the work on
+   * the old one is not that.
+   */
+  private async moveOrchestration(choice: OrchestrationChoice): Promise<boolean> {
+    const { transcript, useOrchestration } = this.deps;
+    if (!useOrchestration) {
+      transcript.append({
+        type: 'note',
+        level: 'error',
+        text: 'there is no orchestration model here to move.',
+      });
+      return false;
+    }
+    try {
+      const moved = await useOrchestration(choice);
+      transcript.append({ type: 'note', level: 'info', text: moved });
+      return true;
+    } catch (err) {
+      transcript.append({ type: 'note', level: 'error', text: (err as Error).message });
+      return false;
     }
   }
 

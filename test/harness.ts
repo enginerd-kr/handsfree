@@ -14,6 +14,8 @@ export interface HarnessOptions {
     limits: Partial<Config['limits']>;
     /** Per-agent profile fields beyond the command — the optional model override. */
     profiles: Record<string, { model?: string }>;
+    /** Which model plans, for what the status line and `/agents` say about it. */
+    orchestration: Record<string, unknown>;
   }>;
   llm?: ChatClient;
   /** Where command files are looked for. Defaults to the process's own cwd. */
@@ -37,6 +39,7 @@ export function harness(options: HarnessOptions): Harness {
       ]),
     ),
     capabilities: { terminal: true, ...(options.config?.capabilities ?? {}) },
+    ...(options.config?.orchestration ? { orchestration: options.config.orchestration } : {}),
     policy: options.config?.policy ?? {},
     limits: { turnTimeoutMs: 5_000, idleTimeoutMs: 5_000, cancelGraceMs: 500, ...(options.config?.limits ?? {}) },
   });

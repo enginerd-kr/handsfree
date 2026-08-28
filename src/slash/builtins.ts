@@ -1,4 +1,5 @@
 import os from 'node:os';
+import { orchestrationModel } from '../config/schema.js';
 import { commandSearchPaths } from './files.js';
 import type { Command, CommandHost } from './command.js';
 
@@ -89,9 +90,10 @@ function agents(host: CommandHost): string[] {
     return `  ${state}  ${id.padEnd(8)}  ${launch}${profile.note ? ` — ${profile.note}` : ''}`;
   });
   lines.push('');
+  const planner = orchestrationModel(host.config);
   lines.push(
     orchestration.provider === 'acp'
-      ? `routing: ${orchestration.acp.agent} over acp`
+      ? `routing: ${orchestration.acp.agent} over acp${planner ? ` on ${planner}` : ''}`
       : `routing: ${orchestration.local.model} at ${orchestration.local.baseURL}`,
   );
   return lines;

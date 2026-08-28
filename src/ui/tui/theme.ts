@@ -73,6 +73,15 @@ const DOT = process.platform === 'darwin' ? '⏺' : '●';
 export const DOT_BUSY = DOT;
 export const DOT_IDLE = '○';
 
+/**
+ * The planner's mark in the same roll: a diamond rather than a dot, filled and
+ * outlined the same way. It leads the line and it is the only entry spelled
+ * `agent:model`, because it is the only one that is not an agent — what it
+ * names is which agent is doing the routing, and on what.
+ */
+export const PLAN_BUSY = '◆';
+export const PLAN_IDLE = '◇';
+
 export const GLYPH: Record<Marker, string> = {
   none: ' ',
   // The user's line is marked by its wash now, not by a glyph — no gutter at

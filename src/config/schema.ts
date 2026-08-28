@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ORCHESTRATOR } from '../mention/mention.js';
 
 /**
  * handsfree never asks an agent to pre-approve its own side effects: the whole
@@ -178,6 +179,15 @@ export const OrchestrationSchema = z.object({
     .object({
       /** Which entry in `agents` does the planning. */
       agent: z.string().default('claude'),
+      /**
+       * The model it plans on, matched against the agent's own roster the way
+       * a `:model` mention is. Worth naming apart from the agents that do the
+       * work: routing and summarising is small, cheap, high-frequency work,
+       * and the model that is right for it is rarely the one you want editing
+       * your files. Left out, the planner takes the agent profile's `model`,
+       * and failing that the agent's own default.
+       */
+      model: z.string().min(1).optional(),
       /** Wall clock for a single planning or summary reply. */
       timeoutMs: z.number().int().positive().default(120_000),
     })
@@ -231,6 +241,18 @@ export const ConfigSchema = z
       .prefault({}),
   })
   .superRefine((config, ctx) => {
+    // `@orchestrator:agent:model` moves the planner, so the name is spoken for.
+    // An agent wearing it could never be addressed, and the mention would mean
+    // two things at once.
+    if (config.agents[ORCHESTRATOR]) {
+      ctx.addIssue({
+        code: 'custom',
+        message:
+          `"${ORCHESTRATOR}" is what a mention calls the planner ` +
+          `(@${ORCHESTRATOR}:agent:model), so an agent cannot be named that.`,
+        path: ['agents', ORCHESTRATOR],
+      });
+    }
     const { provider, acp } = config.orchestration;
     if (provider === 'acp' && !config.agents[acp.agent]) {
       ctx.addIssue({
@@ -245,3 +267,14 @@ export const ConfigSchema = z
 
 export type Config = z.infer<typeof ConfigSchema>;
 export type AgentId = string;
+
+/**
+ * The model the planner runs on when `provider` is `acp`: the one orchestration
+ * names, or failing that the agent profile's, since a session with that agent
+ * is what the planner opens. Nothing means the agent's own default, which only
+ * the agent knows.
+ */
+export function orchestrationModel(config: Config): string | undefined {
+  const { acp } = config.orchestration;
+  return acp.model ?? config.agents[acp.agent]?.model;
+}

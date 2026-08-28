@@ -7,7 +7,7 @@ import type {
   SessionUpdate,
   StopReason,
 } from '@agentclientprotocol/sdk';
-import { matchModel, type ModelChoice } from './models.js';
+import { resolveModel, type ModelChoice } from './models.js';
 
 export interface SessionTransport {
   prompt(request: PromptRequest, signal: AbortSignal): Promise<PromptResponse>;
@@ -165,19 +165,7 @@ export class HostSession {
           'pin the model in its launch profile instead.',
       );
     }
-    const resolved = matchModel(wanted, state.choices);
-    if (resolved === undefined) {
-      throw new Error(
-        `${this.agentId} offers no model matching "${wanted}". It offers: ` +
-          `${state.choices.map((choice) => choice.value).join(', ')}.`,
-      );
-    }
-    if (Array.isArray(resolved)) {
-      throw new Error(
-        `"${wanted}" could be any of ${resolved.map((c) => c.value).join(', ')} — ` +
-          'say more of the name.',
-      );
-    }
+    const resolved = resolveModel(wanted, state.choices, this.agentId);
     if (resolved.value === state.current) return resolved;
 
     if (state.wire.kind === 'config_option') {

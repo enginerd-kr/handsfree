@@ -6,6 +6,8 @@ import {
   mentionTokenAt,
   modelTokenAt,
   parseMention,
+  parseOrchestration,
+  plannerTokenAt,
   suggestAgents,
   suggestModels,
 } from './mention.js';
@@ -37,8 +39,15 @@ describe('mentionTokenAt', () => {
 });
 
 describe('suggestAgents', () => {
-  it('offers everyone for a bare @', () => {
-    expect(suggestAgents('@', 1, AGENTS)).toEqual(['codex', 'claude', 'gemini']);
+  it('offers everyone for a bare @, the planner among them', () => {
+    expect(suggestAgents('@', 1, AGENTS)).toEqual([
+      'codex',
+      'claude',
+      'gemini',
+      // Last, and only by being the longest name: the planner is an address
+      // like any other, not a special row.
+      'orchestrator',
+    ]);
   });
 
   it('filters by prefix before substring', () => {
@@ -220,5 +229,89 @@ describe('parseMention', () => {
     expect(parseMention('@claude: fix it', AGENTS)).toBeUndefined();
     expect(parseMention('@claude:op!us fix it', AGENTS)).toBeUndefined();
     expect(parseMention('@nobody:opus fix it', AGENTS)).toBeUndefined();
+  });
+});
+
+/**
+ * `@orchestrator:agent:model` — the same address one segment longer, naming
+ * the agent that plans and the model it plans on.
+ */
+describe('the planner’s address', () => {
+  it('reads the agent behind the planner’s colon as an agent, not a model', () => {
+    expect(plannerTokenAt('@orchestrator:', 14)).toEqual({ start: 0, query: '' });
+    expect(plannerTokenAt('@orchestrator:cla', 17)).toEqual({ start: 0, query: 'cla' });
+    // And the segment after that one is a model again.
+    expect(plannerTokenAt('@orchestrator:claude:op', 23)).toBeUndefined();
+    expect(modelTokenAt('@orchestrator:claude:op', 23, AGENTS)).toEqual({
+      start: 0,
+      agent: 'claude',
+      query: 'op',
+    });
+  });
+
+  it('offers agents there, and never the planner itself', () => {
+    expect(suggestAgents('@orchestrator:', 14, AGENTS)).toEqual(['codex', 'claude', 'gemini']);
+    expect(suggestAgents('@orchestrator:cla', 17, AGENTS)).toEqual(['claude']);
+  });
+
+  it('fills the agent in without losing the head of the address', () => {
+    expect(completeMention({ value: '@orchestrator:cla', cursor: 17 }, 'claude')).toEqual({
+      value: '@orchestrator:claude',
+      cursor: 20,
+    });
+    expect(
+      completeModel({ value: '@orchestrator:claude:op', cursor: 23 }, AGENTS, 'opus[1m]'),
+    ).toEqual({ value: '@orchestrator:claude:opus[1m] ', cursor: 30 });
+  });
+
+  it('is painted only once it names an agent', () => {
+    expect(mentionSpans('@orchestrator:claude:opus[1m] go', AGENTS)).toEqual([
+      { start: 0, end: 29, agent: 'claude', model: 'opus[1m]' },
+    ]);
+    expect(mentionSpans('@orchestrator:claude', AGENTS)).toEqual([
+      { start: 0, end: 20, agent: 'claude' },
+    ]);
+    // Nothing has been moved yet, so nothing is coloured.
+    expect(mentionSpans('@orchestrator', AGENTS)).toEqual([]);
+    expect(mentionSpans('@orchestrator:nobody', AGENTS)).toEqual([]);
+  });
+});
+
+describe('parseOrchestration', () => {
+  it('names the agent that plans and the model it plans on', () => {
+    expect(parseOrchestration('@orchestrator:claude:opus[1m]', AGENTS)).toEqual({
+      agent: 'claude',
+      model: 'opus[1m]',
+      rest: '',
+    });
+    expect(parseOrchestration('@ORCHESTRATOR:GEMINI', AGENTS)).toEqual({
+      agent: 'gemini',
+      rest: '',
+    });
+  });
+
+  it('keeps whatever the line asked for after the address', () => {
+    expect(parseOrchestration('@orchestrator:codex 테스트 고쳐줘', AGENTS)).toEqual({
+      agent: 'codex',
+      rest: '테스트 고쳐줘',
+    });
+  });
+
+  it('carries an unknown agent through, for the error to name', () => {
+    expect(parseOrchestration('@orchestrator:nobody', AGENTS)).toEqual({
+      agent: 'nobody',
+      rest: '',
+    });
+  });
+
+  it('is not an orchestration at all without an agent to name', () => {
+    expect(parseOrchestration('@orchestrator', AGENTS)).toBeUndefined();
+    expect(parseOrchestration('@orchestrator: do it', AGENTS)).toBeUndefined();
+    expect(parseOrchestration('@claude:opus fix it', AGENTS)).toBeUndefined();
+    expect(parseOrchestration('@orchestrator:claude:opus:extra', AGENTS)).toBeUndefined();
+  });
+
+  it('leaves an agent mention to the agent parser, and the other way round', () => {
+    expect(parseMention('@orchestrator:claude:opus go', AGENTS)).toBeUndefined();
   });
 });

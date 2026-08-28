@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { disableDebug, enableDebug } from '../src/debug.js';
 import { App, menuFit } from '../src/ui/tui/app.js';
 import { copyToClipboard } from '../src/ui/tui/clipboard.js';
-import { DOT_BUSY, DOT_IDLE, PROMPT_CHAR } from '../src/ui/tui/theme.js';
+import { DOT_BUSY, DOT_IDLE, PLAN_BUSY, PLAN_IDLE, PROMPT_CHAR } from '../src/ui/tui/theme.js';
 import { fakeAgent } from './fake-agent.js';
 import { harness, scriptedModel, type Harness } from './harness.js';
 import type { ChatClient } from '../src/brain/client.js';
@@ -55,8 +55,10 @@ describe('terminal UI', () => {
 
     const app = render(<App runtime={h.runtime} />);
     try {
-      const frame = await waitFor(() => app.lastFrame(), '● debug');
-      expect(frame).toContain('hf-debug.log');
+      // Anchored on the tail: the marker is drawn `truncate-start`, so on a
+      // narrow frame it is the path that survives and the words that go.
+      const frame = await waitFor(() => app.lastFrame(), '/tmp/hf-debug.log');
+      expect(frame).toContain('debug');
     } finally {
       app.unmount();
     }
@@ -110,6 +112,56 @@ describe('terminal UI', () => {
       });
       await waitFor(() => app.lastFrame(), `${DOT_IDLE} claude`);
     } finally {
+      app.unmount();
+    }
+  });
+
+  it('opens the roll with the planner: the agent it routes through, and on what', async () => {
+    const h = harness({
+      agents: { claude: fakeAgent({ script: () => [] }) },
+      config: { orchestration: { provider: 'acp', acp: { agent: 'claude', model: 'haiku' } } },
+    });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      // Spelled the way the mention that moves it is, and marked with a
+      // diamond: it is the only entry on the line that is not an agent.
+      const frame = await waitFor(() => app.lastFrame(), `${PLAN_IDLE} claude:haiku`);
+      // The agent it plans through still stands in the roll on its own — that
+      // is a different session, doing different work.
+      expect(frame).toContain(`${DOT_IDLE} claude`);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('fills the planner’s diamond while it is the one working', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const llm: ChatClient = {
+      async chat() {
+        await held;
+        return JSON.stringify({ action: 'answer', message: 'an answer.' });
+      },
+    };
+    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) }, llm });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      // A local endpoint has no agent to name, so the model stands alone.
+      await waitFor(() => app.lastFrame(), `${PLAN_IDLE} google/gemma-3-12b`);
+
+      app.stdin.write('go\r');
+      const working = await waitFor(() => app.lastFrame(), `${PLAN_BUSY} google/gemma-3-12b`);
+      // The agent is not working: nothing has been delegated to it.
+      expect(working).toContain(`${DOT_IDLE} claude`);
+    } finally {
+      release();
       app.unmount();
     }
   });
@@ -616,6 +668,49 @@ describe('terminal UI', () => {
       // Tab fills the whole address in and closes it with a space; nothing is sent.
       await press('\t');
       await waitFor(plain, `${PROMPT_CHAR} @gemini:gemini-3.5-flash`);
+      expect(h.runtime.transcript.all().filter((r) => r.type === 'user')).toHaveLength(0);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('walks the planner’s address: the agent behind the colon, then its model', async () => {
+    const h = harness({
+      agents: {
+        gemini: fakeAgent({ models: ['gemini-3.5-flash', 'gemini-3.5-pro'], script: () => [] }),
+      },
+    });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    const plain = () => (app.lastFrame() ?? '').replace(/\[[0-9;]*m/g, '');
+    const press = async (...keys: string[]) => {
+      for (const key of keys) {
+        app.stdin.write(key);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    };
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+
+      // The planner stands in the roster an at-sign opens, beside the agents.
+      await press(...'@orch');
+      await waitFor(() => app.lastFrame(), '@orchestrator');
+      await press('\r');
+      await waitFor(plain, `${PROMPT_CHAR} @orchestrator`);
+
+      // Behind its colon the rows are agents, offered as the `:segment` of the
+      // address they are being typed into rather than as `@` names of their own.
+      await press(':');
+      await waitFor(() => app.lastFrame(), ':gemini');
+      await press('\r');
+      await waitFor(plain, `${PROMPT_CHAR} @orchestrator:gemini`);
+
+      // And behind the next colon they are that agent's models again.
+      await press(':');
+      await waitFor(() => app.lastFrame(), ':gemini-3.5-pro');
+      await press('\t');
+      await waitFor(plain, `${PROMPT_CHAR} @orchestrator:gemini:gemini-3.5-flash`);
       expect(h.runtime.transcript.all().filter((r) => r.type === 'user')).toHaveLength(0);
     } finally {
       app.unmount();

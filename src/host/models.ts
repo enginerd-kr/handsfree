@@ -46,3 +46,29 @@ export function matchModel<T extends { value: string }>(
   if (hits.length === 0) return undefined;
   return hits.length === 1 ? hits[0] : hits;
 }
+
+/**
+ * The one model `wanted` names on a roster, or an error a person can act on.
+ * Nothing and several are both answered with what the agent actually offers,
+ * because someone who typed a name blind is asking what the names are.
+ */
+export function resolveModel<T extends { value: string }>(
+  wanted: string,
+  choices: readonly T[],
+  who: string,
+): T {
+  const resolved = matchModel(wanted, choices);
+  if (resolved === undefined) {
+    throw new Error(
+      `${who} offers no model matching "${wanted}". It offers: ` +
+        `${choices.map((choice) => choice.value).join(', ')}.`,
+    );
+  }
+  if (Array.isArray(resolved)) {
+    throw new Error(
+      `"${wanted}" could be any of ${resolved.map((c) => c.value).join(', ')} — ` +
+        'say more of the name.',
+    );
+  }
+  return resolved;
+}

@@ -8,6 +8,7 @@
     },
     "acp": {
       "agent": "claude",
+      "model": "haiku",
       "timeoutMs": 120000
     },
     "maxHistoryMessages": 30
