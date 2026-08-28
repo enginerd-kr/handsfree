@@ -2,12 +2,12 @@
 
 # handsfree
 
-**An agent orchestrator for Claude Code, Gemini CLI and Codex — one line in, routed to whichever agent suits it.**
+**An agent orchestrator for Claude Code, Gemini CLI, and Codex — a single prompt input, routed to the ideal agent.**
 
-A small model plans each turn; the agents do the work, each keeping its own memory of the run so nothing gets re-read or re-explained.
+A lightweight planning model orchestrates each turn, while specialized agents execute the tasks. Each agent maintains its own session memory, preventing redundant re-reading or re-explanation of context.
 
 [![ci](https://github.com/enginerd-kr/handsfree/actions/workflows/ci.yml/badge.svg)](https://github.com/enginerd-kr/handsfree/actions/workflows/ci.yml)
-[![licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen.svg)](package.json)
 
 </div>
@@ -23,9 +23,9 @@ A small model plans each turn; the agents do the work, each keeping its own memo
 
 ## Why
 
-A coding agent is expensive to keep warm and wasteful to re-brief. handsfree keeps the expensive part — an agent's read files, its understanding of the code, what it just changed — alive in its own session for the whole run, and asks a small model to do only the cheap part: deciding which agent a task suits, and remembering a one-line ledger of what already happened.
+Coding agents are expensive to initialize and wasteful to re-brief. `handsfree` preserves the stateful, context-heavy components—such as read files, codebase comprehension, and active modifications—within dedicated agent sessions throughout the run. It delegates the lower-cost tasks of routing and state-keeping to a lightweight planning model, which decides the appropriate agent for each step and maintains a minimal, high-level ledger of the conversation.
 
-The result is one thing said once. You say what you want; the right agent gets it, on top of everything it already knows.
+The result is extreme context efficiency: you state your intent once, and the optimal agent acts on it, building seamlessly upon its accumulated context.
 
 ## Install
 
@@ -33,7 +33,7 @@ The result is one thing said once. You say what you want; the right agent gets i
 pnpm install && pnpm build
 ```
 
-You'll also need whichever agents you plan to use, each logged in with its own CLI (`claude /login`, `gemini`, `codex login`), and a model to do the routing — a local OpenAI-compatible endpoint by default, or one of the agents themselves.
+You'll also need whichever CLI agents you plan to use, each authenticated locally (e.g., via `claude /login`, `gemini`, or `codex login`), and an LLM to handle routing. By default, `handsfree` expects a local OpenAI-compatible endpoint, but you can also use one of the CLI agents themselves for routing.
 
 ```bash
 handsfree doctor     # checks every agent and the routing model in one pass
@@ -46,22 +46,22 @@ handsfree                      # terminal UI
 handsfree run "add a test"     # one turn, no UI
 ```
 
-Just say what you want, and the planner picks who takes it:
+Simply describe your goal, and the planner automatically routes it to the most capable agent:
 
 ```
 > fix the failing tests
 ```
 
-Address an agent yourself with `@`, and a model with `:` after its name:
+You can also explicitly address an agent using `@`, and optionally specify a target model using `:` after its name:
 
 ```
 > @claude summarise this file
-> @codex:gpt-5.6 write a test first
+> @codex:gpt-4o write a test first
 ```
 
-A line starting with `/` is a command. `/agents` lists who's on the roster, `/help` lists the rest, and `.handsfree/commands/*.md` beside your project adds your own.
+Lines starting with `/` are interpreted as commands. `/agents` lists the active roster, `/help` displays all available commands, and you can extend this by adding custom markdown-defined commands in `.handsfree/commands/*.md` within your project directory.
 
-The directory you start handsfree in is the workspace — the one place agents read and write.
+The directory where you launch `handsfree` serves as the workspace—the single, sandboxed directory where all agents read and write.
 
 ## Supported agents
 
@@ -73,32 +73,13 @@ The directory you start handsfree in is the workspace — the one place agents r
 
 Any other agent that speaks ACP works the same way — add it under `agents` in the settings file and it joins the roster.
 
-## ACP
-
-Agents plug in over the [Agent Client Protocol](https://agentclientprotocol.com): handsfree starts each one as a child process, and every `fs/*`, `terminal/*`, `elicitation/create` and `session/request_permission` call it makes comes back to handsfree rather than running unsupervised. Any ACP agent can join the roster this way — a launch command and a role is all it takes; the rest that claude, gemini and codex get out of the box (a default role, a colour, the odd adapter quirk) is convenience, not a requirement.
-
-```
-            you
-           │
-  orchestration model ── routes, summarises. Never decides permissions.
-           │
-    ┌────┴────────────────────────────────────────────┐
-    │   handsfree · ACP host                          │
-    │     session/request_permission   → policy       │
-    │     fs/*                         → policy       │
-    │     terminal/*                   → policy       │
-    │     elicitation/create           → you          │
-    └────┬──────────────────┬──────────────┬──────────┘
-         claude-agent-acp   gemini --acp   codex-acp
-```
-
 ## Settings
 
-Read from two files and layered, project over user:
+Configuration is loaded from two locations and layered, with project-specific settings taking precedence over user-level configurations:
 
 ```
-./handsfree.config.json                 this checkout, and it wins
-~/.config/handsfree/config.json         you, on this machine
+./handsfree.config.json                 Project-level configuration (committed/specific to workspace)
+~/.config/handsfree/config.json         User-level global configuration (specific to your machine)
 ```
 
 ```json
@@ -107,7 +88,7 @@ Read from two files and layered, project over user:
 "orchestration": { "provider": "local", "local": { "baseURL": "http://localhost:1234/v1" } }
 ```
 
-`/config` shows what's loaded and from where. See `handsfree.config.example.json` for the full shape — everything else has a sensible default.
+Use the `/config` command to inspect active settings and their origins. Refer to `handsfree.config.example.json` for the complete configuration schema—all options have sensible built-in defaults.
 
 ## Development
 
@@ -117,6 +98,6 @@ pnpm test
 pnpm screenshots     # re-shoot every picture in this README, from the real TUI
 ```
 
-## Licence
+## License
 
 MIT
