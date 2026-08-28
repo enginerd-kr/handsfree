@@ -6,11 +6,15 @@ import type { Escalator } from './policy/types.js';
 import { AgentPool, type PoolOptions } from './host/pool.js';
 import { Conversation } from './orchestrator/conversation.js';
 import { Transcript } from './workspace/transcript.js';
+import { pruneOldRuns } from './workspace/prune.js';
 import { Workspace } from './workspace/workspace.js';
 import type { Jail } from './policy/jail.js';
 import { debug } from './debug.js';
 import { loadCommands } from './slash/registry.js';
 import type { Command, CommandHost } from './slash/command.js';
+
+/** Long enough that pruning never races startup, short enough to actually run. */
+const PRUNE_DELAY_MS = 5_000;
 
 export interface RuntimeOptions {
   config: Config;
@@ -123,6 +127,19 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     commands: registry.commands,
   });
 
+  // Old runs are swept a beat after startup rather than during it: the delay
+  // keeps disk housekeeping off the launch path, and an unref'd timer lets a
+  // short-lived process exit without waiting around to clean. The current run
+  // is named so the sweep can never eat the floor it stands on.
+  const prune = setTimeout(() => {
+    try {
+      pruneOldRuns(config.workspaceRoot, config.cleanupPeriodDays, workspace.id);
+    } catch (err) {
+      debug('prune', `sweep failed: ${(err as Error).message}`);
+    }
+  }, PRUNE_DELAY_MS);
+  prune.unref();
+
   const conversation = new Conversation({
     config,
     pool,
@@ -145,6 +162,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     commandHost,
     setEscalator: (escalator) => policy.setEscalator(escalator),
     async close() {
+      clearTimeout(prune);
       // The conversation goes first, and the agents are killed while it winds
       // down so its pending requests reject instead of running out a grace
       // period. Only once the turn has settled — nothing left that could

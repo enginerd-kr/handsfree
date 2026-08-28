@@ -188,6 +188,12 @@ export const ConfigSchema = z
   .object({
     /** Where session workspaces are created. Resolved to an absolute path at load. */
     workspaceRoot: z.string().default(''),
+    /**
+     * Runs older than this many days are deleted shortly after startup —
+     * transcript, sessions and workspace together. 0 turns pruning off and
+     * keeps everything forever.
+     */
+    cleanupPeriodDays: z.number().int().nonnegative().default(30),
     orchestration: OrchestrationSchema.prefault({}),
     proxy: ProxySchema,
     agents: z.record(z.string(), AgentProfileSchema).prefault(DEFAULT_AGENTS),
