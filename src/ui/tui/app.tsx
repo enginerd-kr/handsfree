@@ -37,8 +37,9 @@ import {
   GLYPH,
   HEADER_INK,
   MASCOT,
-  MASCOT_BLINK,
   MASCOT_STAGE,
+  mascot,
+  type Stance,
   PROMPT_BAND,
   SAYINGS,
   stage,
@@ -72,15 +73,30 @@ function between([low, high]: readonly [number, number]): number {
 
 /**
  * The wander: the gait per column, the range of a pause wherever the walk
- * ends, the range of the long sit at home between outings, and how long a
- * saying hangs in the air. The gait itself is steady; it is what the mark
- * does next that stays unpredictable, for the same reason the blink's waits
- * are ranges.
+ * ends, the range of the breather at home between outings — with a shorter
+ * one before the very first, so the mark reads as alive from the opening
+ * frame — and how long a saying hangs in the air. The gait itself is steady;
+ * it is what the mark does next that stays unpredictable, for the same
+ * reason the blink's waits are ranges.
  */
 const WANDER_STEP_MS = 90;
 const WANDER_PAUSE_MS = [1200, 3500] as const;
-const WANDER_HOME_MS = [15000, 35000] as const;
+const WANDER_HOME_MS = [6000, 14000] as const;
+const WANDER_OPEN_MS = [1500, 3500] as const;
 const SAY_MS = [1800, 3200] as const;
+
+/**
+ * The poses: how long a sit on the ground lasts, how long the mark stands at
+ * ease with its arms dropped, and the three beats of a jump — the dip, the
+ * hang in the air, and the landing before anything else happens. The jump's
+ * beats are fixed because a jump has a rhythm; the holds are ranges for the
+ * same reason the blink's waits are.
+ */
+const SIT_MS = [4000, 9000] as const;
+const EASY_MS = [2000, 4500] as const;
+const JUMP_DIP_MS = 160;
+const JUMP_AIR_MS = 260;
+const JUMP_LAND_MS = 420;
 
 /** How many columns a clean exit takes: every cell of the mark, edge to edge. */
 const WANDER_SPAN = [...MASCOT[0]].length;
@@ -845,15 +861,16 @@ function useBlink(): boolean {
   return shut;
 }
 
-/** Where the mark stands on its stage and what, if anything, it is saying. */
-type Pose = { x: number; say?: string; side?: 'left' | 'right' };
+/** Where the mark stands on its stage, how it holds itself, and what, if anything, it is saying. */
+type Pose = { x: number; stance?: Stance; say?: string; side?: 'left' | 'right' };
 
 /**
- * The mark's wandering, one timer at a time, chained: a long sit at the
+ * The mark's wandering, one timer at a time, chained: a breather at the
  * middle of its stage, then an outing — a clean exit off the left edge, a
- * peek back, a hop to anywhere on the stage, or a word thrown from right
- * where it stands — and as long as the mood holds, another. A saying goes
- * out the side the mark has space on, so it lands left of the mark as
+ * peek back, a hop to anywhere on the stage, a word thrown from right where
+ * it stands, a jump on the spot, a sit on the ground, or a spell at ease
+ * with its arms dropped — and as long as the mood holds, another. A saying
+ * goes out the side the mark has space on, so it lands left of the mark as
  * readily as right. The stage itself never moves — `stage` clips the walk
  * at its left edge — so the margin holds however far the mark goes.
  */
@@ -874,13 +891,18 @@ function useWander(): Pose {
       setPose({ x: at });
       timer = setTimeout(outing, between(WANDER_HOME_MS));
     };
+    // Anything worth watching happens on stage: a word, a jump, or a sit
+    // from an empty stage reads as a glitch rather than a joke, so offstage
+    // the mark first comes home.
+    const seen = (deed: (then: () => void) => void, then: () => void) => {
+      if (at < 0) return walk(WANDER_HOME, () => deed(then));
+      deed(then);
+    };
     // A word goes out from wherever the mark already stands — the stage
     // keeps room for the widest saying on each side of any visible column,
     // so the mark never shuffles to make space. Which side only matters
-    // when both fit; offstage it first comes home, since a voice from an
-    // empty stage reads as a glitch rather than a joke.
+    // when both fit.
     const speak = (then: () => void) => {
-      if (at < 0) return walk(WANDER_HOME, () => speak(then));
       const saying = SAYINGS[Math.floor(Math.random() * SAYINGS.length)] ?? '';
       const width = columns(saying);
       const fitsRight = at + WANDER_SPAN + 1 + width <= MASCOT_STAGE;
@@ -890,24 +912,47 @@ function useWander(): Pose {
       setPose({ x: at, say: saying, side });
       timer = setTimeout(then, between(SAY_MS));
     };
+    // A stance held where the mark stands, then let go.
+    const hold = (stance: Stance, ms: number, then: () => void) => {
+      setPose({ x: at, stance });
+      timer = setTimeout(then, ms);
+    };
+    const sit = (then: () => void) => hold('sit', between(SIT_MS), then);
+    const ease = (then: () => void) => hold('easy', between(EASY_MS), then);
+    // A jump is three beats — the dip, the hang, the landing — and while the
+    // spring holds, another off the same landing.
+    const jump = (then: () => void) => {
+      hold('sit', JUMP_DIP_MS, () =>
+        hold('air', JUMP_AIR_MS, () => {
+          setPose({ x: at });
+          timer = setTimeout(() => (Math.random() < 0.4 ? jump(then) : then()), JUMP_LAND_MS);
+        }),
+      );
+    };
     const onward = () => {
       timer = setTimeout(() => {
-        if (Math.random() < 0.4) return outing();
+        if (Math.random() < 0.6) return outing();
         walk(WANDER_HOME, rest);
       }, between(WANDER_PAUSE_MS));
     };
     const outing = () => {
       const roll = Math.random();
-      if (roll < 0.35) return speak(onward);
+      if (roll < 0.2) return seen(speak, onward);
+      if (roll < 0.34) return seen(jump, onward);
+      if (roll < 0.46) return seen(sit, onward);
+      if (roll < 0.56) return seen(ease, onward);
       const target =
-        roll < 0.55
+        roll < 0.72
           ? -WANDER_SPAN
-          : roll < 0.7
+          : roll < 0.82
             ? 2 - WANDER_SPAN
             : Math.floor(Math.random() * (WANDER_ROAM + 1));
       walk(target, onward);
     };
-    rest();
+    // The first outing comes on the heels of the opening frame — a mark that
+    // holds its launch pose for half a minute reads as a static logo.
+    setPose({ x: at });
+    timer = setTimeout(outing, between(WANDER_OPEN_MS));
     return () => clearTimeout(timer);
   }, []);
   return pose;
@@ -924,8 +969,8 @@ function useWander(): Pose {
  * of the path is the part worth keeping.
  */
 function Header({ runtime }: { runtime: Runtime }): React.JSX.Element {
-  const { x, say, side } = useWander();
-  const mascot = stage(useBlink() ? MASCOT_BLINK : MASCOT, x, say, side);
+  const { x, stance, say, side } = useWander();
+  const mark = stage(mascot(stance, useBlink()), x, say, side);
   const agents = Object.entries(runtime.config.agents)
     .filter(([, profile]) => profile.enabled)
     .map(([id]) => id);
@@ -937,7 +982,7 @@ function Header({ runtime }: { runtime: Runtime }): React.JSX.Element {
   return (
     <Box margin={1} gap={2} flexShrink={0}>
       <Box flexDirection="column" flexShrink={0} width={MASCOT_STAGE}>
-        {mascot.map((line, index) => (
+        {mark.map((line, index) => (
           <Text key={index} wrap="truncate">
             {line}
           </Text>

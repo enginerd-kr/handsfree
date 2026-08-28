@@ -5,21 +5,75 @@ import {
   BRAND,
   columns,
   MASCOT,
-  MASCOT_BLINK,
   MASCOT_STAGE,
+  mascot,
   SAYINGS,
   shimmer,
   stage,
+  type Stance,
 } from './theme.js';
 
 describe('the welcome mark', () => {
+  const stances: Stance[] = ['stand', 'easy', 'sit', 'air'];
+
   // The header is a fixed number of rows of a fixed width — that is what a
-  // click's row is measured against — so a blink may only swap glyphs.
-  it('keeps its shape while it blinks', () => {
-    expect(MASCOT_BLINK).toHaveLength(MASCOT.length);
-    expect(MASCOT_BLINK.map((line) => [...line].length)).toEqual(
-      MASCOT.map((line) => [...line].length),
-    );
+  // click's row is measured against — so a blink or a pose may only swap
+  // glyphs, never a row or a cell.
+  it('keeps its shape through every stance, eyes open or shut', () => {
+    for (const stance of stances) {
+      for (const shut of [false, true]) {
+        const posed = mascot(stance, shut);
+        expect(posed).toHaveLength(MASCOT.length);
+        expect(posed.map((line) => [...line].length)).toEqual(
+          MASCOT.map((line) => [...line].length),
+        );
+      }
+    }
+  });
+
+  it('stands by default, the mark the header opens with', () => {
+    expect(mascot()).toEqual([...MASCOT]);
+  });
+
+  // A blink is the two corner holes of the top row filling in — the head is
+  // the only row that changes, wherever the stance has put it.
+  it('shuts only its eyes in any stance', () => {
+    for (const stance of stances) {
+      const open = mascot(stance);
+      const shut = mascot(stance, true);
+      const changed = open.filter((line, row) => line !== shut[row]);
+      expect(changed).toHaveLength(1);
+      expect(changed[0]).toContain('▛');
+    }
+  });
+
+  // Sitting, the whole mark drops a row — head on the middle row, body on
+  // the ground, feet tucked out of sight — and the top row goes empty.
+  it('sits a row lower with its feet tucked under it', () => {
+    const [top, middle, bottom] = mascot('sit');
+    expect(top.trim()).toBe('');
+    expect(middle).toBe(mascot()[0]);
+    expect(bottom.trim()).not.toBe('');
+  });
+
+  // Mid-jump the feet leave the bottom row entirely; the head and body hold
+  // their standing rows, so only the ground opens up beneath the mark.
+  it('leaves the ground row empty mid-jump', () => {
+    const [top, middle, bottom] = mascot('air');
+    expect(bottom.trim()).toBe('');
+    expect(top).toBe(mascot()[0]);
+    expect(middle).toBe(mascot()[1]);
+  });
+
+  // At ease only the arms move: the nubs at the body's edges drop from the
+  // top half of their cells to the bottom half.
+  it('drops only its arms at ease', () => {
+    const stand = mascot();
+    const easy = mascot('easy');
+    expect(easy[0]).toBe(stand[0]);
+    expect(easy[2]).toBe(stand[2]);
+    expect(easy[1]).not.toBe(stand[1]);
+    expect([...easy[1]].slice(1, -1).join('')).toBe([...stand[1]].slice(1, -1).join(''));
   });
 });
 

@@ -112,17 +112,44 @@ export const RESULT_INDENT = ' ';
  * The startup mark, drawn the way Claude Code draws its condensed logo: three
  * rows of quadrant blocks in the terminal's own ink — the same light the
  * header's name is set in — with the background showing through as the face.
+ *
+ * The mark is built from parts so it can hold a pose: a head whose eyes are
+ * the corner missing from each of ▛ and ▜ — shut, those corners fill in — a
+ * body whose outer nubs are arms riding the top or the bottom of their cell,
+ * a row of feet, and a row of nothing. Every part keeps the same nine cells,
+ * so no pose can shift what sits beside or below the mark; the header's row
+ * count is what a click is measured against.
  */
-export const MASCOT = [' ▐▛███▜▌ ', '▝▜█████▛▘', '  ▘▘ ▝▝  '] as const;
+const HEAD = ' ▐▛███▜▌ ';
+const HEAD_SHUT = ' ▐█████▌ ';
+const ARMS_UP = '▝▜█████▛▘';
+const ARMS_DOWN = '▗▜█████▛▖';
+const FEET = '  ▘▘ ▝▝  ';
+const AIR = ' '.repeat([...HEAD].length);
 
 /**
- * The same mark with its eyes shut: the two small holes the top row carries —
- * the corner missing from each of ▛ and ▜ — filled in. Only that row changes
- * and it keeps the same nine cells, so a blink can never shift what sits
- * beside or below the mark; the header's row count is what a click is
- * measured against.
+ * The stances the mark holds: upright with its arms raised, at ease with
+ * them dropped, sat on the ground — the whole mark a row lower, its feet
+ * tucked under it — and mid-jump, feet off the bottom row entirely.
  */
-export const MASCOT_BLINK = [' ▐█████▌ ', MASCOT[1], MASCOT[2]] as const;
+export type Stance = 'stand' | 'easy' | 'sit' | 'air';
+
+/** The mark in a stance, eyes open or shut — always three rows of nine cells. */
+export function mascot(stance: Stance = 'stand', shut = false): readonly [string, string, string] {
+  const head = shut ? HEAD_SHUT : HEAD;
+  switch (stance) {
+    case 'easy':
+      return [head, ARMS_DOWN, FEET];
+    case 'sit':
+      return [AIR, head, ARMS_DOWN];
+    case 'air':
+      return [head, ARMS_UP, AIR];
+    default:
+      return [head, ARMS_UP, FEET];
+  }
+}
+
+export const MASCOT = mascot();
 
 /**
  * What the mark says when the mood takes it: a greeting, a hurry-up, an
