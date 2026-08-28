@@ -37,7 +37,7 @@
   "capabilities": {
     "readTextFile": true,
     "writeTextFile": true,
-    "terminal": false,
+    "terminal": true,
     "elicitation": true
   },
 
@@ -45,10 +45,10 @@
     "workspaceOnly": true,
     "fs": { "read": "allow", "write": "allow", "outside": "deny", "followSymlinks": false },
     "exec": {
-      "enabled": false,
+      "enabled": true,
       "mode": "allowlist",
-      "allow": ["git status", "git diff", "git log", "ls", "cat", "pnpm test", "pnpm build"],
-      "shellOperators": "deny",
+      "otherwise": "ask",
+      "shellOperators": "ask",
       "timeoutMs": 120000,
       "outputByteLimit": 262144,
       "env": ["PATH", "HOME", "LANG", "TERM", "TMPDIR"]

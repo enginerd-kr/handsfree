@@ -172,7 +172,7 @@ describe('expansion through the policy engine', () => {
     await h.runtime.conversation.send('/push');
 
     expect(lastPrompt(llm.seen)).toContain('[handsfree refused to run git push origin main');
-    expect(decisions(h).at(-1)?.entry).toMatchObject({ verdict: 'deny', rule: 'exec.allowlist' });
+    expect(decisions(h).at(-1)?.entry).toMatchObject({ verdict: 'deny', rule: 'exec.otherwise' });
   });
 
   it('refuses every command when running commands is switched off', async () => {

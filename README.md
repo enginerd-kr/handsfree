@@ -193,7 +193,7 @@ The conventions we hold to are in @CONVENTIONS.md.
   - run git push origin main
 ```
 
-A refusal is written into the prompt where the output would have been, and the model is told plainly that it was refused rather than being handed a prompt with a hole in it. Out of the box `policy.exec.enabled` is `false`, so every `` !`cmd` `` is refused until you turn it on and say what may run.
+A refusal is written into the prompt where the output would have been, and the model is told plainly that it was refused rather than being handed a prompt with a hole in it. The allowlist below is the one that applies: `` !`git diff` `` runs, `` !`git commit` `` asks you first.
 
 One thing worth knowing: they run against **the workspace** — the directory you started in, or the empty one under `~/.handsfree` if you passed `--sandbox`.
 
@@ -207,7 +207,7 @@ Three questions, one answer each, and every answer on the record.
 "policy": {
   "workspaceOnly": true,
   "fs":   { "read": "allow", "write": "allow", "outside": "deny", "followSymlinks": false },
-  "exec": { "enabled": true, "mode": "allowlist", "allow": ["pnpm test", "git status", "git diff"] },
+  "exec": { "enabled": true, "mode": "allowlist", "otherwise": "ask", "shellOperators": "ask" },
   "escalation": ["user"]
 }
 ```
@@ -216,7 +216,11 @@ Three questions, one answer each, and every answer on the record.
 - **`deny`** — it does not, and the agent is told why. A refusal is final; asking again will not change it.
 - **`ask`** — the turn stops and the question comes to you, as the screenshot under [Why](#why) shows.
 
-`exec` is off by default: a file-only host has a much smaller blast radius. Commands are run directly rather than through a shell, so a shell operator needs its own verdict, and every path an agent names must resolve inside the workspace — a symlink pointing out of it is not a way around that.
+`allow` is a list of token prefixes: `git status` matches `git status --short`, `ls` matches `ls` with anything after it. The built-in list is the reading half of a coding task plus the verbs that close the loop on a change — `ls cat head tail wc stat file pwd echo which tree diff grep rg`, `git status/diff/log/show/branch/blame`, and `pnpm`/`npm`/`yarn` test and build, `cargo`, `go`, `pytest`, `ruff check`, `mypy`, `make`. Writing your own `allow` replaces that list rather than adding to it. `find` is left off it on purpose: `-delete` and `-exec` make it a writing tool wearing a reader's name.
+
+What the list does not name is `otherwise`, and out of the box `otherwise` is **you**. `git commit`, `pnpm install`, a script the agent wrote a moment ago — each is shown and waited on rather than refused, because a coding agent legitimately reaches past any list written in advance, and the question is who decides, not whether the list was complete. `shellOperators` is the same answer to a neighbouring question: a `|`, a `&&`, a `>` is where our reading of a script stops, so the script goes to you whole rather than being emulated. `sudo`, `mkfs` and `shutdown` are refused before either question is asked, and no approval reaches past that.
+
+With nobody to ask — `handsfree run`, CI, a prompt nobody answers in time — every `ask` is a denial, so unattended runs stay exactly as tight as an allowlist. `"enabled": false` turns the lot off and makes handsfree a file-only host again. Commands are run directly rather than through a shell, and every path an agent names must resolve inside the workspace — a symlink pointing out of it is not a way around that.
 
 Two things are deliberately absent: there is no `permissionMode`, `approvalMode` or `sandbox` setting per agent, and no way to express a bypass flag.
 

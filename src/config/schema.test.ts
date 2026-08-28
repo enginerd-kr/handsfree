@@ -67,10 +67,14 @@ describe('defaults', () => {
     expect(parsed.success).toBe(false);
   });
 
-  it('keeps command execution off until it is asked for', () => {
+  it('arrives able to run a coding task, and says what needs no person', () => {
     const config = ConfigSchema.parse({});
-    expect(config.capabilities.terminal).toBe(false);
-    expect(config.policy.exec.enabled).toBe(false);
+    expect(config.capabilities.terminal).toBe(true);
+    expect(config.policy.exec.enabled).toBe(true);
+    expect(config.policy.exec.allow).toContain('pnpm test');
+    // On the list runs silently; off it is a question; outside the workspace is
+    // neither, whatever the list says.
+    expect(config.policy.exec.otherwise).toBe('ask');
     expect(config.policy.fs.outside).toBe('deny');
   });
 

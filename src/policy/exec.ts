@@ -13,6 +13,8 @@ export type ExecCheck =
 export interface ExecPolicy {
   mode: 'allowlist' | 'ask' | 'deny';
   allow: string[];
+  /** What becomes of a command the allowlist does not name. */
+  otherwise: 'allow' | 'ask' | 'deny';
   shellOperators: 'allow' | 'ask' | 'deny';
 }
 
@@ -36,15 +38,6 @@ export function checkExec(request: ExecRequest, policy: ExecPolicy): ExecCheck {
 
   const flat = flatten(request);
   if (!flat.ok) return { outcome: 'deny', rule: flat.rule, reason: flat.reason };
-  if (flat.operator) {
-    const reason = `shell operator ${flat.operator} in "${flat.script}"`;
-    if (policy.shellOperators === 'deny') {
-      return { outcome: 'deny', rule: 'exec.shellOperators', reason };
-    }
-    if (policy.shellOperators === 'ask') {
-      return { outcome: 'ask', rule: 'exec.shellOperators', argv: flat.argv, reason };
-    }
-  }
 
   const argv = flat.argv;
   if (argv.length === 0) {
@@ -56,10 +49,23 @@ export function checkExec(request: ExecRequest, policy: ExecPolicy): ExecCheck {
     }
   }
 
+  // Before the script around it is judged, the command itself is: `sudo` at the
+  // head of a pipeline is still `sudo`, and a refusal nobody can approve their
+  // way past must not become a question just because a `|` came after it.
   const name = path.basename(argv[0]!);
   for (const { pattern, reason } of NEVER) {
     if (pattern.test(name)) {
       return { outcome: 'deny', rule: 'exec.never', reason };
+    }
+  }
+
+  if (flat.operator) {
+    const reason = `shell operator ${flat.operator} in "${flat.script}"`;
+    if (policy.shellOperators === 'deny') {
+      return { outcome: 'deny', rule: 'exec.shellOperators', reason };
+    }
+    if (policy.shellOperators === 'ask') {
+      return { outcome: 'ask', rule: 'exec.shellOperators', argv, reason };
     }
   }
 
@@ -69,11 +75,13 @@ export function checkExec(request: ExecRequest, policy: ExecPolicy): ExecCheck {
 
   const matched = policy.allow.find((entry) => matches(entry, argv, name));
   if (matched) return { outcome: 'allow', rule: `exec.allow:${matched}`, argv };
-  return {
-    outcome: 'deny',
-    rule: 'exec.allowlist',
-    reason: `"${render(argv)}" is not on the command allowlist`,
-  };
+
+  // Not on the list is a question, not a verdict — unless the settings say
+  // otherwise, or there is nobody to ask, which the engine answers as a denial.
+  const reason = `"${render(argv)}" is not on the command allowlist`;
+  if (policy.otherwise === 'allow') return { outcome: 'allow', rule: 'exec.otherwise', argv };
+  if (policy.otherwise === 'ask') return { outcome: 'ask', rule: 'exec.otherwise', argv, reason };
+  return { outcome: 'deny', rule: 'exec.otherwise', reason };
 }
 
 /** True when `entry`'s tokens are a prefix of `argv`, comparing argv[0] by basename. */

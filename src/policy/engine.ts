@@ -284,6 +284,7 @@ export class PolicyEngine {
       {
         mode: this.policy.exec.mode,
         allow: this.policy.exec.allow,
+        otherwise: this.policy.exec.otherwise,
         shellOperators: this.policy.exec.shellOperators,
       },
     );

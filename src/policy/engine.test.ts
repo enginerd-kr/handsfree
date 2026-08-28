@@ -42,13 +42,35 @@ describe('PolicyEngine', () => {
     ).toBe('deny');
   });
 
-  it('refuses commands until execution is switched on', async () => {
-    const off = engine();
+  it('runs what the default allowlist names, and nothing once execution is off', async () => {
     const request: PolicyRequest = { kind: 'exec', command: 'git', args: ['status'], cwd: root, ...where };
-    expect((await off.resolve(request)).rule).toBe('exec.disabled');
+    expect((await engine().resolve(request)).verdict).toBe('allow');
 
-    const on = engine({ exec: { enabled: true, allow: ['git status'] } });
-    expect((await on.resolve(request)).verdict).toBe('allow');
+    const off = engine({ exec: { enabled: false } });
+    expect((await off.resolve(request)).rule).toBe('exec.disabled');
+  });
+
+  it('puts a command the allowlist does not name to the person, not to a rule', async () => {
+    const asked: string[] = [];
+    const escalator: Escalator = {
+      ask: (request) => {
+        asked.push(request.summary);
+        return Promise.resolve(true);
+      },
+    };
+    const request: PolicyRequest = {
+      kind: 'exec',
+      command: 'git',
+      args: ['commit', '-m', 'wip'],
+      cwd: root,
+      ...where,
+    };
+    const decision = await engine({}, escalator).resolve(request);
+    expect(decision).toMatchObject({ verdict: 'allow', rule: 'exec.otherwise', escalated: true });
+    expect(asked).toEqual(['run git commit -m wip']);
+
+    // The same request with nobody to ask — `handsfree run`, CI — is a denial.
+    expect((await engine().resolve(request)).verdict).toBe('deny');
   });
 
   it('refuses a command whose working directory is outside the workspace', async () => {
@@ -172,7 +194,7 @@ describe('PolicyEngine', () => {
       rawInput: { command: 'rm -rf /' },
       ...where,
     });
-    expect(decision).toMatchObject({ verdict: 'deny', rule: 'exec.allowlist' });
+    expect(decision).toMatchObject({ verdict: 'deny', rule: 'exec.otherwise' });
   });
 
   // The three shapes below are copied from a real codex-acp 0.16.0 turn.
@@ -227,7 +249,7 @@ describe('PolicyEngine', () => {
       rawInput: { command: ['/bin/zsh', '-lc', 'curl https://example.com'], cwd: root },
       ...where,
     });
-    expect(refused).toMatchObject({ verdict: 'deny', rule: 'exec.allowlist' });
+    expect(refused).toMatchObject({ verdict: 'deny', rule: 'exec.otherwise' });
   });
 
   it('applies the workspace boundary to a codex edit through its locations', async () => {

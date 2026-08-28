@@ -4,8 +4,40 @@ import { checkExec, scanScript, type ExecPolicy } from './exec.js';
 const allowlist: ExecPolicy = {
   mode: 'allowlist',
   allow: ['git status', 'pnpm test', 'node'],
+  otherwise: 'deny',
   shellOperators: 'deny',
 };
+
+describe('exec.otherwise', () => {
+  const command = { command: 'git', args: ['commit', '-m', 'wip'] };
+
+  it('asks about a command the allowlist does not name', () => {
+    const check = checkExec(command, { ...allowlist, otherwise: 'ask' });
+    expect(check).toMatchObject({ outcome: 'ask', rule: 'exec.otherwise' });
+  });
+
+  it('refuses it when the settings say so', () => {
+    expect(checkExec(command, allowlist)).toMatchObject({
+      outcome: 'deny',
+      rule: 'exec.otherwise',
+    });
+  });
+
+  it('leaves the allowlist itself silent', () => {
+    expect(checkExec({ command: 'git', args: ['status'] }, { ...allowlist, otherwise: 'ask' })).toMatchObject({
+      outcome: 'allow',
+      rule: 'exec.allow:git status',
+    });
+  });
+
+  it('never turns a refused command into a question because a pipe followed it', () => {
+    const piped = { command: 'sh', args: ['-c', 'sudo rm -rf / | tee log'] };
+    expect(checkExec(piped, { ...allowlist, otherwise: 'ask', shellOperators: 'ask' })).toMatchObject({
+      outcome: 'deny',
+      rule: 'exec.never',
+    });
+  });
+});
 
 describe('scanScript', () => {
   it('splits a plain command', () => {

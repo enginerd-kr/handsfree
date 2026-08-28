@@ -120,6 +120,67 @@ export type ProxyConfig = z.infer<typeof ProxySchema>;
 const Rule = z.enum(['allow', 'ask', 'deny']);
 export type RuleOutcome = z.infer<typeof Rule>;
 
+/**
+ * What a coding task reaches for before it reaches for anything else: reading
+ * the workspace, asking git what it looks like, and the verbs that close the
+ * loop on a change — run the tests, build, typecheck. Nothing on this list
+ * writes a file of its own or rewrites history, so nothing on it needs a person.
+ *
+ * Everything else is not refused: it is `exec.otherwise`, and out of the box
+ * `otherwise` is a person. Installing, committing, `curl`, a script the agent
+ * wrote a moment ago — those are decisions, and they are shown as one.
+ *
+ * `find` is the deliberate omission. `-delete` and `-exec` make it a mutation
+ * tool wearing a reader's name, and entries match on a prefix.
+ */
+export const DEV_ALLOWLIST = [
+  // Looking around.
+  'ls',
+  'cat',
+  'head',
+  'tail',
+  'wc',
+  'stat',
+  'file',
+  'pwd',
+  'echo',
+  'which',
+  'tree',
+  'diff',
+  'grep',
+  'rg',
+  // Git, as far as reading it goes.
+  'git status',
+  'git diff',
+  'git log',
+  'git show',
+  'git branch',
+  'git blame',
+  'git remote -v',
+  // Closing the loop on a change. These run the project's own scripts, which is
+  // the point: an agent that cannot run the tests cannot tell you they pass.
+  'pnpm test',
+  'pnpm build',
+  'pnpm typecheck',
+  'pnpm lint',
+  'npm test',
+  'npm run build',
+  'npm run test',
+  'yarn test',
+  'yarn build',
+  'cargo check',
+  'cargo build',
+  'cargo test',
+  'go build',
+  'go test',
+  'go vet',
+  'pytest',
+  'ruff check',
+  'mypy',
+  'make test',
+  'make build',
+];
+
 export const PolicySchema = z
   .object({
     /** Every path an agent touches must resolve inside the session workspace. */
@@ -136,13 +197,31 @@ export const PolicySchema = z
       .prefault({}),
     exec: z
       .object({
-        /** Off by default: a file-only host has a much smaller blast radius. */
-        enabled: z.boolean().default(false),
+        /**
+         * On, because an agent that cannot run the tests cannot tell you they
+         * pass — it can only tell you it thinks so. The blast radius is held by
+         * the three things below rather than by the switch: commands run in the
+         * workspace and nowhere else, the allowlist says what needs no person,
+         * and everything it does not name is shown to one.
+         */
+        enabled: z.boolean().default(true),
         mode: z.enum(['allowlist', 'ask', 'deny']).default('allowlist'),
         /** Token-prefix patterns, e.g. "git status", "pnpm test". */
-        allow: z.array(z.string()).default([]),
-        /** Commands are run directly; a shell script argument needs its own verdict. */
-        shellOperators: Rule.default('deny'),
+        allow: z.array(z.string()).default(DEV_ALLOWLIST),
+        /**
+         * A command the allowlist does not name. `ask` rather than `deny`
+         * because a coding agent legitimately reaches past any list somebody
+         * wrote in advance, and the question is who decides — not whether the
+         * list is complete. With nobody to ask, an `ask` is a denial, so
+         * `handsfree run` and CI stay exactly as tight as they were.
+         */
+        otherwise: Rule.default('ask'),
+        /**
+         * A pipe, a redirect, a `&&` — the part of the script we stop reading at.
+         * Judged by a person, who is shown the whole script, because emulating a
+         * shell well enough to decide it is not a thing we are going to do.
+         */
+        shellOperators: Rule.default('ask'),
         timeoutMs: z.number().int().positive().default(120_000),
         outputByteLimit: z.number().int().positive().default(256 * 1024),
         /** Environment variables forwarded to commands. Everything else is dropped. */
@@ -214,8 +293,14 @@ export const ConfigSchema = z
       .object({
         readTextFile: z.boolean().default(true),
         writeTextFile: z.boolean().default(true),
-        /** Declaring this makes handsfree the owner of every shell command. */
-        terminal: z.boolean().default(false),
+        /**
+         * Declaring this makes handsfree the owner of every shell command: it
+         * runs in the workspace, with the environment `policy.exec.env` allows
+         * and an output ceiling. Undeclared, an agent that wants a command runs
+         * it in its own shell instead — the one place a policy decision does not
+         * reach — so this follows `policy.exec.enabled` rather than sitting off.
+         */
+        terminal: z.boolean().default(true),
         elicitation: z.boolean().default(true),
       })
       .prefault({}),

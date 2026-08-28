@@ -278,9 +278,12 @@ describe('terminal gate', () => {
 
   it('refuses every command when execution is switched off', async () => {
     const results: { ok: boolean; detail: string }[] = [];
-    await runTurn(() => [
-      { do: 'exec', command: 'echo', args: ['hi'], onResult: (result) => results.push(result) },
-    ]);
+    await runTurn(
+      () => [
+        { do: 'exec', command: 'echo', args: ['hi'], onResult: (result) => results.push(result) },
+      ],
+      { policy: { exec: { enabled: false } } },
+    );
 
     expect(results[0]?.ok).toBe(false);
   });
