@@ -75,7 +75,7 @@ Any other agent that speaks ACP works the same way — add it under `agents` in 
 
 ## ACP
 
-Agents plug in over the [Agent Client Protocol](https://agentclientprotocol.com): handsfree starts each one as a child process, and every `fs/*`, `terminal/*` and `session/request_permission` call it makes comes back to handsfree rather than running unsupervised. That's the same seam that lets a new agent join — nothing agent-specific is hardcoded, only the launch command and what it's for.
+Agents plug in over the [Agent Client Protocol](https://agentclientprotocol.com): handsfree starts each one as a child process, and every `fs/*`, `terminal/*`, `elicitation/create` and `session/request_permission` call it makes comes back to handsfree rather than running unsupervised. Any ACP agent can join the roster this way — a launch command and a role is all it takes; the rest that claude, gemini and codex get out of the box (a default role, a colour, the odd adapter quirk) is convenience, not a requirement.
 
 ```
             you
@@ -87,6 +87,7 @@ Agents plug in over the [Agent Client Protocol](https://agentclientprotocol.com)
     │     session/request_permission   → policy       │
     │     fs/*                         → policy       │
     │     terminal/*                   → policy       │
+    │     elicitation/create           → you          │
     └────┬──────────────────┬──────────────┬──────────┘
          claude-agent-acp   gemini --acp   codex-acp
 ```
