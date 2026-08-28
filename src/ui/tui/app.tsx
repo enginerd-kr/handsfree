@@ -3,7 +3,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, Transform, useApp, useInput, useStdout } from 'ink';
 import type { Runtime } from '../../runtime.js';
 import { debugDestination } from '../../debug.js';
-import { buildView, pinnedModel, workingAgents, type Tone, type ViewItem } from '../view-model.js';
+import { buildView, workingAgents, type Tone, type ViewItem } from '../view-model.js';
+import type { ModelChoice } from '../../host/models.js';
 import {
   findCommand,
   parseSlashCommand,
@@ -11,7 +12,14 @@ import {
   takesArguments,
   type Command,
 } from '../../slash/command.js';
-import { completeMention, mentionSpans, suggestAgents } from '../../mention/mention.js';
+import {
+  completeMention,
+  completeModel,
+  mentionSpans,
+  modelTokenAt,
+  suggestAgents,
+  suggestModels,
+} from '../../mention/mention.js';
 import { copyToClipboard } from './clipboard.js';
 import {
   DETAIL_INDENT,
@@ -116,8 +124,23 @@ const WANDER_HOME = Math.round(WANDER_ROAM / 2);
  */
 const HEADER_ROWS = 5;
 
-/** How many suggestions the menu offers before it starts crowding the transcript. */
-const MENU_ROWS = 6;
+/**
+ * How many suggestions a slash or an at-sign menu offers before it starts
+ * crowding the transcript. What a short window can actually spare still wins
+ * over this number.
+ */
+const MENU_ROWS = 10;
+
+/**
+ * How much transcript a menu has to leave standing. Eight rows for a slash or
+ * an at-sign, whose lists are long by nature and narrow as the name is typed —
+ * a cut there is expected and recoverable. A colon's is held to four: a model
+ * list is what the profile declares, all of it, and the row pushed off the
+ * bottom is the one you cannot know you did not read. Four rows of transcript
+ * for a moment is the cheaper loss.
+ */
+const MENU_FLOOR = 8;
+const MODEL_FLOOR = 4;
 
 /**
  * Rows below it: the status line, the prompt's two rules with its input between
@@ -173,13 +196,37 @@ interface Draft {
  * word an `@` could open — so one selection, one keymap and one layout serve
  * both.
  */
+/**
+ * What became of the session opened to learn an agent's models: it answered,
+ * or it never opened and said why. Absent means the asking is still in flight.
+ */
+type RosterState = 'ready' | { failed: string };
+
 type MenuItem =
   | { kind: 'command'; command: Command }
-  | { kind: 'agent'; id: string; note: string };
+  | { kind: 'agent'; id: string; note: string }
+  | { kind: 'model'; agent: string; choice: ModelChoice };
 
-/** What a row is filtered by and measured by: `/name` or `@name`. */
+/**
+ * How many rows a menu of this kind may take in a window this tall. The frame
+ * is a fixed height and one that overflows scrolls the whole UI, so the menu
+ * is bounded by what the transcript can spare — MENU_FLOOR for a slash or an
+ * at-sign, and MENU_ROWS on top of that, since those lists are long by nature
+ * and narrow as the name is typed. A model list gets neither ceiling and the
+ * lower floor: it is what the profile declares, all of it, and a list cut
+ * short reads as handsfree having an opinion about which models exist.
+ */
+export function menuFit(kind: MenuItem['kind'], rows: number): number {
+  const models = kind === 'model';
+  const room = rows - 1 - HEADER_ROWS - PROMPT_ROWS - (models ? MODEL_FLOOR : MENU_FLOOR);
+  return Math.max(0, models ? room : Math.min(MENU_ROWS, room));
+}
+
+/** What a row is filtered by and measured by: `/name`, `@name` or `:model`. */
 function menuLabel(item: MenuItem): string {
-  return item.kind === 'command' ? `/${item.command.name}` : `@${item.id}`;
+  if (item.kind === 'command') return `/${item.command.name}`;
+  if (item.kind === 'agent') return `@${item.id}`;
+  return `:${item.choice.value}`;
 }
 
 export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
@@ -315,28 +362,64 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   const rows = stdout?.rows ?? 30;
   const columns = stdout?.columns ?? 80;
   // What the menu may claim before it starts eating the transcript's floor. On
-  // a short terminal that is nothing at all: the frame is a fixed height, and
-  // one that overflows scrolls the whole UI — losing the menu is much the
-  // cheaper of the two.
-  const menuBudget = Math.max(0, Math.min(MENU_ROWS, rows - 1 - HEADER_ROWS - PROMPT_ROWS - 8));
+  // a short terminal that is nothing at all: losing the menu is much the
+  // cheaper of the two ways a fixed frame can fail.
+  const budgeted = (offered: MenuItem[]): MenuItem[] =>
+    offered.length === 0 ? offered : offered.slice(0, menuFit(offered[0]!.kind, rows));
   // Who a mention can name. The roster is fixed for the life of the run, so
   // reading it once is enough.
   const agents = useMemo(() => runtime.pool.available(), [runtime]);
-  // The status line under the prompt: each agent as the model its profile pins
-  // — its id when it pins none — and whether it holds an open task right now.
+  // What each agent's live session says it can be. Every agent is woken at
+  // launch rather than when a `:` first wants the answer, because the waiting
+  // is all in `session/new`: an adapter fetched by `npx`, a process, a
+  // handshake, seconds of it. Spent while the first line is still being typed,
+  // the colon's menu is simply there — and the first task goes to an agent
+  // already awake.
+  const [modelRoster, setModelRoster] = useState<Record<string, RosterState>>({});
+  useEffect(() => {
+    for (const id of agents) {
+      // A session that will not open is kept apart from one that opened with
+      // nothing to offer. The two look identical — no menu — and mean opposite
+      // things, and telling them apart is the difference between "this agent
+      // has one model" and "this agent never started".
+      runtime.pool
+        .session(id)
+        .then(() => setModelRoster((prev) => ({ ...prev, [id]: 'ready' })))
+        .catch((err: unknown) => {
+          // Said once, on the record, at the moment it is known: an agent that
+          // will not start is news now rather than at the first task sent to it.
+          const failed = (err as Error).message;
+          runtime.transcript.append({ type: 'note', level: 'warn', text: failed });
+          setModelRoster((prev) => ({ ...prev, [id]: { failed } }));
+        });
+    }
+  }, [agents, runtime]);
+  // The status line under the prompt: each agent as the model it is actually
+  // on, and whether it holds an open task right now. An agent that names no
+  // model anywhere goes by its own id. The roster is a dependency for what it
+  // says about the pool rather than for itself: an entry landing is a session
+  // having answered, which is the moment that session first has a model to name.
   const agentStatus = useMemo(
     () =>
       agents.map((id) => ({
         id,
-        label: pinnedModel(runtime.config.agents[id]?.args ?? []) ?? id,
+        label: runtime.pool.currentModel(id) ?? id,
         busy: working.has(id),
       })),
-    [agents, working, runtime],
+    [agents, working, runtime, modelRoster],
   );
-  /** The rows a half-written draft earns: commands for a slash, agents for an at-sign. */
+  /** The rows a half-written draft earns: commands for a slash, agents for an at-sign, models for a colon. */
   const offeredFor = (d: Draft): MenuItem[] => {
     const commands = suggest(d.value, runtime.commands);
     if (commands.length > 0) return commands.map((command) => ({ kind: 'command', command }));
+    const token = modelTokenAt(d.value, d.cursor, agents);
+    if (token) {
+      return suggestModels(token.query, runtime.pool.models(token.agent)).map((choice) => ({
+        kind: 'model',
+        agent: token.agent,
+        choice,
+      }));
+    }
     return suggestAgents(d.value, d.cursor, agents).map((id) => ({
       kind: 'agent',
       id,
@@ -344,12 +427,35 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     }));
   };
   const menu = useMemo(
-    () => (ask || dismissed === draft.value ? [] : offeredFor(draft).slice(0, menuBudget)),
+    () => (ask || dismissed === draft.value ? [] : budgeted(offeredFor(draft))),
     // offeredFor is rebuilt every render but reads only what is listed here.
-    [ask, dismissed, draft, runtime.commands, agents, menuBudget],
+    [ask, dismissed, draft, runtime.commands, agents, rows, modelRoster],
   );
-  // The menu's own rows, plus the blank line that keeps it off the transcript.
-  const promptRows = PROMPT_ROWS + (menu.length > 0 ? menu.length + 1 : 0);
+  // What a colon says when it has no rows to show, because an empty menu and a
+  // silent one are the same sight and mean different things: an agent still
+  // coming up will have models in a moment, and one that answered with none
+  // has none to give — its model was settled at launch, and only its profile
+  // can move it. Saying so is the whole point; the silence is what read as a
+  // bug. A name typed at a roster that does have models gets nothing, the way
+  // a mistyped command gets nothing.
+  const modelNote = useMemo(() => {
+    if (ask || dismissed === draft.value || menu.length > 0) return undefined;
+    const token = modelTokenAt(draft.value, draft.cursor, agents);
+    if (!token) return undefined;
+    if (runtime.pool.models(token.agent).length > 0) return undefined;
+    const state = modelRoster[token.agent];
+    if (state === undefined) return `waking ${token.agent}…`;
+    // Why there is no roster, in the agent's own words where it gave any.
+    if (state !== 'ready') return state.failed;
+    const on = runtime.pool.currentModel(token.agent);
+    return (
+      `${token.agent} offers no model selection over ACP` +
+      (on ? ` · on ${on}, set by its launch profile` : '')
+    );
+  }, [ask, dismissed, draft, agents, menu, modelRoster, runtime]);
+  // The menu's own rows — or the one line standing in for them — plus the blank
+  // line that keeps either off the transcript.
+  const promptRows = PROMPT_ROWS + (menu.length > 0 ? menu.length + 1 : modelNote ? 2 : 0);
   // An agent's own words arrive as markdown, so they are drawn as markdown.
   // This sits above the windowing rather than inside `Entry` because the rows a
   // block occupies are what the viewport below and every click are measured
@@ -380,9 +486,13 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
 
   // The rows the transcript gets: everything the header and the prompt leave,
   // the menu's rows included — an open menu shortens the pane rather than
-  // spilling over it. A window too small to hold either still gets eight rows,
-  // and the frame spills rather than the transcript vanishing.
-  const viewport = Math.max(rows - 1 - HEADER_ROWS - promptRows, 8);
+  // spilling over it. The floor is the one the menu was budgeted against, so
+  // the two agree and the frame stays inside the window; a window too small to
+  // hold even that spills rather than the transcript vanishing.
+  const viewport = Math.max(
+    rows - 1 - HEADER_ROWS - promptRows,
+    menu[0]?.kind === 'model' ? MODEL_FLOOR : MENU_FLOOR,
+  );
   const height = useMemo(() => totalHeight(drawn, columns), [drawn, columns]);
   const furthest = Math.max(0, height - viewport);
   // How far down the transcript the top of the viewport sits, or `undefined`
@@ -673,7 +783,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     const offered =
       dismissedRef.current === draftRef.current.value
         ? []
-        : offeredFor(draftRef.current).slice(0, menuBudget);
+        : budgeted(offeredFor(draftRef.current));
     if (offered.length > 0) {
       const move = (by: number): void => {
         const next = (selectedRef.current + by + offered.length) % offered.length;
@@ -692,9 +802,20 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       if (key.tab || key.return) {
         const chosen = offered[Math.min(selectedRef.current, offered.length - 1)]!;
         // An agent is only ever filled in, never sent: the mention opens a
-        // task, and the task is still to be written after the name.
+        // task, and the task is still to be written after the name. No space
+        // follows it, so a colon can — but that leaves the finished name still
+        // wearing an open menu, and enter would fill it in forever; waving the
+        // menu away for exactly this text is what hands enter back to sending.
         if (chosen.kind === 'agent') {
           applyDraft((d) => completeMention(d, chosen.id));
+          dismissedRef.current = draftRef.current.value;
+          setDismissed(draftRef.current.value);
+          return;
+        }
+        // A model is filled in the same way; the trailing space closes the
+        // address, so the menu falls shut on its own.
+        if (chosen.kind === 'model') {
+          applyDraft((d) => completeModel(d, agents, chosen.choice.value));
           return;
         }
         // Enter sends a command that wants nothing further; one with arguments
@@ -814,7 +935,11 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
         </Box>
       </Box>
 
-      {menu.length > 0 ? <Suggestions items={menu} selected={selected} /> : null}
+      {menu.length > 0 ? (
+        <Suggestions items={menu} selected={selected} />
+      ) : modelNote ? (
+        <MenuNote text={modelNote} />
+      ) : null}
 
       {ask ? (
         <Ask ask={ask} />
@@ -1222,7 +1347,7 @@ function Row({
  * end — scrolled up, what arrives next lands off screen, and only this says so
  * — and where a finished drag says how much of the transcript it copied.
  *
- * Its right edge is the agents' roll call, where Claude Code names its model:
+ * Its right edge is the agents' roll call, each agent as the model it is on:
  * a dot per agent, filled while that agent holds an open task.
  */
 function Prompt({
@@ -1294,7 +1419,7 @@ function Prompt({
 /** One agent as the status line tells it: who, what to call them, and whether they are working. */
 interface AgentStatusEntry {
   id: string;
-  /** The model the profile pins, or the agent's id when it pins none. */
+  /** The model the agent is on, or its id when the profile names none. */
   label: string;
   busy: boolean;
 }
@@ -1348,11 +1473,27 @@ function Suggestions({
         const chosen = index === Math.min(selected, items.length - 1);
         // An agent's name keeps its own colour whether or not it is chosen —
         // the colour is what the menu is teaching — so being chosen shows as
-        // weight instead. A command row is set in the header name's own light
+        // weight instead, and a model row borrows the colour of the agent it
+        // belongs to. A command row is set in the header name's own light
         // when chosen — full ink and bold — and steps down to the path's gray
         // otherwise, so the selection reads at a glance.
         const colour =
-          item.kind === 'agent' ? agentColour(item.id) : chosen ? undefined : INK;
+          item.kind === 'agent'
+            ? agentColour(item.id)
+            : item.kind === 'model'
+              ? agentColour(item.agent)
+              : chosen
+                ? undefined
+                : INK;
+        // A model is described in the agent's own words and no others: the id
+        // it advertised on the left, the blurb it wrote on the right. Its
+        // display name is not folded in — that read as handsfree renaming it.
+        const note =
+          item.kind === 'command'
+            ? item.command.description
+            : item.kind === 'agent'
+              ? item.note
+              : (item.choice.description ?? '');
         return (
           <Box key={menuLabel(item)} paddingLeft={2}>
             <Text wrap="truncate">
@@ -1363,12 +1504,27 @@ function Suggestions({
                 {item.kind === 'command' && item.command.argumentHint
                   ? `${item.command.argumentHint}  `
                   : ''}
-                {item.kind === 'command' ? item.command.description : item.note}
+                {note}
               </Text>
             </Text>
           </Box>
         );
       })}
+    </Box>
+  );
+}
+
+/**
+ * The menu's line for when it has no rows: why the list is empty, standing in
+ * the column the suggestions would have used. It is drawn, not offered — the
+ * keymap never sees it, so nothing selects it and enter still sends the line.
+ */
+function MenuNote({ text }: { text: string }): React.JSX.Element {
+  return (
+    <Box flexShrink={0} marginTop={1} paddingLeft={2}>
+      <Text color="gray" dimColor wrap="truncate">
+        {text}
+      </Text>
     </Box>
   );
 }

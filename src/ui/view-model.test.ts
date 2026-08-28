@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Transcript } from '../workspace/transcript.js';
-import { buildView, pinnedModel, workingAgents } from './view-model.js';
+import { buildView, workingAgents } from './view-model.js';
 
 const WORKSPACE = '/ws';
 
@@ -433,19 +433,5 @@ describe('workingAgents', () => {
     t.append({ type: 'delegation', taskId: 2, agentId: 'gemini', sessionId: 's', task: 'sort' });
     t.append({ type: 'stop', taskId: 1, agentId: 'claude', sessionId: 's', stopReason: 'cancelled' });
     expect([...workingAgents(t.all())]).toEqual(['gemini']);
-  });
-});
-
-describe('pinnedModel', () => {
-  it('reads the model a profile pins, whichever spelling pins it', () => {
-    expect(pinnedModel(['--experimental-acp', '-m', 'gemini-3.5-flash'])).toBe('gemini-3.5-flash');
-    expect(pinnedModel(['-y', '@zed-industries/codex-acp', '-c', 'model=gpt-5.5'])).toBe('gpt-5.5');
-    expect(pinnedModel(['--model', 'sonnet'])).toBe('sonnet');
-    expect(pinnedModel(['--model=sonnet'])).toBe('sonnet');
-  });
-
-  it('names nothing for a profile that pins nothing', () => {
-    expect(pinnedModel([])).toBeUndefined();
-    expect(pinnedModel(['-y', '@zed-industries/claude-code-acp'])).toBeUndefined();
   });
 });

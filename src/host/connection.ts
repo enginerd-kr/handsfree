@@ -17,7 +17,7 @@ import { createFsHandlers } from '../capabilities/fs.js';
 import { createPermissionHandler } from '../capabilities/permission.js';
 import { TerminalRegistry } from '../capabilities/terminal.js';
 import { VERSION } from '../version.js';
-import { HostSession } from './session.js';
+import { HostSession, modelStateOf } from './session.js';
 
 export interface ConnectionTarget {
   /** Attaches the built client app to whatever carries the protocol. */
@@ -51,7 +51,13 @@ export class AuthenticationRequiredError extends Error {
         (methods.length > 0
           ? `It offers: ${methods.map((m) => m.name || m.id).join(', ')}. `
           : '') +
-        'Authenticate with the agent’s own CLI, then try again.',
+        // A logged-in CLI is not the same as a logged-in adapter: gemini reads
+        // `~/.gemini/.env` when you run it yourself and not when it speaks ACP,
+        // so a key that works in the terminal still has to reach this process.
+        'Authenticate with the agent’s own CLI — and where that login is an API ' +
+        'key, make sure the variable holding it is in handsfree’s own environment ' +
+        '(or the agent profile’s `env`), since agents are spawned directly and ' +
+        'never read your shell.',
     );
     this.name = 'AuthenticationRequiredError';
   }
@@ -189,6 +195,7 @@ export class AgentConnection {
       throw this.explain(err);
     }
     const session = this.register(response.sessionId, onUpdate);
+    session.adoptModelState(modelStateOf(response));
     this.host.workspace.writeSessionId(this.agentId, response.sessionId);
     return session;
   }
@@ -202,11 +209,12 @@ export class AgentConnection {
     if (this.capabilities.loadSession !== true) return undefined;
     const session = this.register(sessionId);
     try {
-      await this.connection.agent.request(methods.agent.session.load, {
+      const response = await this.connection.agent.request(methods.agent.session.load, {
         sessionId,
         cwd: this.host.workspace.dir,
         mcpServers: [],
       });
+      session.adoptModelState(modelStateOf(response));
       return session;
     } catch {
       this.sessions.delete(sessionId);
@@ -244,6 +252,22 @@ export class AgentConnection {
             }),
         cancel: (id: string) =>
           this.connection.agent.notify(methods.agent.session.cancel, { sessionId: id }),
+        setConfigOption: async (request) => {
+          await this.connection.agent
+            .request(methods.agent.session.setConfigOption, request)
+            .catch((err: unknown) => {
+              throw this.explain(err);
+            });
+        },
+        setModel: async (request) => {
+          // Spelled out because the current SDK dropped the draft method from
+          // its tables; the adapters still on it answer the string all the same.
+          await this.connection.agent
+            .request<void, { sessionId: string; modelId: string }>('session/set_model', request)
+            .catch((err: unknown) => {
+              throw this.explain(err);
+            });
+        },
       },
       onUpdate,
     );

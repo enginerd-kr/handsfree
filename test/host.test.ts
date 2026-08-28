@@ -363,6 +363,20 @@ describe('turn lifecycle', () => {
     expect(agent.prompts).toEqual(['one', 'two']);
   });
 
+  it('opens one session for callers that ask while it is still opening', async () => {
+    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
+    open = h;
+
+    // Two tasks aimed at the same agent can land in the same moment; a second
+    // `session/new` would strand the context of the first.
+    const [first, second] = await Promise.all([
+      h.runtime.pool.session('claude'),
+      h.runtime.pool.session('claude'),
+    ]);
+
+    expect(second).toBe(first);
+  });
+
   it('writes every update to the transcript as it arrives', async () => {
     const { runtime } = await runTurn(() => [
       { do: 'say', text: 'working' },

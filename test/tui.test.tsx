@@ -2,7 +2,7 @@ import React from 'react';
 import { render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { disableDebug, enableDebug } from '../src/debug.js';
-import { App } from '../src/ui/tui/app.js';
+import { App, menuFit } from '../src/ui/tui/app.js';
 import { copyToClipboard } from '../src/ui/tui/clipboard.js';
 import { DOT_BUSY, DOT_IDLE, PROMPT_CHAR } from '../src/ui/tui/theme.js';
 import { fakeAgent } from './fake-agent.js';
@@ -480,6 +480,143 @@ describe('terminal UI', () => {
       await waitFor(plain, `${PROMPT_CHAR} @gemini`);
       expect(h.runtime.transcript.all().filter((r) => r.type === 'user')).toHaveLength(0);
       expect(plain()).not.toContain('@ge ');
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('wakes every agent at launch, so the roster is already in hand', async () => {
+    const h = harness({
+      agents: { claude: fakeAgent({ models: ['opus[1m]', 'sonnet'], script: () => [] }) },
+    });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      // Nothing has been typed and nothing delegated, yet the roll call
+      // already names the model the session came up on — the session is open.
+      await waitFor(() => app.lastFrame(), `${DOT_IDLE} opus[1m]`);
+      expect(h.runtime.pool.isOpen('claude')).toBe(true);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('holds a whole roster at once, however long it is', async () => {
+    // The roster gemini actually advertises, to the row: a list cut short is
+    // one you cannot be sure you have read.
+    const models = [
+      'gemini-3.5-flash',
+      'gemini-3.1-flash-lite',
+      'gemini-2.5-pro',
+      'gemini-3-flash-preview',
+      'gemini-3.1-pro-preview-customtools',
+      'auto',
+    ];
+    const h = harness({ agents: { gemini: fakeAgent({ models, script: () => [] }) } });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      for (const key of '@gemini:') {
+        app.stdin.write(key);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+
+      const listed = await waitFor(() => app.lastFrame(), ':auto');
+      for (const model of models) expect(listed).toContain(`:${model}`);
+      // In the agent's own order, first to last.
+      const at = models.map((model) => listed.indexOf(`:${model}`));
+      expect([...at].sort((a, b) => a - b)).toEqual(at);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('spares a model roster the crowding limit the other menus keep to', () => {
+    // A twenty-four row terminal — the short window that used to cut a
+    // six-model roster to five rows, losing the last one.
+    expect(menuFit('model', 24)).toBeGreaterThanOrEqual(6);
+    // A slash still yields to the transcript at the same height, because its
+    // list narrows as the name is typed and a cut there loses nothing.
+    expect(menuFit('command', 24)).toBe(5);
+    // Shorter still, and the menu goes rather than the frame overflowing.
+    expect(menuFit('model', 14)).toBe(0);
+  });
+
+  it('says why a colon has nothing to offer, rather than showing nothing', async () => {
+    // An adapter that advertises no models at all: its `session/new` answers
+    // with a session id and nothing else.
+    const h = harness({
+      agents: { gemini: fakeAgent({ script: () => [] }) },
+      config: { profiles: { gemini: { model: undefined } } },
+      llm: scriptedModel([JSON.stringify({ action: 'answer', message: 'that is not a model.' })]),
+    });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    const press = async (...keys: string[]) => {
+      for (const key of keys) {
+        app.stdin.write(key);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    };
+    try {
+      await waitFor(() => app.lastFrame(), `${DOT_IDLE} gemini`);
+      await press(...'@gemini:');
+
+      const frame = await waitFor(() => app.lastFrame(), 'offers no model selection');
+      expect(frame).toContain('gemini');
+
+      // The line is drawn, not offered: enter still sends rather than being
+      // eaten by a menu that has nothing in it.
+      await press('\r');
+      await waitFor(() => app.lastFrame(), '@gemini:');
+      expect(h.runtime.transcript.all().some((r) => r.type === 'user')).toBe(true);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('offers the models a colon could pick, and fills the address in', async () => {
+    const h = harness({
+      agents: {
+        gemini: fakeAgent({ models: ['gemini-3.5-flash', 'gemini-3.5-pro'], script: () => [] }),
+      },
+    });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    const plain = () => (app.lastFrame() ?? '').replace(/\[[0-9;]*m/g, '');
+    const press = async (...keys: string[]) => {
+      for (const key of keys) {
+        app.stdin.write(key);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    };
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      await press(...'@ge');
+      await waitFor(() => app.lastFrame(), '@gemini');
+
+      // Completing the name adds no space and leaves the menu shut, so the
+      // colon lands right against it and opens the model list instead.
+      await press('\r');
+      await waitFor(plain, `${PROMPT_CHAR} @gemini`);
+      expect(plain()).not.toContain('@gemini ');
+
+      await press(':');
+      // The rows are what the session advertised when it was warmed at launch,
+      // in the order it advertised them.
+      const listed = await waitFor(() => app.lastFrame(), ':gemini-3.5-pro');
+      expect(listed).toContain(':gemini-3.5-flash');
+      expect(listed.indexOf(':gemini-3.5-flash')).toBeLessThan(listed.indexOf(':gemini-3.5-pro'));
+
+      // Tab fills the whole address in and closes it with a space; nothing is sent.
+      await press('\t');
+      await waitFor(plain, `${PROMPT_CHAR} @gemini:gemini-3.5-flash`);
+      expect(h.runtime.transcript.all().filter((r) => r.type === 'user')).toHaveLength(0);
     } finally {
       app.unmount();
     }

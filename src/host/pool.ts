@@ -7,6 +7,7 @@ import type { Transcript } from '../workspace/transcript.js';
 import type { Workspace } from '../workspace/workspace.js';
 import { AgentConnection } from './connection.js';
 import { fallbackArgs, spawnTarget } from './launch.js';
+import type { ModelChoice } from './models.js';
 import type { HostSession } from './session.js';
 
 export interface PoolOptions {
@@ -33,6 +34,7 @@ export class AgentPool {
   private readonly connections = new Map<string, AgentConnection>();
   private readonly sessions = new Map<string, HostSession>();
   private readonly opening = new Map<string, Promise<AgentConnection>>();
+  private readonly starting = new Map<string, Promise<HostSession>>();
 
   constructor(private readonly options: PoolOptions) {}
 
@@ -47,6 +49,20 @@ export class AgentPool {
     return this.connections.has(agentId);
   }
 
+  /**
+   * The model this agent is on: what its live session reports, or the model
+   * its profile asks for while no session is open yet. An agent that names no
+   * model anywhere is left for the caller to call by its own id.
+   */
+  currentModel(agentId: string): string | undefined {
+    return this.sessions.get(agentId)?.currentModel() ?? this.options.config.agents[agentId]?.model;
+  }
+
+  /** The models an agent's live session says it can be set to. */
+  models(agentId: string): readonly ModelChoice[] {
+    return this.sessions.get(agentId)?.models() ?? [];
+  }
+
   async connection(agentId: string): Promise<AgentConnection> {
     const existing = this.connections.get(agentId);
     if (existing) return existing;
@@ -58,11 +74,25 @@ export class AgentPool {
     return attempt;
   }
 
-  /** The one session handsfree keeps with this agent for the current run. */
+  /**
+   * The one session handsfree keeps with this agent for the current run. Two
+   * callers arriving while it is still opening wait on the same attempt:
+   * `session/new` asked twice would answer twice, and the second session would
+   * quietly replace the first while the first still held the run's context.
+   */
   async session(agentId: string): Promise<HostSession> {
     const existing = this.sessions.get(agentId);
     if (existing) return existing;
+    const pending = this.starting.get(agentId);
+    if (pending) return pending;
 
+    const attempt = this.start(agentId).finally(() => this.starting.delete(agentId));
+    this.starting.set(agentId, attempt);
+    return attempt;
+  }
+
+  /** Opens the run's session with an agent, resuming the saved one if there is one. */
+  private async start(agentId: string): Promise<HostSession> {
     const connection = await this.connection(agentId);
     const saved = this.options.workspace.readSessionIds()[agentId];
     const resumed = saved ? await connection.loadSession(saved) : undefined;
@@ -74,6 +104,12 @@ export class AgentPool {
       });
     }
     const session = resumed ?? (await connection.newSession());
+    // A profile that asks for a model gets it before anything else touches the
+    // session, a resumed one included — it comes back on whatever it was last
+    // on. A profile that asks for none leaves the agent on its own default,
+    // which is the CLI's, which is very likely the one you want.
+    const model = this.options.config.agents[agentId]?.model;
+    if (model !== undefined) await session.selectModel(model);
     this.sessions.set(agentId, session);
     return session;
   }
@@ -90,6 +126,7 @@ export class AgentPool {
     const open = [...this.connections.values()];
     this.connections.clear();
     this.sessions.clear();
+    this.starting.clear();
     await Promise.all(open.map((connection) => connection.close()));
   }
 

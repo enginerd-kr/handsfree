@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { fakeAgent } from './fake-agent.js';
 import { harness, scriptedModel, type Harness } from './harness.js';
 import type { ChatClient } from '../src/brain/client.js';
+import { describeRecord } from '../src/ui/view-model.js';
 
 let open: Harness | undefined;
 
@@ -204,6 +205,7 @@ describe('Conversation', () => {
     const unavailable = {
       app: undefined as never,
       prompts: [],
+      modelSets: [],
       target: () => ({
         description: 'broken adapter',
         connect(): never {
@@ -335,6 +337,198 @@ describe('Conversation', () => {
     const kinds = h.runtime.transcript.all().map((record) => record.type);
     expect(kinds).toContain('delegation');
     expect(kinds).toContain('stop');
+  });
+
+  it('leaves an agent on the model it came up on when the profile asks for none', async () => {
+    // The common case now: the adapter is the CLI's own, so its default is the
+    // CLI's default and handsfree has no business moving it.
+    const codex = fakeAgent({
+      models: ['gpt-5.6-terra', 'gpt-5.5'],
+      script: () => [{ do: 'say', text: 'done.' }],
+    });
+    const llm = scriptedModel([answer('done.')]);
+    const h = harness({ agents: { codex }, llm });
+    open = h;
+
+    await h.runtime.conversation.send('@codex make notes.txt');
+
+    expect(codex.modelSets).toEqual([]);
+    expect(codex.prompts).toHaveLength(1);
+    expect(h.runtime.pool.currentModel('codex')).toBe('gpt-5.6-terra');
+  });
+
+  it("puts a session on the profile's model when one disagrees with the agent", async () => {
+    const codex = fakeAgent({
+      models: ['gpt-5.6-terra', 'gpt-5.5'],
+      script: () => [{ do: 'say', text: 'done.' }],
+    });
+    const llm = scriptedModel([answer('done.')]);
+    const h = harness({
+      agents: { codex },
+      llm,
+      config: { profiles: { codex: { model: 'gpt-5.5' } } },
+    });
+    open = h;
+
+    await h.runtime.conversation.send('@codex make notes.txt');
+
+    // Moved as the session opened, before the prompt reached it.
+    expect(codex.modelSets).toEqual(['gpt-5.5']);
+    expect(codex.prompts).toHaveLength(1);
+    expect(h.runtime.pool.currentModel('codex')).toBe('gpt-5.5');
+  });
+
+  it('sets the model a :suffix asks for before the task is sent', async () => {
+    const gemini = fakeAgent({
+      models: ['gemini-3.5-flash', 'gemini-3.5-pro'],
+      script: () => [{ do: 'say', text: 'done.' }],
+    });
+    const llm = scriptedModel([answer('done on pro.')]);
+    const h = harness({ agents: { gemini }, llm });
+    open = h;
+
+    await h.runtime.conversation.send('@gemini:pro make notes.txt');
+
+    // The switch landed before the prompt, and the record says what ran where.
+    expect(gemini.modelSets).toEqual(['gemini-3.5-pro']);
+    expect(gemini.prompts[0]).toContain('make notes.txt');
+    const delegation = h.runtime.transcript
+      .all()
+      .find((record) => record.type === 'delegation');
+    expect(delegation).toMatchObject({ agentId: 'gemini', model: 'gemini-3.5-pro' });
+    expect(describeRecord(delegation!, h.workspaceDir)).toContain('gemini:gemini-3.5-pro');
+  });
+
+  it('routes a model id spelled with brackets, the way a variant is named', async () => {
+    // claude-agent-acp advertises `opus[1m]`; the brackets are part of the id
+    // and have to survive both the mention parser and the switch.
+    const claude = fakeAgent({
+      models: ['default', 'opus[1m]', 'sonnet'],
+      script: () => [{ do: 'say', text: 'done.' }],
+    });
+    const llm = scriptedModel([answer('done on opus.')]);
+    const h = harness({ agents: { claude }, llm });
+    open = h;
+
+    await h.runtime.conversation.send('@claude:opus[1m] 하이?');
+
+    expect(claude.modelSets).toEqual(['opus[1m]']);
+    expect(claude.prompts[0]).toContain('하이?');
+    const delegation = h.runtime.transcript
+      .all()
+      .find((record) => record.type === 'delegation');
+    expect(delegation).toMatchObject({ agentId: 'claude', model: 'opus[1m]' });
+  });
+
+  it('speaks the draft set_model dialect, for the adapters still on it', async () => {
+    const gemini = fakeAgent({
+      models: ['auto', 'gemini-3.5-flash', 'gemini-2.5-pro'],
+      modelWire: 'set_model',
+      script: () => [{ do: 'say', text: 'done.' }],
+    });
+    const llm = scriptedModel([answer('done on flash.'), answer('done again.')]);
+    const h = harness({ agents: { gemini }, llm });
+    open = h;
+
+    await h.runtime.conversation.send('@gemini:flash fix the tests');
+    await h.runtime.conversation.send('@gemini:flash one more pass');
+
+    // Switched once over session/set_model, and remembered: the dialect sends
+    // no confirmation, so not re-sending is what proves the state was kept.
+    expect(gemini.modelSets).toEqual(['gemini-3.5-flash']);
+    expect(gemini.prompts).toHaveLength(2);
+  });
+
+  it('matches a name the way it is typed: the id exactly, then as a prefix, then anywhere', async () => {
+    const gemini = fakeAgent({
+      models: ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-pro'],
+      script: () => [{ do: 'say', text: 'done.' }],
+    });
+    const llm = scriptedModel([answer('done.'), answer('done.')]);
+    const h = harness({ agents: { gemini }, llm });
+    open = h;
+
+    await h.runtime.conversation.send('@gemini:lite make notes.txt');
+    await h.runtime.conversation.send('@gemini:GEMINI-2 touch it up');
+
+    expect(gemini.modelSets).toEqual(['gemini-3.1-flash-lite', 'gemini-2.5-pro']);
+  });
+
+  it('refuses to guess between two names a query fits', async () => {
+    const gemini = fakeAgent({
+      models: ['gemini-2.5-pro', 'gemini-3.5-flash', 'gemini-3.1-flash-lite'],
+      script: () => [{ do: 'say', text: 'never reached.' }],
+    });
+    const llm = scriptedModel([answer('which flash?')]);
+    const h = harness({ agents: { gemini }, llm });
+    open = h;
+
+    await h.runtime.conversation.send('@gemini:flash make notes.txt');
+
+    expect(gemini.prompts).toEqual([]);
+    const note = h.runtime.transcript
+      .all()
+      .find((record) => record.type === 'note' && record.level === 'error');
+    expect(note && note.type === 'note' ? note.text : '').toContain('could be any of');
+  });
+
+  it('fails the routing, prompt unsent, when the agent offers no such model', async () => {
+    const gemini = fakeAgent({
+      models: ['gemini-3.5-flash'],
+      script: () => [{ do: 'say', text: 'never reached.' }],
+    });
+    const llm = scriptedModel([answer('that model is not offered.')]);
+    const h = harness({ agents: { gemini }, llm });
+    open = h;
+
+    await h.runtime.conversation.send('@gemini:turbo make notes.txt');
+
+    expect(gemini.prompts).toEqual([]);
+    expect(gemini.modelSets).toEqual([]);
+    // The error names the roster, because the user typed blind.
+    const note = h.runtime.transcript
+      .all()
+      .find((record) => record.type === 'note' && record.level === 'error');
+    expect(note && note.type === 'note' ? note.text : '').toContain('gemini-3.5-flash');
+  });
+
+  it('tells the user an agent that advertises no roster cannot be re-modelled', async () => {
+    const claude = fakeAgent({ script: () => [{ do: 'say', text: 'never reached.' }] });
+    const llm = scriptedModel([answer('claude offers no model choice.')]);
+    const h = harness({ agents: { claude }, llm });
+    open = h;
+
+    await h.runtime.conversation.send('@claude:opus fix it');
+
+    expect(claude.prompts).toEqual([]);
+    const note = h.runtime.transcript
+      .all()
+      .find((record) => record.type === 'note' && record.level === 'error');
+    expect(note && note.type === 'note' ? note.text : '').toContain('no model selection over ACP');
+  });
+
+  it('fails loudly when a profile names a model its agent will not take', async () => {
+    // The session cannot be put where the profile asks, so no task runs on a
+    // model nobody chose.
+    const claude = fakeAgent({
+      models: ['default', 'sonnet'],
+      script: () => [{ do: 'say', text: 'never reached.' }],
+    });
+    const llm = scriptedModel([answer('claude could not be started.')]);
+    const h = harness({
+      agents: { claude },
+      llm,
+      config: { profiles: { claude: { model: 'opus' } } },
+    });
+    open = h;
+
+    await h.runtime.conversation.send('@claude fix it');
+
+    expect(claude.prompts).toEqual([]);
+    const note = h.runtime.transcript
+      .all()
+      .find((record) => record.type === 'note' && record.level === 'error');
+    expect(note && note.type === 'note' ? note.text : '').toContain('no model matching "opus"');
   });
 
   it('leaves an @name nobody answers to for the planner to read', async () => {

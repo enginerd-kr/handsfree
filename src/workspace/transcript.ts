@@ -20,7 +20,19 @@ export type TranscriptBody =
    */
   | { type: 'note'; level: 'info' | 'warn' | 'error'; text: string; lines?: string[] }
   | { type: 'agent_stderr'; agentId: string; text: string }
-  | { type: 'delegation'; taskId: number; agentId: string; sessionId: string; task: string }
+  /**
+   * `model` is the id the session was switched to for this task, when one was
+   * asked for — the id and nothing beside it, since the id is what went on the
+   * wire and what the record has to be able to be read back against.
+   */
+  | {
+      type: 'delegation';
+      taskId: number;
+      agentId: string;
+      sessionId: string;
+      task: string;
+      model?: string;
+    }
   | { type: 'session_update'; agentId: string; sessionId: string; update: SessionUpdate }
   | { type: 'stop'; taskId: number; agentId: string; sessionId: string; stopReason: StopReason }
   | { type: 'decision'; agentId: string; entry: AuditEntry };

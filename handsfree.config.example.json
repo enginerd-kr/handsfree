@@ -18,17 +18,17 @@
   "agents": {
     "claude": {
       "command": "npx",
-      "args": ["-y", "@zed-industries/claude-code-acp"],
+      "args": ["-y", "@agentclientprotocol/claude-agent-acp"],
       "note": "general coding agent, strong at multi-file edits"
     },
     "gemini": {
       "command": "gemini",
-      "args": ["--experimental-acp", "-m", "gemini-3.5-flash"],
+      "args": ["--acp"],
       "note": "fast, good at bulk text and single-file work"
     },
     "codex": {
       "command": "npx",
-      "args": ["-y", "@zed-industries/codex-acp", "-c", "model=gpt-5.5"],
+      "args": ["-y", "@agentclientprotocol/codex-acp"],
       "note": "methodical coding agent, good at tests and refactors"
     }
   },

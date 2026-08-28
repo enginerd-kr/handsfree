@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ConfigSchema, assertLaunchArgsAllowed } from './schema.js';
+import { AgentProfileSchema, ConfigSchema, assertLaunchArgsAllowed } from './schema.js';
 
 describe('launch arguments', () => {
   it.each([
@@ -35,18 +35,24 @@ describe('defaults', () => {
   it('ships the three known adapters', () => {
     const config = ConfigSchema.parse({});
     expect(Object.keys(config.agents)).toEqual(['claude', 'gemini', 'codex']);
-    expect(config.agents['gemini']?.args).toContain('--experimental-acp');
+    expect(config.agents['gemini']?.args).toContain('--acp');
     // All three are on by default; an adapter you have not installed fails at
     // the handshake, which `doctor` reports, rather than being hidden here.
     expect(Object.values(config.agents).every((agent) => agent.enabled)).toBe(true);
-    // Both adapters that read a model from a file of their own are pinned, so a
-    // CLI update elsewhere cannot retire the model out from under a turn.
-    expect(config.agents['codex']?.args).toEqual([
-      '-y',
-      '@zed-industries/codex-acp',
-      '-c',
-      'model=gpt-5.5',
-    ]);
+    // The adapters the ACP registry names as canonical, not the retired ones.
+    expect(config.agents['claude']?.args).toContain('@agentclientprotocol/claude-agent-acp');
+    expect(config.agents['codex']?.args).toContain('@agentclientprotocol/codex-acp');
+    // None pins a model: each adapter is the CLI's own, so the roster and the
+    // default it comes up on are the CLI's, and repeating them here would only
+    // be a copy to go stale.
+    for (const agent of Object.values(config.agents)) expect(agent.model).toBeUndefined();
+  });
+
+  it('takes an optional model override, and nothing else about models', () => {
+    const parsed = AgentProfileSchema.parse({ command: 'agent', model: 'opus[1m]' });
+    expect(parsed.model).toBe('opus[1m]');
+    expect(AgentProfileSchema.parse({ command: 'agent' }).model).toBeUndefined();
+    expect(AgentProfileSchema.safeParse({ command: 'agent', model: '' }).success).toBe(false);
   });
 
   it('keeps command execution off until it is asked for', () => {

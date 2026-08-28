@@ -50,6 +50,18 @@ export interface FakeAgentOptions {
   name?: string;
   version?: string;
   loadSession?: boolean;
+  /**
+   * Advertise a model selector offering these, the first one current. This is
+   * the roster the host reads: which models exist, and which one the session
+   * came up on. A switch to an id not on it is refused, as a real adapter
+   * refuses it.
+   */
+  models?: string[];
+  /**
+   * How the selector is spoken: the spec'd config option (default), or the
+   * draft `models` + `session/set_model` dialect claude-code-acp still uses.
+   */
+  modelWire?: 'config_option' | 'set_model';
   /** Called for each prompt turn; returns what the agent should do. */
   script: (prompt: ContentBlock[], turn: number) => Act[];
 }
@@ -59,6 +71,8 @@ export interface FakeAgent {
   target(): ConnectionTarget;
   /** Prompts received, in order. */
   prompts: string[];
+  /** Every model the host set, over either wire, in order. */
+  modelSets: string[];
 }
 
 const DEFAULT_OPTIONS: PermissionOption[] = [
@@ -69,8 +83,43 @@ const DEFAULT_OPTIONS: PermissionOption[] = [
 
 export function fakeAgent(options: FakeAgentOptions): FakeAgent {
   const prompts: string[] = [];
+  const modelSets: string[] = [];
   let turn = 0;
   let sessionCounter = 0;
+
+  const wire = options.modelWire ?? 'config_option';
+  const roster = options.models ?? [];
+  let currentModel = roster[0];
+  const configOptions = () =>
+    options.models === undefined || wire !== 'config_option'
+      ? undefined
+      : [
+          {
+            id: 'model',
+            name: 'Model',
+            category: 'model' as const,
+            type: 'select' as const,
+            currentValue: currentModel!,
+            options: roster.map((id) => ({ value: id, name: id })),
+          },
+        ];
+  const modelState = () =>
+    options.models === undefined || wire !== 'set_model'
+      ? undefined
+      : {
+          availableModels: roster.map((id) => ({ modelId: id, name: id })),
+          currentModelId: currentModel!,
+        };
+  /** What a `session/new` or `session/load` answer carries about models. */
+  const advertised = () => {
+    const advertisedOptions = configOptions();
+    const advertisedModels = modelState();
+    return {
+      ...(advertisedOptions === undefined ? {} : { configOptions: advertisedOptions }),
+      // The draft field, off-schema on purpose — real adapters still send it.
+      ...(advertisedModels === undefined ? {} : ({ models: advertisedModels } as object)),
+    };
+  };
 
   const app = agent({ name: options.name ?? 'fake-agent' })
     .onRequest(methods.agent.initialize, () => ({
@@ -82,8 +131,32 @@ export function fakeAgent(options: FakeAgentOptions): FakeAgent {
       },
       authMethods: [],
     }))
-    .onRequest(methods.agent.session.new, () => ({ sessionId: `fake-${++sessionCounter}` }))
-    .onRequest(methods.agent.session.load, () => ({}))
+    .onRequest(methods.agent.session.new, () => ({
+      sessionId: `fake-${++sessionCounter}`,
+      ...advertised(),
+    }))
+    .onRequest(methods.agent.session.load, () => advertised())
+    .onRequest(methods.agent.session.setConfigOption, (ctx) => {
+      const value = String(ctx.params.value);
+      if (ctx.params.configId !== 'model' || !roster.includes(value)) {
+        throw new Error(`cannot set ${ctx.params.configId} to ${value}`);
+      }
+      currentModel = value;
+      modelSets.push(value);
+      return { configOptions: configOptions()! };
+    })
+    .onRequest(
+      'session/set_model',
+      (params) => params as { sessionId: string; modelId: string },
+      (ctx) => {
+        if (wire !== 'set_model' || !roster.includes(ctx.params.modelId)) {
+          throw new Error(`cannot set model to ${ctx.params.modelId}`);
+        }
+        currentModel = ctx.params.modelId;
+        modelSets.push(ctx.params.modelId);
+        return {};
+      },
+    )
     .onRequest(methods.agent.session.prompt, async (ctx) => {
       const text = ctx.params.prompt
         .map((block) => (block.type === 'text' ? block.text : `[${block.type}]`))
@@ -99,6 +172,7 @@ export function fakeAgent(options: FakeAgentOptions): FakeAgent {
   return {
     app,
     prompts,
+    modelSets,
     target(): ConnectionTarget {
       return {
         description: 'fake agent (in process)',

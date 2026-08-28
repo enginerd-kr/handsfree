@@ -4,6 +4,7 @@ import { trimHistory, type ChatClient, type ChatMessage } from '../brain/client.
 import { narrate } from '../brain/narrate.js';
 import { nextStep, planSystemPrompt, type AgentCard, type AnswerStream } from '../brain/plan.js';
 import { SessionUnresponsiveError } from '../host/session.js';
+import type { ModelChoice } from '../host/models.js';
 import type { AgentPool } from '../host/pool.js';
 import type { Transcript } from '../workspace/transcript.js';
 import type { Workspace } from '../workspace/workspace.js';
@@ -180,9 +181,10 @@ export class Conversation {
 
       // A line that leads with "@agent" has already chosen its recipient, so
       // the planner is never consulted: what follows the name is the task,
-      // sent as written. The step still goes into the history as the JSON the
-      // planner would have written, so the turns after this one read the same
-      // conversation whichever way the task was routed.
+      // sent as written — and a ":model" suffix on the name is the model the
+      // work should run on. The step still goes into the history as the JSON
+      // the planner would have written, so the turns after this one read the
+      // same conversation whichever way the task was routed.
       const mention = invoked ? undefined : parseMention(prompt, agents);
       if (mention) {
         delegations++;
@@ -193,6 +195,7 @@ export class Conversation {
             agent: mention.agent,
             kind: 'change',
             task: mention.task,
+            ...(mention.model === undefined ? {} : { model: mention.model }),
           }),
         });
         const outcome = await this.delegate(
@@ -201,6 +204,7 @@ export class Conversation {
           mention.task,
           undefined,
           turn.signal,
+          mention.model,
         );
         outcomes.push(outcome);
         this.push({
@@ -297,18 +301,29 @@ export class Conversation {
     task: string,
     doneWhen: string | undefined,
     signal: AbortSignal,
+    model?: string,
   ): Promise<TaskOutcome> {
     const { config, pool, transcript, workspace } = this.deps;
     const taskId = ++this.taskCounter;
     const startedAt = Date.now();
 
+    const failed = (err: unknown): TaskOutcome => {
+      const outcome = summarise(taskId, agentId, task, 'unresponsive', [], Date.now() - startedAt);
+      transcript.append({ type: 'note', level: 'error', text: (err as Error).message });
+      return { ...outcome, message: (err as Error).message };
+    };
+
+    // The model is settled before the task is even on the record: a name the
+    // agent cannot answer to should fail the routing, not run on whatever the
+    // session happened to be on. What it resolves to sticks to the session, so
+    // the next task rides the same choice until another mention moves it.
     let session;
+    let chosen: ModelChoice | undefined;
     try {
       session = await pool.session(agentId);
+      if (model !== undefined) chosen = await session.selectModel(model);
     } catch (err) {
-      const failed = summarise(taskId, agentId, task, 'unresponsive', [], Date.now() - startedAt);
-      transcript.append({ type: 'note', level: 'error', text: (err as Error).message });
-      return { ...failed, message: (err as Error).message };
+      return failed(err);
     }
 
     transcript.append({
@@ -317,6 +332,8 @@ export class Conversation {
       agentId,
       sessionId: session.sessionId,
       task,
+      // The id is what went on the wire, so the id is what is written down.
+      ...(chosen === undefined ? {} : { model: chosen.value }),
     });
 
     const first = !this.briefed.has(agentId);

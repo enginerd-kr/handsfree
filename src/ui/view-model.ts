@@ -205,7 +205,11 @@ export function buildView(
         const item = add(
           row(`d${record.seq}`, 'system', 0, 'bullet', 'brand', record.task, 'normal', true),
         );
-        item.label = record.agentId;
+        // The label spells the routing the way it was asked for: the agent,
+        // and the model when the task chose one — by the id it was switched
+        // by, which is the id the mention typed and the id that went on the
+        // wire.
+        item.label = modelled(record.agentId, record);
         item.agentId = record.agentId;
         item.taskId = record.taskId;
         depth = 1;
@@ -630,19 +634,9 @@ export function workingAgents(records: readonly TranscriptRecord[]): ReadonlySet
   return new Set(open.values());
 }
 
-/**
- * The model a launch profile pins, when it pins one: `-m x`, `--model x`,
- * `--model=x`, or a `-c model=x` config pair. An adapter left to its own
- * default names no model here, and the caller falls back to the agent's id.
- */
-export function pinnedModel(args: readonly string[]): string | undefined {
-  for (const [index, arg] of args.entries()) {
-    if (arg === '-m' || arg === '--model') return args[index + 1];
-    if (arg.startsWith('--model=')) return arg.slice('--model='.length);
-    const pair = arg === '-c' || arg === '--config' ? args[index + 1] : arg;
-    if (pair?.startsWith('model=')) return pair.slice('model='.length);
-  }
-  return undefined;
+/** An agent as a task names it: `agent`, or `agent:model` where one was chosen. */
+function modelled(agentId: string, record: { model?: string }): string {
+  return record.model ? `${agentId}:${record.model}` : agentId;
 }
 
 /** One-line rendering for non-interactive output. Returns nothing for noise. */
@@ -654,7 +648,7 @@ export function describeRecord(record: TranscriptRecord, workspaceDir: string): 
       // An empty text retracts a streamed block; there is nothing to print.
       return record.text === '' ? undefined : `\n${record.text}\n`;
     case 'delegation':
-      return `→ ${record.agentId}: ${record.task}`;
+      return `→ ${modelled(record.agentId, record)}: ${record.task}`;
     case 'note':
       return [record.text, ...(record.lines ?? [])].map((line) => `  ${line}`).join('\n');
     case 'decision':

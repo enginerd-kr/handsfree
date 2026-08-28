@@ -2,13 +2,87 @@ import type {
   ContentBlock,
   PromptRequest,
   PromptResponse,
+  SessionConfigOption,
+  SessionConfigSelectOptions,
   SessionUpdate,
   StopReason,
 } from '@agentclientprotocol/sdk';
+import { matchModel, type ModelChoice } from './models.js';
 
 export interface SessionTransport {
   prompt(request: PromptRequest, signal: AbortSignal): Promise<PromptResponse>;
   cancel(sessionId: string): Promise<void>;
+  /** The spec'd switch: a `select` config option in the `model` category. */
+  setConfigOption(request: { sessionId: string; configId: string; value: string }): Promise<void>;
+  /** The draft `session/set_model`, for the adapters still on the older dialect. */
+  setModel(request: { sessionId: string; modelId: string }): Promise<void>;
+}
+
+/**
+ * What an agent said about models when a session opened: which it offers,
+ * which it is on, and how it takes a switch. The agent is the authority —
+ * every adapter handsfree ships with is the CLI's own current one, so the
+ * roster it advertises is the roster the CLI has.
+ */
+export interface ModelState {
+  wire: { kind: 'config_option'; configId: string } | { kind: 'set_model' };
+  current: string;
+  choices: ModelChoice[];
+}
+
+/** The draft `models` field, off the SDK's schema but not stripped from the wire. */
+interface UnstableModelState {
+  availableModels: { modelId: string; name?: string; description?: string | null }[];
+  currentModelId: string;
+}
+
+/**
+ * Reads the roster off a `session/new` or `session/load` answer, in whichever
+ * dialect it came: a `select` config option in the `model` category, or the
+ * draft `models` field. Config options win when both are present — they are
+ * the spec'd of the two.
+ */
+export function modelStateOf(response: {
+  configOptions?: readonly SessionConfigOption[] | null;
+  models?: unknown;
+}): ModelState | undefined {
+  const selects = (response.configOptions ?? []).filter((option) => option.type === 'select');
+  const option =
+    selects.find((entry) => entry.category === 'model') ??
+    selects.find((entry) => entry.id === 'model');
+  if (option) {
+    return {
+      wire: { kind: 'config_option', configId: option.id },
+      current: option.currentValue,
+      choices: flatten(option.options),
+    };
+  }
+  const draft = response.models as UnstableModelState | undefined;
+  if (draft?.availableModels) {
+    return {
+      wire: { kind: 'set_model' },
+      current: draft.currentModelId,
+      choices: draft.availableModels.map((model) => ({
+        value: model.modelId,
+        ...(model.description ? { description: model.description } : {}),
+      })),
+    };
+  }
+  return undefined;
+}
+
+/** Select options arrive flat or under group headers; either way, one list. */
+function flatten(options: SessionConfigSelectOptions): ModelChoice[] {
+  const choices: ModelChoice[] = [];
+  for (const entry of options) {
+    for (const option of 'options' in entry ? entry.options : [entry]) {
+      choices.push({
+        value: option.value,
+        ...(option.description ? { description: option.description } : {}),
+      });
+    }
+  }
+  return choices;
 }
 
 export interface PromptOptions {
@@ -37,6 +111,8 @@ export class HostSession {
   private turn: AbortController | undefined;
   private lastUpdateAt = 0;
   private busy = false;
+  /** What the agent said about models, once its opening answer has said it. */
+  private state: ModelState | undefined;
 
   constructor(
     readonly agentId: string,
@@ -45,10 +121,78 @@ export class HostSession {
     private readonly onUpdate: (update: SessionUpdate) => void,
   ) {}
 
+  /**
+   * The roster a `session/new` or `session/load` answered with. Kept apart
+   * from the constructor because a loaded session has to exist before the load
+   * resolves — the replayed updates land on it.
+   */
+  adoptModelState(state: ModelState | undefined): void {
+    if (state) this.state = state;
+  }
+
   /** Called by the connection for every `session/update` addressed to us. */
   receive(update: SessionUpdate): void {
     this.lastUpdateAt = Date.now();
+    // An agent may move its own model mid-session and say so. Re-reading it
+    // here is what keeps the roll call honest about what is actually loaded.
+    if (update.sessionUpdate === 'config_option_update') {
+      this.adoptModelState(modelStateOf({ configOptions: update.configOptions }));
+    }
     this.onUpdate(update);
+  }
+
+  /** The models this session's agent offers, in the order it offered them. */
+  models(): readonly ModelChoice[] {
+    return this.state?.choices ?? [];
+  }
+
+  /** The model the session is on, as the agent last reported or was told. */
+  currentModel(): string | undefined {
+    return this.state?.current;
+  }
+
+  /**
+   * Switches the session to the model `wanted` names, matched the way a person
+   * types it — the id exactly, then as a prefix, then anywhere in it. Nothing
+   * or several is an error naming what the agent actually offers: the caller's
+   * user typed blind, and the roster is the answer they need.
+   */
+  async selectModel(wanted: string): Promise<ModelChoice> {
+    const state = this.state;
+    if (!state) {
+      throw new Error(
+        `${this.agentId} offers no model selection over ACP; ` +
+          'pin the model in its launch profile instead.',
+      );
+    }
+    const resolved = matchModel(wanted, state.choices);
+    if (resolved === undefined) {
+      throw new Error(
+        `${this.agentId} offers no model matching "${wanted}". It offers: ` +
+          `${state.choices.map((choice) => choice.value).join(', ')}.`,
+      );
+    }
+    if (Array.isArray(resolved)) {
+      throw new Error(
+        `"${wanted}" could be any of ${resolved.map((c) => c.value).join(', ')} — ` +
+          'say more of the name.',
+      );
+    }
+    if (resolved.value === state.current) return resolved;
+
+    if (state.wire.kind === 'config_option') {
+      await this.transport.setConfigOption({
+        sessionId: this.sessionId,
+        configId: state.wire.configId,
+        value: resolved.value,
+      });
+    } else {
+      // The draft dialect answers with nothing and notifies nothing; the
+      // request succeeding is the whole confirmation, so the state moves here.
+      await this.transport.setModel({ sessionId: this.sessionId, modelId: resolved.value });
+    }
+    this.state = { ...state, current: resolved.value };
+    return resolved;
   }
 
   get isBusy(): boolean {

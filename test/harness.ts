@@ -12,6 +12,8 @@ export interface HarnessOptions {
     capabilities: Partial<Config['capabilities']>;
     policy: Record<string, unknown>;
     limits: Partial<Config['limits']>;
+    /** Per-agent profile fields beyond the command — the optional model override. */
+    profiles: Record<string, { model?: string }>;
   }>;
   llm?: ChatClient;
   /** Where command files are looked for. Defaults to the process's own cwd. */
@@ -29,7 +31,10 @@ export function harness(options: HarnessOptions): Harness {
   const config = ConfigSchema.parse({
     workspaceRoot: root,
     agents: Object.fromEntries(
-      Object.keys(options.agents).map((id) => [id, { command: 'unused', args: [] }]),
+      Object.keys(options.agents).map((id) => [
+        id,
+        { command: 'unused', args: [], ...(options.config?.profiles?.[id] ?? {}) },
+      ]),
     ),
     capabilities: { terminal: true, ...(options.config?.capabilities ?? {}) },
     policy: options.config?.policy ?? {},

@@ -47,6 +47,14 @@ export const AgentProfileSchema = z
     env: z.record(z.string(), z.string().nullable()).default({}),
     /** One-line capability note used when routing. Overridden by what `initialize` reports. */
     note: z.string().default(''),
+    /**
+     * The model every session with this agent is put on when it opens, matched
+     * against the roster the agent advertises the way a `:model` mention is.
+     * Optional, and usually absent: every adapter handsfree ships with is the
+     * CLI's own current one, so the default it comes up on is the CLI's. Set
+     * it only to override that.
+     */
+    model: z.string().min(1).optional(),
   })
   .superRefine((profile, ctx) => {
     try {
@@ -58,33 +66,28 @@ export const AgentProfileSchema = z
 export type AgentProfile = z.infer<typeof AgentProfileSchema>;
 
 /**
- * Launch profiles as of the adapters that exist today. `claude` and `codex` have
- * no native ACP mode, so they go through Zed's adapters; `gemini` speaks ACP
- * itself but has renamed the flag once already, hence the probe list.
+ * Launch profiles as of the adapters that exist today, each the one the ACP
+ * registry names as canonical. None pins a model: every one of these adapters
+ * is the CLI's own current adapter, so the roster it advertises and the model
+ * it comes up on are the CLI's. A profile only needs `model` to disagree with
+ * that.
  */
 export const DEFAULT_AGENTS: Record<string, z.input<typeof AgentProfileSchema>> = {
   claude: {
     command: 'npx',
-    args: ['-y', '@zed-industries/claude-code-acp'],
+    args: ['-y', '@agentclientprotocol/claude-agent-acp'],
     note: 'general coding agent, strong at multi-file edits',
   },
   gemini: {
     command: 'gemini',
-    // The model is pinned on purpose: left to itself the CLI picks a default
-    // that is already retired for new keys, and the turn fails with a generic
-    // "Internal error" the first time you prompt it.
-    args: ['--experimental-acp', '-m', 'gemini-3.5-flash'],
+    // The CLI speaks ACP itself, so there is no adapter to fall behind it.
+    // The flag was renamed once; `fallbackArgs` tries the older spelling.
+    args: ['--acp'],
     note: 'fast, good at bulk text and single-file work',
   },
   codex: {
     command: 'npx',
-    // Pinned for the same reason gemini is, by a different route: the adapter
-    // bundles its own Codex core, and left alone it reads the model out of
-    // `~/.codex/config.toml` — where the CLI, updated on its own schedule, has
-    // long since written a newer one. The turn then dies on the far side with
-    // "requires a newer version of Codex", and a ChatGPT account refuses every
-    // model named explicitly except the one this core already knows.
-    args: ['-y', '@zed-industries/codex-acp', '-c', 'model=gpt-5.5'],
+    args: ['-y', '@agentclientprotocol/codex-acp'],
     note: 'methodical coding agent, good at tests and refactors',
   },
 };
