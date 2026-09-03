@@ -967,4 +967,36 @@ describe('Conversation across a restart', () => {
       );
     expect(replayed).toHaveLength(0);
   });
+
+  it('waits out a replay that keeps arriving after the load was answered', async () => {
+    const gemini = fakeAgent({
+      loadSession: true,
+      replay: ['late one', 'late two', 'late three'],
+      replayLate: true,
+      script: () => [{ do: 'say', text: 'ok\n\nREPORT\noutcome: done\nsummary: Fine.' }],
+    });
+    const before = harness({ agents: { gemini }, llm: scriptedModel([answer('a')]) });
+    await before.runtime.conversation.send('@gemini one');
+    const { root } = before;
+    const runId = before.runtime.workspace.id;
+    await before.runtime.close();
+
+    const after = harness({ agents: { gemini }, llm: scriptedModel([answer('b')]), resume: { root, runId } });
+    open = after;
+    await after.runtime.conversation.send('@gemini two');
+
+    const records = after.runtime.transcript.all();
+    const late = records.filter(
+      (record) =>
+        record.type === 'session_update' &&
+        record.update.sessionUpdate === 'agent_message_chunk' &&
+        record.update.content.type === 'text' &&
+        record.update.content.text.startsWith('late'),
+    );
+    expect(late).toHaveLength(0);
+    // The turn itself is on the record, after the replay, whole.
+    const task = records.filter((record) => record.type === 'delegation');
+    expect(task.map((record) => (record.type === 'delegation' ? record.taskId : 0))).toEqual([1, 2]);
+    expect(gemini.prompts).toHaveLength(2);
+  });
 });

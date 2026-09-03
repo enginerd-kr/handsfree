@@ -240,6 +240,9 @@ export class AgentConnection {
         mcpServers: [],
       });
       session.adoptModelState(modelStateOf(response));
+      // The answer is not the end of the replay for every agent; the quiet
+      // after it is.
+      await session.untilQuiet(REPLAY_GAP_MS, REPLAY_CAP_MS);
       return session;
     } catch {
       this.sessions.delete(sessionId);
@@ -355,6 +358,11 @@ function orBroken<T>(
   }
   return Promise.race(races).finally(() => clearTimeout(timer));
 }
+
+/** How long a loaded session has to be silent before its replay is taken as over. */
+const REPLAY_GAP_MS = 200;
+/** How long to wait for that silence at most, for an agent that keeps talking. */
+const REPLAY_CAP_MS = 2_000;
 
 /**
  * Every update is written to the transcript before anything interprets it, so

@@ -72,6 +72,11 @@ export interface FakeAgentOptions {
   /** What the agent replays, as message chunks, while a `session/load` is in flight. */
   replay?: string[];
   /**
+   * Replay the way gemini does: answer the load first, then send the chunks
+   * a few milliseconds later, one at a time.
+   */
+  replayLate?: boolean;
+  /**
    * Advertise a model selector offering these, the first one current. This is
    * the roster the host reads: which models exist, and which one the session
    * came up on. A switch to an id not on it is refused, as a real adapter
@@ -163,12 +168,19 @@ export function fakeAgent(options: FakeAgentOptions): FakeAgent {
       ...advertised(),
     }))
     .onRequest(methods.agent.session.load, async (ctx) => {
-      for (const text of options.replay ?? []) {
-        await ctx.client.notify(methods.client.session.update, {
+      const chunk = (text: string) =>
+        ctx.client.notify(methods.client.session.update, {
           sessionId: ctx.params.sessionId,
           update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } },
         });
+      if (options.replayLate) {
+        // Spread over ~60ms, all of it after the answer below has gone out.
+        (options.replay ?? []).forEach((text, at) => {
+          setTimeout(() => void chunk(text), 5 + at * 20);
+        });
+        return advertised();
       }
+      for (const text of options.replay ?? []) await chunk(text);
       return advertised();
     })
     .onRequest(methods.agent.session.setConfigOption, (ctx) => {

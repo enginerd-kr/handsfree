@@ -143,6 +143,24 @@ export class HostSession {
     if (state) this.state = state;
   }
 
+  /**
+   * Resolves once no update has arrived for `gapMs`, or after `capMs` in any
+   * case. For the tail of a `session/load`: an agent may answer the load
+   * before it has finished replaying the conversation — gemini does, in a
+   * burst a few milliseconds long — and a prompt sent into that burst would
+   * have the replay recorded as its own.
+   */
+  async untilQuiet(gapMs: number, capMs: number): Promise<void> {
+    const started = Date.now();
+    for (;;) {
+      const now = Date.now();
+      if (now - started >= capMs) return;
+      const idle = now - this.lastUpdateAt;
+      if (idle >= gapMs) return;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(gapMs - idle, capMs - (now - started))));
+    }
+  }
+
   /** Called by the connection for every `session/update` addressed to us. */
   receive(update: SessionUpdate): void {
     this.lastUpdateAt = Date.now();
