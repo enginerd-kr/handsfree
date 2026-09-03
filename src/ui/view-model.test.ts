@@ -624,3 +624,28 @@ describe('turnPhase', () => {
     expect(turnPhase(t.all())).toBe('start');
   });
 });
+
+describe('a delegation row under the line that named its agent', () => {
+  it('shows the routing alone when the task is the line as typed', () => {
+    const t = transcript();
+    t.append({ type: 'user', text: '@claude run the tests' });
+    t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'run the tests' });
+    const view = buildView(t.all(), WORKSPACE);
+    expect(view[1]).toMatchObject({ label: 'claude', text: '' });
+  });
+
+  it('shows the task when the planner wrote it', () => {
+    const t = transcript();
+    t.append({ type: 'user', text: 'make the tests pass' });
+    t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'Fix the failing test in a.test.ts' });
+    const view = buildView(t.all(), WORKSPACE);
+    expect(view[1]).toMatchObject({ label: 'claude', text: 'Fix the failing test in a.test.ts' });
+  });
+
+  it('shows the task when a mention named a different agent than the one that ran it', () => {
+    const t = transcript();
+    t.append({ type: 'user', text: '@gemini run the tests' });
+    t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'run the tests' });
+    expect(buildView(t.all(), WORKSPACE)[1]?.text).toBe('run the tests');
+  });
+});

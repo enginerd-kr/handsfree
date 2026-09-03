@@ -36,12 +36,14 @@ export async function run(
     ...(options.configSources === undefined ? {} : { configSources: options.configSources }),
   });
 
+  let lastUserText = '';
   const onRecord = (record: TranscriptRecord) => {
     if (options.json) {
       write(JSON.stringify(record));
       return;
     }
-    const line = describeRecord(record, runtime.workspace.dir);
+    if (record.type === 'user') lastUserText = record.text;
+    const line = describeRecord(record, runtime.workspace.dir, { lastUserText });
     if (line) write(line);
   };
   runtime.transcript.on('record', onRecord);

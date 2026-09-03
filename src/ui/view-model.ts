@@ -8,6 +8,7 @@ import type {
   ToolCallContent,
   ToolCallStatus,
 } from '@agentclientprotocol/sdk';
+import { parseMention } from '../mention/mention.js';
 import type { TranscriptRecord } from '../workspace/transcript.js';
 
 export type Tone = 'normal' | 'muted' | 'good' | 'bad' | 'warn' | 'accent' | 'brand';
@@ -109,6 +110,8 @@ export function buildView(
 ): ViewItem[] {
   const items: ViewItem[] = [];
   const byKey = new Map<string, ViewItem>();
+  /** The line the person typed last, for a delegation row not to repeat it. */
+  let lastUserText = '';
   const tools = new Map<string, ToolState>();
 
   // Streamed chunks arrive as many records but read as one block, so the block
@@ -171,6 +174,7 @@ export function buildView(
       case 'user':
         closeBlocks();
         closeTool();
+        lastUserText = record.text;
         add(row(`u${record.seq}`, 'user', 0, 'prompt', 'muted', record.text, 'normal', true));
         break;
 
@@ -218,7 +222,16 @@ export function buildView(
         closeBlocks();
         closeTool();
         const item = add(
-          row(`d${record.seq}`, 'system', 0, 'bullet', 'brand', record.task, 'normal', true),
+          row(
+            `d${record.seq}`,
+            'system',
+            0,
+            'bullet',
+            'brand',
+            taskAsShown(record.task, record.agentId, lastUserText),
+            'normal',
+            true,
+          ),
         );
         // The label spells the routing the way it was asked for: the agent,
         // and the model when the task chose one — by the id it was switched
@@ -755,15 +768,21 @@ function modelled(agentId: string, record: { model?: string }): string {
 }
 
 /** One-line rendering for non-interactive output. Returns nothing for noise. */
-export function describeRecord(record: TranscriptRecord, workspaceDir: string): string | undefined {
+export function describeRecord(
+  record: TranscriptRecord,
+  workspaceDir: string,
+  options: { lastUserText?: string } = {},
+): string | undefined {
   switch (record.type) {
     case 'user':
       return `> ${record.text}`;
     case 'assistant':
       // An empty text retracts a streamed block; there is nothing to print.
       return record.text === '' ? undefined : `\n${record.text}\n`;
-    case 'delegation':
-      return `→ ${modelled(record.agentId, record)}: ${record.task}`;
+    case 'delegation': {
+      const task = taskAsShown(record.task, record.agentId, options.lastUserText ?? '');
+      return `→ ${modelled(record.agentId, record)}${task ? `: ${task}` : ''}`;
+    }
     case 'note':
       return [record.text, ...(record.lines ?? [])].map((line) => `  ${line}`).join('\n');
     case 'decision':
@@ -783,6 +802,18 @@ export function describeRecord(record: TranscriptRecord, workspaceDir: string): 
     default:
       return undefined;
   }
+}
+
+/**
+ * The task a delegation row shows. A line that named its agent — `@claude
+ * run the tests` — is its own brief, word for word, and the row under it
+ * that said the same words again was a line about nothing; it shows the
+ * routing alone. A task the planner wrote is shown, since the planner's
+ * words are not the person's.
+ */
+function taskAsShown(task: string, agentId: string, lastUserText: string): string {
+  const typed = parseMention(lastUserText, [agentId]);
+  return typed && typed.task === task ? '' : task;
 }
 
 function relative(file: string, root: string): string {
