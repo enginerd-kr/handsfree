@@ -108,12 +108,54 @@ describe('PolicyEngine', () => {
     expect(refused.verdict).toBe('deny');
   });
 
-  it('refuses an execute tool call it cannot read', async () => {
+  // The four titles below are what gemini-cli 0.57 sends: no rawInput, and
+  // the command itself as the title.
+  it('judges a command an agent states only in the title, as gemini does', async () => {
+    const policy = engine({ exec: { enabled: true, allow: ['node'] } });
+    const decision = await policy.resolve({
+      kind: 'tool',
+      toolKind: 'execute',
+      title: 'node --experimental-strip-types test.mjs',
+      locations: [],
+      rawInput: null,
+      ...where,
+    });
+    expect(decision).toMatchObject({ verdict: 'allow', rule: 'exec.allow:node' });
+  });
+
+  it('puts a title-only command the allowlist does not name to the usual question', async () => {
+    const policy = engine({ exec: { enabled: true, allow: ['node'] } });
+    const decision = await policy.resolve({
+      kind: 'tool',
+      toolKind: 'execute',
+      title: 'rm -rf build',
+      locations: [],
+      rawInput: null,
+      ...where,
+    });
+    // Headless, a question is a refusal — by the exec rule, not as unreadable.
+    expect(decision).toMatchObject({ verdict: 'deny', rule: 'exec.otherwise' });
+  });
+
+  it('sees the shell operators in a title-only command', async () => {
+    const policy = engine({ exec: { enabled: true, allow: ['node'] } });
+    const decision = await policy.resolve({
+      kind: 'tool',
+      toolKind: 'execute',
+      title: 'node test.mjs && rm -rf /',
+      locations: [],
+      rawInput: null,
+      ...where,
+    });
+    expect(decision).toMatchObject({ verdict: 'deny', rule: 'exec.shellOperators' });
+  });
+
+  it('leaves an execute tool call it cannot read to a person, and refuses it without one', async () => {
     const policy = engine({ exec: { enabled: true, allow: ['ls'] } });
     const decision = await policy.resolve({
       kind: 'tool',
       toolKind: 'execute',
-      title: 'Run something',
+      title: 'echo "an unbalanced quote',
       locations: [],
       rawInput: null,
       ...where,

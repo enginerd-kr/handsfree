@@ -345,14 +345,16 @@ export class PolicyEngine {
         }
         return { outcome: this.policy.fs.write, rule: 'tool.write', reason: request.title };
       case 'execute': {
-        const command = commandFromRawInput(request.rawInput);
+        // gemini sends no input at all, for a shell call or any other; what it
+        // sends is the title, and for a shell call the title is the command
+        // itself — the description only when the command runs long. The title
+        // is judged as the command, then: it is the agent's word, but so is a
+        // rawInput. What cannot be read as a command is put to a person,
+        // who is shown the title and knows more than a parser does.
+        const command = commandFromRawInput(request.rawInput) ?? commandFromTitle(request.title);
         if (!command) {
-          // Some agents describe a command only in the title and keep the real
-          // invocation to themselves — gemini does. Approving that would be
-          // approving whatever its own shell decides to run, which is the one
-          // thing the allowlist exists to prevent. There is no safe yes here.
           return {
-            outcome: 'deny',
+            outcome: this.unknownTarget(),
             rule: 'tool.opaqueCommand',
             reason: 'the agent did not say what it would run in a form handsfree can check',
           };
@@ -439,6 +441,22 @@ export function commandFromRawInput(raw: unknown): { command: string; args: stri
   if (!scan.ok || scan.tokens.length === 0) return undefined;
   // Hand the operator back through the shell path so exec policy judges it.
   if (scan.operator) return { command: 'sh', args: ['-c', input[script] as string] };
+  return { command: scan.tokens[0]!, args: scan.tokens.slice(1) };
+}
+
+/**
+ * The command a shell tool call's title states, for an adapter that states it
+ * nowhere else. gemini-cli's shell tool titles itself with the command when it
+ * is 150 characters or under, or has no description; older builds added an
+ * ` [in <dir>]` suffix, which is cut. A title that does not read as a command
+ * — a description, an unbalanced quote — is not one, and is left to a person.
+ */
+export function commandFromTitle(title: string): { command: string; args: string[] } | undefined {
+  const text = title.replace(/\s\[in [^\]]+\]$/, '').trim();
+  if (text === '') return undefined;
+  const scan = scanScript(text);
+  if (!scan.ok || scan.tokens.length === 0) return undefined;
+  if (scan.operator) return { command: 'sh', args: ['-c', text] };
   return { command: scan.tokens[0]!, args: scan.tokens.slice(1) };
 }
 
