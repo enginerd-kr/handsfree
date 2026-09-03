@@ -2,3 +2,4 @@
 [setup]
 copy = ["handsfree.config.json"]   # gitignored local config, taken from main's worktree
 run  = ["pnpm install", "pnpm build"]
+open = 'open -a "Visual Studio Code" .'
