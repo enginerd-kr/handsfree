@@ -339,3 +339,80 @@ describe('renderHandoff', () => {
     expect(handoff).toContain('changed nothing — refused');
   });
 });
+
+describe('renderHandoff with reports', () => {
+  const REPORT = (summary: string, extra = '') =>
+    `Long prose first.\n\nREPORT\noutcome: done\nsummary: ${summary}\nchanged: b.ts\ndecided: - kept the old name\nopen: - the fixture is missing\nverify: pnpm test${extra}`;
+
+  it('hands on what the agent said it did, decided and left open, and how to check', () => {
+    const transcript = new Transcript();
+    task(transcript, { taskId: 1, agentId: 'gemini', task: 'x', said: REPORT('Rewired the parser.'), edited: ['/ws/a.ts'] });
+    const handoff = renderHandoff({
+      tasks: tasksSince(transcript.all(), 0, { workspaceDir: '/ws' }),
+      agentId: 'claude',
+      includeOwn: false,
+      workspaceDir: '/ws',
+    });
+    expect(handoff).toContain('gemini, task 1: changed a.ts, b.ts');
+    expect(handoff).toContain('did: Rewired the parser.');
+    expect(handoff).toContain('decided: kept the old name');
+    expect(handoff).toContain('open: the fixture is missing');
+    expect(handoff).toContain('verify: pnpm test');
+    expect(handoff).not.toContain('Long prose first');
+  });
+
+  it('spends the budget newest first and counts the rest', () => {
+    const transcript = new Transcript();
+    for (let n = 1; n <= 6; n++) {
+      task(transcript, { taskId: n, agentId: 'gemini', task: `t${n}`, said: REPORT(`Did thing ${n}.`), edited: [`/ws/f${n}.ts`] });
+    }
+    const handoff = renderHandoff({
+      tasks: tasksSince(transcript.all(), 0),
+      agentId: 'claude',
+      includeOwn: false,
+      workspaceDir: '/ws',
+      budgetChars: 400,
+    });
+    expect(handoff).toContain('Did thing 6.');
+    expect(handoff).not.toContain('Did thing 1.');
+    expect(handoff).toMatch(/…\d earlier tasks not listed/);
+    expect(handoff.length).toBeLessThan(600);
+  });
+
+  it('keeps a task that failed on one line even when the budget is spent', () => {
+    const transcript = new Transcript();
+    task(transcript, { taskId: 1, agentId: 'gemini', task: 'x', said: REPORT('Refused halfway.'), stopReason: 'refusal' });
+    for (let n = 2; n <= 5; n++) {
+      task(transcript, { taskId: n, agentId: 'gemini', task: `t${n}`, said: REPORT(`Did thing ${n}.`), edited: [`/ws/f${n}.ts`] });
+    }
+    const handoff = renderHandoff({
+      tasks: tasksSince(transcript.all(), 0),
+      agentId: 'claude',
+      includeOwn: false,
+      workspaceDir: '/ws',
+      budgetChars: 300,
+    });
+    expect(handoff).toContain('gemini, task 1: changed nothing — refused');
+    expect(handoff).not.toContain('Refused halfway.');
+  });
+});
+
+describe('renderRunState with reports', () => {
+  it('spells out as many tasks as it is told to, and counts the rest', () => {
+    const transcript = new Transcript();
+    for (let n = 1; n <= 5; n++) task(transcript, { taskId: n, agentId: 'gemini', task: `t${n}` });
+    const state = renderRunState(tasksSince(transcript.all(), 0), '/ws', 2);
+    expect(state).toContain('…3 earlier tasks not listed (3 by gemini).');
+    expect(state).toContain('Task 4 (gemini)');
+    expect(state).toContain('Task 5 (gemini)');
+    expect(state).not.toContain('Task 3 (gemini)');
+  });
+
+  it('notes where the agent\'s own word on a finished turn is not "done"', () => {
+    const transcript = new Transcript();
+    task(transcript, { taskId: 1, agentId: 'gemini', task: 'x', said: 'REPORT\noutcome: blocked\nsummary: Needs a token.' });
+    const state = renderRunState(tasksSince(transcript.all(), 0), '/ws');
+    expect(state).toContain('Task 1 (gemini): done');
+    expect(state).toContain('agent says: blocked');
+  });
+});

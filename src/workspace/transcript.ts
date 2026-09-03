@@ -44,18 +44,23 @@ export type TranscriptBody =
   | { type: 'stop'; taskId: number; agentId: string; sessionId: string; stopReason: StopReason }
   | { type: 'decision'; agentId: string; entry: AuditEntry }
   /**
-   * What one call to the orchestration model cost. Characters are counted here
-   * and are always present; tokens are the endpoint's own figure and are there
-   * only when it gave one. Not shown anywhere — this is the number to read
-   * when a run feels expensive, and the file is where to read it.
+   * What one exchange cost. For the orchestration model (`plan`, `narrate`)
+   * characters are counted here and are always present; tokens are the
+   * endpoint's own figure and are there only when it gave one. For a `task`
+   * the prompt is the brief the agent was sent, the reply is everything it said,
+   * and `relayedChars` is how much of that the planner was then handed — the
+   * gap between the last two is what the report contract saves. `/cost` adds
+   * these up; the file is where to read them one by one.
    */
   | {
       type: 'usage';
-      purpose: 'plan' | 'narrate';
+      purpose: 'plan' | 'narrate' | 'task';
       promptChars: number;
       replyChars: number;
       promptTokens?: number;
       completionTokens?: number;
+      taskId?: number;
+      relayedChars?: number;
     };
 
 export type TranscriptRecord = TranscriptBody & { seq: number; at: number };

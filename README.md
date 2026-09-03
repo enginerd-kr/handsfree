@@ -59,7 +59,7 @@ You can also explicitly address an agent using `@`, and optionally specify a tar
 > @codex:gpt-4o write a test first
 ```
 
-Lines starting with `/` are interpreted as commands. `/agents` lists the active roster, `/help` displays all available commands, and you can extend this by adding custom markdown-defined commands in `.handsfree/commands/*.md` within your project directory.
+Lines starting with `/` are interpreted as commands. `/agents` lists the active roster, `/cost` shows what the run has spent on planning and how much of the agents' replies reached the planner, `/help` displays all available commands, and you can extend this by adding custom markdown-defined commands in `.handsfree/commands/*.md` within your project directory.
 
 The directory where you launch `handsfree` serves as the workspace—the single, sandboxed directory where all agents read and write.
 

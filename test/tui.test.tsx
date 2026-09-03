@@ -540,11 +540,11 @@ describe('terminal UI', () => {
     };
     try {
       await waitFor(() => app.lastFrame(), PROMPT_CHAR);
-      // The bare slash offers everything, shortest name first: exit, help,
-      // clear. Two steps down lands on the third.
+      // The bare slash offers everything, shortest name first and then by
+      // name: cost, exit, help, clear. Three steps down lands on the fourth.
       await press('/');
       await waitFor(() => app.lastFrame(), '/clear');
-      await press('\x1b[B', '\x1b[B', '\r');
+      await press('\x1b[B', '\x1b[B', '\x1b[B', '\r');
 
       await waitFor(() => app.lastFrame(), 'cleared');
       expect(app.lastFrame()).not.toContain('Working');

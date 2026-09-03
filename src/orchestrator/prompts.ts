@@ -1,3 +1,5 @@
+import { REPORT_FORMAT, REPORT_REMINDER } from './report.js';
+
 export type TaskKind = 'answer' | 'change';
 
 export interface BriefInput {
@@ -5,6 +7,11 @@ export interface BriefInput {
   /** Whether the agent is being asked for words or for a changed workspace. */
   kind: TaskKind;
   doneWhen: string | undefined;
+  /**
+   * What the planner chose to pass on beyond the task: a fact from the
+   * conversation the handoff does not carry. Empty is the usual case.
+   */
+  context?: string | undefined;
   workspaceDir: string;
   /** The first brief of a session explains the ground rules; later ones do not. */
   first: boolean;
@@ -24,6 +31,11 @@ export interface BriefInput {
  * An answer task says so in the brief rather than leaving it to be inferred. An
  * agent handed a bare question inside a workspace will otherwise write the
  * answer to a file, because that is what a coding agent is for.
+ *
+ * The report format goes out with the ground rules — once per session, and
+ * again whenever the rules are repeated, since a session that has compacted
+ * its opening away has lost the format along with them. Every other brief ends
+ * on a one-line reminder: ten tokens, against the block it earns back.
  */
 export function buildBrief(input: BriefInput): string {
   const lines = [input.task];
@@ -35,6 +47,7 @@ export function buildBrief(input: BriefInput): string {
     );
   }
   if (input.doneWhen) lines.push('', `Done when: ${input.doneWhen}`);
+  if (input.context) lines.push('', `Context: ${input.context}`);
   if (input.handoff) lines.push('', input.handoff);
   if (input.first) {
     lines.push(
@@ -42,8 +55,11 @@ export function buildBrief(input: BriefInput): string {
       `Work inside ${input.workspaceDir}. Everything you create must live there.`,
       'handsfree approves or refuses every file operation and every command you request.',
       'If something is refused, do not retry it and do not work around it — finish what you can and say plainly what was refused.',
-      'End your turn with a short account of what you did.',
+      '',
+      REPORT_FORMAT,
     );
+  } else {
+    lines.push('', REPORT_REMINDER);
   }
   return lines.join('\n');
 }

@@ -1,9 +1,22 @@
 import type { StopReason } from '@agentclientprotocol/sdk';
-import { agentRole, type Config } from '../config/schema.js';
-import { trimHistory, type ChatClient, type ChatMessage } from '../brain/client.js';
+import { agentRole, contextBudgetTokens, type Config } from '../config/schema.js';
+import {
+  estimateTokens,
+  fitBudget,
+  trimHistory,
+  type ChatClient,
+  type ChatMessage,
+} from '../brain/client.js';
 import type { OrchestrationChoice } from '../brain/planner.js';
 import { narrate } from '../brain/narrate.js';
-import { nextStep, planSystemPrompt, type AgentCard, type AnswerStream } from '../brain/plan.js';
+import {
+  composeUserMessage,
+  nextStep,
+  planSystemPrompt,
+  renderState,
+  type AgentCard,
+  type AnswerStream,
+} from '../brain/plan.js';
 import { SessionUnresponsiveError } from '../host/session.js';
 import type { ModelChoice } from '../host/models.js';
 import type { AgentPool } from '../host/pool.js';
@@ -23,14 +36,24 @@ import { parseMention, parseOrchestration } from '../mention/mention.js';
 import {
   agentRecords,
   floorOf,
+  LEDGER_TASKS,
   renderAgentRecord,
   renderHandoff,
   renderRunState,
   tasksSince,
+  type LedgerOptions,
 } from './ledger.js';
 import { summarise, renderOutcome, type TaskOutcome } from './outcome.js';
 import { buildBrief, type TaskKind } from './prompts.js';
+import { DEFAULT_REPORT_LIMITS } from './report.js';
 import { metered } from './usage.js';
+
+/**
+ * How much of the planner's budget the system prompt, the run state and the
+ * user's line may take between them before the run state is shortened. The
+ * rest is for the history, and for the steps a turn adds as it goes.
+ */
+const STATE_SHARE = 0.6;
 
 export interface ConversationDeps {
   config: Config;
@@ -222,8 +245,12 @@ export class Conversation {
      * The turn as the planner will remember it: the line the user typed and
      * the reply that closed it. Everything between — the steps, the task
      * results — is dropped once the turn is over, since what they said is by
-     * then in the run state under the system prompt.
+     * then in the run state. `sent` is the line as it went out, with the run
+     * state ahead of it; `opening` is the line alone, which is what the
+     * history keeps once the turn is over, so what was sent before never
+     * changes under the messages that come after it.
      */
+    let sent: ChatMessage | undefined;
     let opening: ChatMessage | undefined;
     let closing: string | undefined;
     const epoch = this.epoch;
@@ -248,7 +275,8 @@ export class Conversation {
       // it — the one thing it must never be asked to do.
       history = this.messages;
       opening = { role: 'user', content: prompt };
-      history.push(opening);
+      sent = { role: 'user', content: composeUserMessage(this.runState(agents, prompt), prompt) };
+      history.push(sent);
 
       // A line that leads with "@agent" has already chosen its recipient, so
       // the planner is never consulted: what follows the name is the task,
@@ -274,14 +302,12 @@ export class Conversation {
           'change',
           mention.task,
           undefined,
+          undefined,
           turn.signal,
           mention.model,
         );
         outcomes.push(outcome);
-        history.push({
-          role: 'user',
-          content: `TASK RESULT\n${renderOutcome(outcome, workspace.dir).slice(0, config.limits.maxResultChars)}`,
-        });
+        history.push({ role: 'user', content: this.relay(outcome) });
         return;
       }
 
@@ -317,13 +343,11 @@ export class Conversation {
           planned.step.kind,
           planned.step.task,
           planned.step.done_when,
+          planned.step.context,
           turn.signal,
         );
         outcomes.push(outcome);
-        history.push({
-          role: 'user',
-          content: `TASK RESULT\n${renderOutcome(outcome, workspace.dir).slice(0, config.limits.maxResultChars)}`,
-        });
+        history.push({ role: 'user', content: this.relay(outcome) });
 
         if (outcome.status === 'cancelled' || outcome.status === 'error') break;
       }
@@ -351,22 +375,51 @@ export class Conversation {
         closing = JSON.stringify({ action: 'answer', message: summary });
         stream.end(summary);
       }
-      if (opening) this.settle(epoch, history, opening, closing);
+      if (sent && opening) this.settle(epoch, history, sent, opening, closing);
       this.turn = undefined;
     }
+  }
+
+  /**
+   * What the planner is handed when a task ends: the head, the report's
+   * summary and open items, and — unless the config asks for the whole reply
+   * — a reminder that the user has already seen the rest. Written down as it
+   * goes out, against what the agent actually said, so `/cost` can say what
+   * the report contract saved.
+   */
+  private relay(outcome: TaskOutcome): string {
+    const { config, transcript, workspace } = this.deps;
+    const relayMessage = config.orchestration.relayAnswers;
+    const lines = [renderOutcome(outcome, workspace.dir, { relayMessage })];
+    if (!relayMessage && outcome.message) {
+      lines.push(`(The user has already seen ${outcome.agentId}'s full reply on screen; do not repeat it.)`);
+    }
+    const result = `TASK RESULT\n${lines.join('\n')}`.slice(0, config.limits.maxResultChars);
+    transcript.append({
+      type: 'usage',
+      purpose: 'task',
+      taskId: outcome.taskId,
+      promptChars: outcome.briefChars ?? 0,
+      replyChars: outcome.message.length,
+      relayedChars: result.length,
+    });
+    return result;
   }
 
   /**
    * Closes the turn in the planner's history: the line the user typed, then
    * the reply — and nothing of the steps and results in between. Those are
    * bulk once the turn is over, and what they established is in the run
-   * state, which is rebuilt from the record at the start of every turn. A
-   * turn that stopped before it could reply closes on a line saying so,
-   * because two user lines in a row is a shape some chat templates refuse.
+   * state, which is rebuilt from the record at the start of every turn. The
+   * run state that went out ahead of the line goes too: it was true then and
+   * is stale now, and the next turn carries a current one. A turn that
+   * stopped before it could reply closes on a line saying so, because two
+   * user lines in a row is a shape some chat templates refuse.
    */
   private settle(
     epoch: number,
     history: readonly ChatMessage[],
+    sent: ChatMessage,
     opening: ChatMessage,
     closing: string | undefined,
   ): void {
@@ -375,7 +428,7 @@ export class Conversation {
     // who asked — that went to the transcript — but folding it into a history
     // that is meant to be empty would put half a turn in a cleared screen.
     if (epoch !== this.epoch) return;
-    const at = history.indexOf(opening);
+    const at = history.indexOf(sent);
     if (at === -1) return;
     const reply = closing ?? JSON.stringify({ action: 'answer', message: '(stopped before finishing)' });
     // A new array rather than a splice: the one being replaced was handed to
@@ -424,7 +477,10 @@ export class Conversation {
     }
     try {
       const llm = metered(this.deps.llm, 'plan', this.deps.transcript);
-      return await nextStep(llm, [...history], agents, signal, stream);
+      // Cut to the budget on the way out, not in place: the history keeps
+      // every message a turn adds, and what is dropped is the oldest of it.
+      const budget = contextBudgetTokens(this.deps.config.orchestration);
+      return await nextStep(llm, fitBudget(history, budget), agents, signal, stream);
     } catch (err) {
       return { ok: false as const, error: (err as Error).message };
     }
@@ -434,11 +490,21 @@ export class Conversation {
     return new AssistantStream(this.deps.transcript, ++this.streamCounter);
   }
 
+  /** How the record is read into outcomes: where the workspace is, how long a summary may be. */
+  private ledgerOptions(): LedgerOptions {
+    const { config, workspace } = this.deps;
+    return {
+      workspaceDir: workspace.dir,
+      report: { ...DEFAULT_REPORT_LIMITS, summaryChars: config.limits.reportSummaryChars },
+    };
+  }
+
   private async delegate(
     agentId: string,
     kind: TaskKind,
     task: string,
     doneWhen: string | undefined,
+    context: string | undefined,
     signal: AbortSignal,
     model?: string,
   ): Promise<TaskOutcome> {
@@ -450,11 +516,13 @@ export class Conversation {
     // the briefing back afterwards would quietly restore a session's claim to
     // have heard rules that were cleared along with everything else.
     const epoch = this.epoch;
+    const options = this.ledgerOptions();
 
     const failed = (err: unknown): TaskOutcome => {
-      const outcome = summarise(taskId, agentId, task, 'unresponsive', [], Date.now() - startedAt);
+      const outcome = summarise(taskId, agentId, task, 'unresponsive', [], Date.now() - startedAt, options);
       transcript.append({ type: 'note', level: 'error', text: (err as Error).message });
-      return { ...outcome, message: (err as Error).message };
+      const message = (err as Error).message;
+      return { ...outcome, message, report: { ...outcome.report, summary: message } };
     };
 
     // The model is settled before the task is even on the record: a name the
@@ -500,13 +568,22 @@ export class Conversation {
     const records = transcript.all();
     const since = fresh ? floorOf(records) : known.since;
     const handoff = renderHandoff({
-      tasks: tasksSince(records, since),
+      tasks: tasksSince(records, since, options),
       agentId,
       includeOwn: fresh,
       workspaceDir: workspace.dir,
       roleOf: (id) => agentRole(config, id),
+      budgetChars: config.limits.handoffBudgetChars,
     });
-    const brief = buildBrief({ task, kind, doneWhen, workspaceDir: workspace.dir, first, handoff });
+    const brief = buildBrief({
+      task,
+      kind,
+      doneWhen,
+      context,
+      workspaceDir: workspace.dir,
+      first,
+      handoff,
+    });
 
     let stopReason: StopReason | 'unresponsive';
     try {
@@ -550,14 +627,10 @@ export class Conversation {
       });
     }
 
-    return summarise(
-      taskId,
-      agentId,
-      task,
-      stopReason,
-      transcript.forTask(taskId),
-      Date.now() - startedAt,
-    );
+    return {
+      ...summarise(taskId, agentId, task, stopReason, transcript.forTask(taskId), Date.now() - startedAt, options),
+      briefChars: brief.length,
+    };
   }
 
   /**
@@ -617,37 +690,49 @@ export class Conversation {
   }
 
   /**
-   * The system prompt, rebuilt at the start of every turn with the run so far
-   * under it. The run state is read off the record from the last `/clear`
-   * on, so a cleared conversation plans from a clean slate the way it is
-   * briefed from one.
+   * The system prompt: the roster and the rules, and nothing that changes
+   * during a run. It is set once and then only replaced when it would differ
+   * — an agent switched off, a role changed — so an endpoint that caches by
+   * prefix keeps it from one turn to the next.
    */
   private ensureSystemPrompt(agents: string[]): void {
-    const { transcript, workspace } = this.deps;
-    const records = transcript.all();
-    const tasks = tasksSince(records, floorOf(records));
-    // The roster carries both halves of a routing decision: what each agent is
-    // for, and what it has open. A role picks the agent suited to the work; the
-    // record picks, between two that suit, the one that has already read it.
-    const worked = agentRecords(tasks);
-    const cards: AgentCard[] = agents.map((id) => {
-      const record = renderAgentRecord(worked.get(id), workspace.dir);
-      return {
-        id,
-        description: agentRole(this.deps.config, id) || 'coding agent',
-        ...(record ? { record } : {}),
-      };
-    });
-    const runState = renderRunState(tasks, workspace.dir);
-    const system = planSystemPrompt(cards, workspace.dir, runState);
-    if (this.messages[0]?.role === 'system') this.messages[0] = { role: 'system', content: system };
-    else this.messages.unshift({ role: 'system', content: system });
+    const cards: AgentCard[] = agents.map((id) => ({
+      id,
+      description: agentRole(this.deps.config, id) || 'coding agent',
+    }));
+    const system = planSystemPrompt(cards, this.deps.workspace.dir);
+    const current = this.messages[0];
+    if (current?.role === 'system') {
+      if (current.content !== system) this.messages[0] = { role: 'system', content: system };
+    } else {
+      this.messages.unshift({ role: 'system', content: system });
+    }
   }
 
   /**
-   * Within a turn the history grows unchecked — bounded by `maxPlanSteps`, and
-   * every message in it is one the planner needs right now. It is trimmed
-   * when the turn settles, after the turn has been folded to two lines.
+   * The run so far, for the head of the user's message: read off the record
+   * from the last `/clear` on, so a cleared conversation plans from a clean
+   * slate the way it is briefed from one. The roster's other half is here
+   * too — what each agent has open — because it is the half that changes.
+   * Shortened, oldest tasks first, until it and the system prompt and the
+   * line itself fit their share of the planner's budget.
    */
-
+  private runState(agents: string[], prompt: string): string {
+    const { config, transcript, workspace } = this.deps;
+    const records = transcript.all();
+    const tasks = tasksSince(records, floorOf(records), this.ledgerOptions());
+    const worked = agentRecords(tasks);
+    const sessions = agents.map((id) => ({
+      id,
+      record: renderAgentRecord(worked.get(id), workspace.dir),
+    }));
+    const fixed = estimateTokens(this.messages[0]?.content ?? '') + estimateTokens(prompt);
+    const budget = Math.floor(contextBudgetTokens(config.orchestration) * STATE_SHARE);
+    let shown = LEDGER_TASKS;
+    for (;;) {
+      const state = renderState(sessions, renderRunState(tasks, workspace.dir, shown));
+      if (fixed + estimateTokens(state) <= budget || shown <= 2) return state;
+      shown = Math.max(2, Math.floor(shown / 2));
+    }
+  }
 }

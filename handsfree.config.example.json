@@ -11,7 +11,9 @@
       "model": "haiku",
       "timeoutMs": 120000
     },
-    "maxHistoryMessages": 30
+    "maxHistoryMessages": 30,
+    "contextBudgetTokens": 8000,
+    "relayAnswers": false
   },
 
   "proxy": {},
@@ -44,7 +46,7 @@
       "otherwise": "ask",
       "shellOperators": "ask",
       "timeoutMs": 120000,
-      "outputByteLimit": 262144,
+      "outputByteLimit": 65536,
       "env": ["PATH", "HOME", "LANG", "TERM", "TMPDIR"]
     },
     "escalation": ["user"],
@@ -58,7 +60,9 @@
     "cancelGraceMs": 10000,
     "maxDelegationsPerTurn": 3,
     "maxPlanSteps": 6,
-    "maxResultChars": 4000,
+    "maxResultChars": 1200,
+    "handoffBudgetChars": 1600,
+    "reportSummaryChars": 300,
     "rebriefEveryTasks": 8
   }
 }

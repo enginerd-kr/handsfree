@@ -1,5 +1,6 @@
 import type { TranscriptRecord } from '../workspace/transcript.js';
 import { relative, renderOutcomeHead, summarise, type TaskOutcome } from './outcome.js';
+import { oneLine, type ReportLimits } from './report.js';
 
 /** A finished task as the transcript tells it, with where in the record it ended. */
 export interface LedgerTask {
@@ -11,11 +12,9 @@ export interface LedgerTask {
 }
 
 /** How many tasks the run state spells out before older ones become a count. */
-const LEDGER_TASKS = 24;
-/** How many handoff entries a brief carries before older ones become a count. */
-const HANDOFF_ENTRIES = 10;
-/** How much of an agent's closing account the next agent is handed. */
-const ACCOUNT_CHARS = 300;
+export const LEDGER_TASKS = 24;
+/** How much of an agent's summary the next agent is handed. */
+const HANDOFF_SUMMARY_CHARS = 200;
 /** How many files a roster line names before the rest become a count. */
 const SESSION_FILES = 6;
 
@@ -32,6 +31,11 @@ export function floorOf(records: readonly TranscriptRecord[]): number {
   return 0;
 }
 
+export interface LedgerOptions {
+  workspaceDir?: string;
+  report?: ReportLimits;
+}
+
 /**
  * Every task that has finished since `after`, oldest first, rebuilt from the
  * record the same way the planner was told about it the first time. Nothing
@@ -43,7 +47,11 @@ export function floorOf(records: readonly TranscriptRecord[]): number {
  * keyed on the stop would keep exactly that one task and drop everything
  * around it — a clean slate with a single stranger standing on it.
  */
-export function tasksSince(records: readonly TranscriptRecord[], after: number): LedgerTask[] {
+export function tasksSince(
+  records: readonly TranscriptRecord[],
+  after: number,
+  options: LedgerOptions = {},
+): LedgerTask[] {
   const open = new Map<number, { at: number; startedAt: number; seq: number }>();
   const tasks: LedgerTask[] = [];
   for (let at = 0; at < records.length; at++) {
@@ -69,6 +77,7 @@ export function tasksSince(records: readonly TranscriptRecord[], after: number):
         record.stopReason,
         slice,
         record.at - start.startedAt,
+        options,
       ),
     });
   }
@@ -80,11 +89,16 @@ export function tasksSince(records: readonly TranscriptRecord[], after: number):
  * it used to keep: a line per task and the files that are different for it.
  * Built from the record by code, so it costs nothing to produce and never
  * drifts from what happened — a model summarising its own history would do
- * both.
+ * both. `maxTasks` is how many are spelled out; the budget the planner runs
+ * under decides it, and the rest become a count.
  */
-export function renderRunState(tasks: readonly LedgerTask[], workspaceDir: string): string {
+export function renderRunState(
+  tasks: readonly LedgerTask[],
+  workspaceDir: string,
+  maxTasks = LEDGER_TASKS,
+): string {
   if (tasks.length === 0) return '';
-  const shown = tasks.slice(-LEDGER_TASKS);
+  const shown = tasks.slice(-Math.max(1, maxTasks));
   const lines: string[] = [];
   const dropped = tasks.length - shown.length;
   if (dropped > 0) {
@@ -98,6 +112,13 @@ export function renderRunState(tasks: readonly LedgerTask[], workspaceDir: strin
   for (const { outcome } of shown) {
     lines.push(renderOutcomeHead(outcome, workspaceDir));
     lines.push(`  task: ${oneLine(outcome.task, 160)}`);
+    // The agent's own word on it, where it differs from the protocol's: a turn
+    // that ended cleanly but says "blocked" is one the planner should not
+    // build on as if it were done.
+    const { report } = outcome;
+    if (report.outcome && report.outcome !== 'done' && outcome.status === 'done') {
+      lines.push(`  agent says: ${report.outcome}`);
+    }
   }
   const changed = new Set<string>();
   for (const { outcome } of tasks) {
@@ -189,41 +210,84 @@ export interface HandoffInput {
    * about a stranger until you know what gemini is for.
    */
   roleOf?: (agentId: string) => string;
+  /**
+   * How long the whole section may be, in characters. Entries are spent newest
+   * first; the ones that do not fit become a count — except a task that did not
+   * finish, which stays in on one line whatever the budget says. What went
+   * wrong is the one thing a session must not be spared.
+   */
+  budgetChars?: number;
 }
+
+/** What a handoff may run to when the caller did not say: about 400 tokens. */
+export const HANDOFF_BUDGET_CHARS = 1600;
 
 /**
  * What the other agents did while this one was not looking, for the foot of
- * its brief: the files each changed and the account each gave of itself, in
- * its own words rather than the planner's. Paths and not contents — the agent
- * can read a file, and reading it is cheaper and truer than being told.
+ * its brief: the files each changed, what it said it did, what it decided and
+ * what it left open — in its own words rather than the planner's. Paths and
+ * not contents — the agent can read a file, and reading it is cheaper and
+ * truer than being told.
  */
 export function renderHandoff(input: HandoffInput): string {
   const relevant = input.tasks.filter(({ outcome }) => {
     if (!input.includeOwn && outcome.agentId === input.agentId) return false;
-    return outcome.changed.length > 0 || outcome.message !== '' || outcome.status !== 'done';
+    return (
+      outcome.changed.length > 0 ||
+      outcome.report.summary !== '' ||
+      outcome.report.open.length > 0 ||
+      outcome.status !== 'done'
+    );
   });
   if (relevant.length === 0) return '';
 
-  const shown = relevant.slice(-HANDOFF_ENTRIES);
+  // Rendered newest first against the budget, then put back in order. The
+  // role goes on an agent's first mention in reading order, so it is settled
+  // once the set of shown entries is known.
+  const entries = relevant.map(({ outcome }) => ({ outcome, lines: renderEntry(outcome, input) }));
+  const budget = input.budgetChars ?? HANDOFF_BUDGET_CHARS;
+  const kept = new Set<number>();
+  let spent = 0;
+  for (let at = entries.length - 1; at >= 0; at--) {
+    const entry = entries[at]!;
+    const cost = entry.lines.join('\n').length + 1;
+    const troubled = entry.outcome.status !== 'done';
+    if (spent + cost <= budget) {
+      spent += cost;
+      kept.add(at);
+    } else if (troubled) {
+      // On one line: the fact of the failure, not the account of it.
+      entry.lines = entry.lines.slice(0, 1);
+      kept.add(at);
+    }
+  }
+
   const lines = ['Since your last task:'];
-  if (relevant.length > shown.length) lines.push(`- …${relevant.length - shown.length} earlier tasks not listed.`);
-  // Once each: the second entry from the same agent is talking about somebody
-  // the reader has by then been introduced to.
+  const dropped = entries.length - kept.size;
+  if (dropped > 0) lines.push(`- …${dropped} earlier tasks not listed.`);
   const introduced = new Set<string>();
-  for (const { outcome } of shown) {
-    const role = introduced.has(outcome.agentId) ? '' : input.roleOf?.(outcome.agentId) ?? '';
-    introduced.add(outcome.agentId);
-    const who = `${outcome.agentId}${role ? ` (${role})` : ''}`;
-    const files = outcome.changed.map((file) => relative(file, input.workspaceDir));
-    const did = files.length > 0 ? `changed ${files.join(', ')}` : 'changed nothing';
-    const status = outcome.status === 'done' ? '' : ` — ${outcome.status}`;
-    lines.push(`- ${who}, task ${outcome.taskId}: ${did}${status}`);
-    if (outcome.message !== '') lines.push(`  "${oneLine(outcome.message, ACCOUNT_CHARS)}"`);
+  for (let at = 0; at < entries.length; at++) {
+    if (!kept.has(at)) continue;
+    const entry = entries[at]!;
+    const { agentId } = entry.outcome;
+    const role = introduced.has(agentId) ? '' : input.roleOf?.(agentId) ?? '';
+    introduced.add(agentId);
+    const who = `${agentId}${role ? ` (${role})` : ''}`;
+    lines.push(entry.lines[0]!.replace('{who}', who), ...entry.lines.slice(1));
   }
   return lines.join('\n');
 }
 
-function oneLine(text: string, max: number): string {
-  const flat = text.replace(/\s+/g, ' ').trim();
-  return flat.length <= max ? flat : `${flat.slice(0, max - 1).trimEnd()}…`;
+function renderEntry(outcome: TaskOutcome, input: HandoffInput): string[] {
+  const files = outcome.changed.map((file) => relative(file, input.workspaceDir));
+  const did = files.length > 0 ? `changed ${files.join(', ')}` : 'changed nothing';
+  const status = outcome.status === 'done' ? '' : ` — ${outcome.status}`;
+  const lines = [`- {who}, task ${outcome.taskId}: ${did}${status}`];
+  const { report } = outcome;
+  if (report.outcome && report.outcome !== 'done') lines.push(`  outcome: ${report.outcome}`);
+  if (report.summary) lines.push(`  did: ${oneLine(report.summary, HANDOFF_SUMMARY_CHARS)}`);
+  for (const item of report.decided) lines.push(`  decided: ${item}`);
+  for (const item of report.open) lines.push(`  open: ${item}`);
+  if (report.verify) lines.push(`  verify: ${report.verify}`);
+  return lines;
 }

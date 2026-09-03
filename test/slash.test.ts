@@ -241,3 +241,27 @@ describe('expansion through the policy engine', () => {
     expect(decisions(h)).toHaveLength(0);
   });
 });
+
+describe('/cost', () => {
+  it('adds up what the planner read and how much of the agents\' replies reached it', async () => {
+    const claude = fakeAgent({
+      script: () => [{ do: 'say', text: `${'prose '.repeat(100)}\n\nREPORT\noutcome: done\nsummary: Did it.` }],
+    });
+    const llm = scriptedModel([
+      JSON.stringify({ action: 'delegate', agent: 'claude', task: 'Do it' }),
+      answer('done.'),
+    ]);
+    const h = harness({ agents: { claude }, llm });
+    open = h;
+
+    await h.runtime.conversation.send('do it');
+    await h.runtime.conversation.send('/cost');
+
+    const note = notes(h).at(-1);
+    expect(note?.text).toBe('cost');
+    const lines = note?.lines?.join('\n') ?? '';
+    expect(lines).toMatch(/planner: 2 calls, [\d,]+ chars in/);
+    expect(lines).toMatch(/tasks: {3}1, briefs [\d,]+ chars sent/);
+    expect(lines).toMatch(/agents said [\d,]+ chars; the planner was handed [\d,]+ \(\d+%\)/);
+  });
+});

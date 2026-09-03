@@ -49,7 +49,65 @@ export function builtins(): Command[] {
       source: 'builtin',
       run: (_args, host) => ({ do: 'say', text: 'configuration', lines: configuration(host) }),
     },
+    {
+      kind: 'local',
+      name: 'cost',
+      description: 'what this run has spent on planning, and how much of what the agents said reached the planner',
+      source: 'builtin',
+      run: (_args, host) => ({ do: 'say', text: 'cost', lines: cost(host) }),
+    },
   ];
+}
+
+/**
+ * The run's spend, added up from the usage records. Characters are always
+ * there; tokens only where the endpoint counted them. The last line is the
+ * one the report contract is judged by: of everything the agents said, how
+ * much the planner was made to read.
+ */
+function cost(host: CommandHost): string[] {
+  const usage = host.transcript
+    .all()
+    .filter((record): record is Extract<typeof record, { type: 'usage' }> => record.type === 'usage');
+  const plans = usage.filter((record) => record.purpose !== 'task');
+  const tasks = usage.filter((record) => record.purpose === 'task');
+  const sum = (records: typeof usage, pick: (record: (typeof usage)[number]) => number | undefined) =>
+    records.reduce((total, record) => total + (pick(record) ?? 0), 0);
+  const counted = plans.filter((record) => record.promptTokens !== undefined);
+
+  const lines = [
+    `planner: ${plans.length} call${plans.length === 1 ? '' : 's'}, ` +
+      `${figure(sum(plans, (r) => r.promptChars))} chars in (≈${figure(estimateTokens(sum(plans, (r) => r.promptChars)))} tokens), ` +
+      `${figure(sum(plans, (r) => r.replyChars))} out`,
+  ];
+  if (counted.length > 0) {
+    lines.push(
+      `         endpoint counted ${figure(sum(counted, (r) => r.promptTokens))} in + ` +
+        `${figure(sum(counted, (r) => r.completionTokens))} out tokens over ${counted.length} of them`,
+    );
+  }
+  if (tasks.length > 0) {
+    const said = sum(tasks, (r) => r.replyChars);
+    const relayed = sum(tasks, (r) => r.relayedChars);
+    lines.push(
+      `tasks:   ${tasks.length}, briefs ${figure(sum(tasks, (r) => r.promptChars))} chars sent ` +
+        `(avg ${figure(Math.round(sum(tasks, (r) => r.promptChars) / tasks.length))})`,
+      `         agents said ${figure(said)} chars; the planner was handed ${figure(relayed)}` +
+        (said > 0 ? ` (${Math.round((relayed / said) * 100)}%)` : ''),
+    );
+  } else {
+    lines.push('tasks:   none yet');
+  }
+  return lines;
+}
+
+function figure(n: number): string {
+  return n.toLocaleString('en-US');
+}
+
+/** Same rough count the planner's budget uses, on a character total. */
+function estimateTokens(chars: number): number {
+  return Math.ceil(chars / 4);
 }
 
 function help(host: CommandHost): string[] {

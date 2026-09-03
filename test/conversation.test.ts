@@ -627,7 +627,7 @@ describe('Conversation', () => {
     expect(claude.prompts[1]).toContain('handsfree approves or refuses');
   });
 
-  it('keeps the run in the system prompt and folds the turn that established it', async () => {
+  it('keeps the run ahead of the user\'s line and folds the turn that established it', async () => {
     // Resolved once the harness exists, so the path is inside the real
     // workspace and the run state can name it the way a reader would.
     let edited = '';
@@ -645,14 +645,120 @@ describe('Conversation', () => {
     await h.runtime.conversation.send('add parse()');
     await h.runtime.conversation.send('anything else?');
 
+    const first = llm.seen[0] ?? [];
     const second = llm.seen.at(-1) ?? [];
-    // The task is in the system prompt, as a line rebuilt from the record...
-    expect(second[0]?.content).toContain('Task 1 (claude): done');
-    expect(second[0]?.content).toContain('Files changed this run: a.ts');
-    // ...and the turn that produced it is two messages, not five.
+    // The task is ahead of the new line, rebuilt from the record, with the
+    // user's own words after the divider...
+    const last = second.at(-1)?.content ?? '';
+    expect(last).toContain('RUN STATE');
+    expect(last).toContain('Task 1 (claude): done');
+    expect(last).toContain('Files changed this run: a.ts');
+    expect(last.endsWith('\n---\nanything else?')).toBe(true);
+    // ...the system prompt is the one the first turn had, byte for byte, so an
+    // endpoint that caches by prefix keeps it...
+    expect(second[0]?.content).toBe(first[0]?.content);
+    expect(second[0]?.content).not.toContain('Task 1');
+    // ...and the turn that produced it is two messages, not five — the line
+    // as typed, without the run state that went out ahead of it.
     expect(second.slice(1).map((message) => message.role)).toEqual(['user', 'assistant', 'user']);
+    expect(second[1]?.content).toBe('add parse()');
     expect(second.some((message) => message.content.startsWith('TASK RESULT'))).toBe(false);
     expect(JSON.stringify(second)).not.toContain('A long account');
+  });
+
+  it('hands the planner a report, not the reply, and says the user has seen the rest', async () => {
+    const claude = fakeAgent({
+      script: () => [
+        {
+          do: 'say',
+          text:
+            'Here is a long explanation of everything I did, at great length.\n\n' +
+            'REPORT\noutcome: done\nsummary: Added parse() with a null return for empty input.\n' +
+            'changed: a.ts\ndecided: - empty input returns null, not an error\n' +
+            'open: - the CLI still passes undefined sometimes\nverify: pnpm test',
+        },
+      ],
+    });
+    const llm = scriptedModel([delegate('Add parse()'), answer('done.')]);
+    const h = harness({ agents: { claude }, llm });
+    open = h;
+
+    await h.runtime.conversation.send('add parse()');
+
+    const result = llm.seen[1]?.at(-1)?.content ?? '';
+    expect(result.startsWith('TASK RESULT')).toBe(true);
+    expect(result).toContain('summary: Added parse() with a null return for empty input.');
+    expect(result).toContain('open: the CLI still passes undefined sometimes');
+    expect(result).toContain('already seen claude');
+    // What is for the next agent stays out of the planner's way, and so does the prose.
+    expect(result).not.toContain('decided');
+    expect(result).not.toContain('pnpm test');
+    expect(result).not.toContain('great length');
+
+    const usage = h.runtime.transcript
+      .all()
+      .find((record) => record.type === 'usage' && record.purpose === 'task');
+    expect(usage).toMatchObject({ taskId: 1, relayedChars: result.length });
+    expect(usage && usage.type === 'usage' ? usage.promptChars : 0).toBeGreaterThan(0);
+  });
+
+  it('hands the planner the whole reply when the config asks for it', async () => {
+    const claude = fakeAgent({ script: () => [{ do: 'say', text: 'The whole reply, verbatim.' }] });
+    const llm = scriptedModel([delegate('Say something'), answer('done.')]);
+    const h = harness({ agents: { claude }, llm, config: { orchestration: { relayAnswers: true } } });
+    open = h;
+
+    await h.runtime.conversation.send('say something');
+
+    const result = llm.seen[1]?.at(-1)?.content ?? '';
+    expect(result).toContain('The whole reply, verbatim.');
+    expect(result).not.toContain('already seen');
+  });
+
+  it('passes the planner\'s context on to the agent, ahead of the handoff', async () => {
+    const claude = fakeAgent({ script: () => [{ do: 'say', text: 'ok' }] });
+    const llm = scriptedModel([
+      JSON.stringify({
+        action: 'delegate',
+        agent: 'claude',
+        task: 'Rename the flag',
+        context: 'The user wants it called --strict, not --pedantic.',
+      }),
+      answer('done.'),
+    ]);
+    const h = harness({ agents: { claude }, llm });
+    open = h;
+
+    await h.runtime.conversation.send('rename it');
+
+    expect(claude.prompts[0]).toContain('Context: The user wants it called --strict, not --pedantic.');
+  });
+
+  it('drops the oldest turns first when the planner is over budget', async () => {
+    const claude = fakeAgent({ script: () => [] });
+    const llm = scriptedModel([answer('one'), answer('two'), answer('three'), answer('four')]);
+    // Small enough that the system prompt and two turns are all that fit.
+    const h = harness({
+      agents: { claude },
+      llm,
+      config: { orchestration: { contextBudgetTokens: 1_400 } },
+    });
+    open = h;
+
+    const line = 'a line of conversation that takes up room '.repeat(20);
+    await h.runtime.conversation.send(`${line}1`);
+    await h.runtime.conversation.send(`${line}2`);
+    await h.runtime.conversation.send(`${line}3`);
+    await h.runtime.conversation.send(`${line}4`);
+
+    const last = llm.seen.at(-1) ?? [];
+    // The system prompt stays, the newest line stays, and what was dropped
+    // was dropped from the front — whole turns, so a user line always leads.
+    expect(last[0]?.role).toBe('system');
+    expect(last.at(-1)?.content.endsWith('4')).toBe(true);
+    expect(last.length).toBeLessThan(8);
+    expect(last[1]?.role).toBe('user');
+    expect(last.some((message) => message.content.endsWith('1'))).toBe(false);
   });
 
   it('writes down what each call to the planner cost', async () => {
@@ -689,14 +795,17 @@ describe('Conversation', () => {
     await h.runtime.conversation.send('@claude add parse()');
     await h.runtime.conversation.send('what next?');
 
-    const system = llm.seen.at(-1)?.[0]?.content ?? '';
-    // The role says what each is for...
+    const last = llm.seen.at(-1) ?? [];
+    const system = last[0]?.content ?? '';
+    const state = last.at(-1)?.content ?? '';
+    // The role says what each is for, in the part that never changes...
     expect(system).toContain('"claude": strong at multi-file edits');
     expect(system).toContain('"gemini": fast on single files');
-    // ...and the record says which one would not have to read the file again.
-    expect(system).toContain('1 task this run; already has a.ts open');
+    // ...and the record, in the part that does, says which one would not
+    // have to read the file again.
+    expect(state).toContain('- claude: 1 task this run; already has a.ts open');
     // An agent that has done nothing is described, not annotated.
-    expect(system).not.toContain('"gemini": fast on single files\n  (');
+    expect(state).not.toContain('- gemini:');
   });
 
   it('leaves the history empty when a clear lands in the middle of a turn', async () => {

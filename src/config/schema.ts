@@ -242,7 +242,13 @@ export const PolicySchema = z
          */
         shellOperators: Rule.default('ask'),
         timeoutMs: z.number().int().positive().default(120_000),
-        outputByteLimit: z.number().int().positive().default(256 * 1024),
+        /**
+         * The most of a command's output an agent is handed back, kept from
+         * the end — that is where a failing test names itself. An agent may ask
+         * for less. What was cut is written whole under the run directory, for
+         * a person; the agent's window is the thing this exists to protect.
+         */
+        outputByteLimit: z.number().int().positive().default(64 * 1024),
         /** Environment variables forwarded to commands. Everything else is dropped. */
         env: z.array(z.string()).default(['PATH', 'HOME', 'LANG', 'TERM', 'TMPDIR']),
       })
@@ -292,7 +298,28 @@ export const OrchestrationSchema = z.object({
     .prefault({}),
   /** Local models have small context windows; history is trimmed to this. */
   maxHistoryMessages: z.number().int().positive().default(30),
+  /**
+   * How much the planner is sent per call, in estimated tokens: the system
+   * prompt, the run state, the history and the line being answered. Older
+   * turns go first when it is over, then the run state shortens. Unset, a
+   * local endpoint gets 8,000 and a frontier agent over ACP gets 32,000 — the
+   * one has a small window and the other pays by the token.
+   */
+  contextBudgetTokens: z.number().int().positive().optional(),
+  /**
+   * Whether the planner is handed an agent's whole reply after a task, the
+   * way it used to be, so it can repeat it to the user. Off, it gets the
+   * report's summary and a note that the user has already seen the reply —
+   * which they have, on screen, as it streamed. On, for a client that shows
+   * only handsfree's own replies.
+   */
+  relayAnswers: z.boolean().default(false),
 });
+
+/** The planner's budget, with the provider deciding it where the config did not. */
+export function contextBudgetTokens(orchestration: Orchestration): number {
+  return orchestration.contextBudgetTokens ?? (orchestration.provider === 'acp' ? 32_000 : 8_000);
+}
 export type Orchestration = z.infer<typeof OrchestrationSchema>;
 
 export const ConfigSchema = z
@@ -341,7 +368,15 @@ export const ConfigSchema = z
         cancelGraceMs: z.number().int().positive().default(10_000),
         maxDelegationsPerTurn: z.number().int().positive().default(3),
         maxPlanSteps: z.number().int().positive().default(6),
-        maxResultChars: z.number().int().positive().default(4000),
+        /**
+         * Longest a task result handed to the planner is. Small, because what
+         * it carries is the report's summary and open items, not the reply.
+         */
+        maxResultChars: z.number().int().positive().default(1200),
+        /** Longest the "since your last task" section of a brief is. */
+        handoffBudgetChars: z.number().int().positive().default(1600),
+        /** Longest a report's summary is kept, from the agent's REPORT block or the fallback. */
+        reportSummaryChars: z.number().int().positive().default(300),
         /**
          * How many tasks an agent's session gets between repeats of the ground
          * rules. The session keeps its own memory, but a long one is compacted

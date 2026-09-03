@@ -1,4 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   RequestError,
   type CreateTerminalRequest,
@@ -10,6 +12,7 @@ import {
   type WaitForTerminalExitRequest,
   type WaitForTerminalExitResponse,
 } from '@agentclientprotocol/sdk';
+import { debug } from '../debug.js';
 import { render } from '../policy/exec.js';
 import type { HostContext } from './context.js';
 
@@ -30,6 +33,13 @@ const UNSAFE_ENV = [
   /^PATH$/,
 ];
 
+/**
+ * How much of what was cut from a terminal's output is kept aside for the
+ * spill file. Bounded, because a command that never stops printing must not
+ * be able to fill memory through the very mechanism meant to contain it.
+ */
+const SPILL_KEEP_BYTES = 4 * 1024 * 1024;
+
 interface Terminal {
   id: string;
   child: ChildProcess;
@@ -38,6 +48,11 @@ interface Terminal {
   bytes: number;
   limit: number;
   truncated: boolean;
+  /** What fell off the front, oldest first, up to SPILL_KEEP_BYTES. */
+  overflow: Buffer[];
+  overflowBytes: number;
+  /** How much was cut altogether, kept or not. */
+  cutBytes: number;
   exit: Promise<{ exitCode: number | null; signal: string | null }>;
   status: { exitCode: number | null; signal: string | null } | undefined;
   timer: NodeJS.Timeout | undefined;
@@ -118,6 +133,9 @@ export class TerminalRegistry {
       bytes: 0,
       limit: Math.max(limit, 1024),
       truncated: false,
+      overflow: [],
+      overflowBytes: 0,
+      cutBytes: 0,
       status: undefined,
       timer: undefined,
       exit: new Promise((resolve) => {
@@ -131,6 +149,7 @@ export class TerminalRegistry {
     terminal.exit.then((status) => {
       terminal.status = status;
       if (terminal.timer) clearTimeout(terminal.timer);
+      if (terminal.truncated) this.spill(terminal);
     });
     terminal.timer = setTimeout(() => {
       if (!terminal.status) killGroup(terminal, 'SIGKILL');
@@ -185,16 +204,66 @@ export class TerminalRegistry {
     if (!terminal) throw RequestError.invalidParams(`unknown terminal ${id}`);
     return terminal;
   }
+
+  /**
+   * The output whole — or as much of it as was kept — written under the run
+   * directory, beside the transcript and outside the jail: for the person
+   * reading the run, since the agent was handed the end of it and that is
+   * where a failing command says why. The note names the file so a `/cost`
+   * reader or a debugging one can find it; the agent is not told, and cannot
+   * read it from where it stands.
+   */
+  private spill(terminal: Terminal): void {
+    const dir = path.join(this.host.workspace.runDir, 'spill');
+    const file = path.join(dir, `${terminal.id}.txt`);
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      const lost = terminal.cutBytes - terminal.overflowBytes;
+      const head = lost > 0 ? [Buffer.from(`[first ${lost} bytes not kept]\n`)] : [];
+      fs.writeFileSync(file, Buffer.concat([...head, ...terminal.overflow, ...terminal.chunks]));
+    } catch (err) {
+      debug('terminal', `could not write ${file}: ${(err as Error).message}`);
+      return;
+    }
+    this.host.transcript.append({
+      type: 'note',
+      level: 'info',
+      text:
+        `${render(terminal.argv)} printed ${size(terminal.cutBytes + terminal.bytes)}; ` +
+        `the agent got the last ${size(terminal.limit)}, the whole output is at ${file}`,
+    });
+  }
 }
 
 function append(terminal: Terminal, chunk: Buffer): void {
   terminal.chunks.push(chunk);
   terminal.bytes += chunk.byteLength;
-  while (terminal.bytes > terminal.limit && terminal.chunks.length > 1) {
-    const dropped = terminal.chunks.shift()!;
+  while (terminal.bytes > terminal.limit) {
+    // Whole chunks go first; a single chunk over the limit on its own — one
+    // write of a whole file — is split, and its front goes the same way.
+    let dropped: Buffer;
+    if (terminal.chunks.length > 1) {
+      dropped = terminal.chunks.shift()!;
+    } else {
+      const only = terminal.chunks[0]!;
+      const excess = terminal.bytes - terminal.limit;
+      dropped = only.subarray(0, excess);
+      terminal.chunks[0] = only.subarray(excess);
+    }
     terminal.bytes -= dropped.byteLength;
     terminal.truncated = true;
+    terminal.cutBytes += dropped.byteLength;
+    if (terminal.overflowBytes + dropped.byteLength <= SPILL_KEEP_BYTES) {
+      terminal.overflow.push(dropped);
+      terminal.overflowBytes += dropped.byteLength;
+    }
   }
+}
+
+function size(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function text(terminal: Terminal): string {

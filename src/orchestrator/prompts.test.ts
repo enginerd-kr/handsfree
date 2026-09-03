@@ -22,4 +22,26 @@ describe('buildBrief', () => {
     expect(first).toContain('Work inside /ws');
     expect(later).not.toContain('Work inside');
   });
+
+  it('spells out the report format with the rules, and only reminds after that', () => {
+    const first = buildBrief({ ...base, kind: 'change', task: 'x', first: true });
+    const later = buildBrief({ ...base, kind: 'change', task: 'x' });
+    expect(first).toContain('outcome: done | partial | blocked');
+    expect(first).toContain('verify:');
+    expect(later).not.toContain('outcome: done | partial | blocked');
+    expect(later.endsWith('End your turn with a REPORT block.')).toBe(true);
+  });
+
+  it('puts the planner\'s context after the task and before the handoff', () => {
+    const brief = buildBrief({
+      ...base,
+      kind: 'change',
+      task: 'Rename the flag',
+      context: 'The user wants --strict.',
+      handoff: 'Since your last task:\n- gemini, task 1: changed a.ts',
+    });
+    const at = (needle: string) => brief.indexOf(needle);
+    expect(at('Rename the flag')).toBeLessThan(at('Context: The user wants --strict.'));
+    expect(at('Context:')).toBeLessThan(at('Since your last task:'));
+  });
 });

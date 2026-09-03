@@ -394,3 +394,45 @@ describe('turn lifecycle', () => {
     expect(updates).toEqual(['agent_message_chunk', 'tool_call', 'agent_message_chunk']);
   });
 });
+
+describe('terminal output ceiling', () => {
+  it('hands the agent the end of a long output and writes the whole of it under the run', async () => {
+    const results: { ok: boolean; detail: string; output?: string }[] = [];
+    const script = "process.stdout.write(Array.from({length: 400}, (_, i) => `line ${i} ${'x'.repeat(20)}`).join('\\n'))";
+    const { runtime } = await runTurn(
+      () => [
+        {
+          do: 'exec',
+          command: 'node',
+          args: ['-e', script],
+          onResult: (result) => results.push(result),
+        },
+      ],
+      { policy: { exec: { enabled: true, allow: ['node'], outputByteLimit: 1024 } } },
+    );
+
+    const output = results[0]?.output ?? '';
+    expect(results[0]?.ok).toBe(true);
+    // The end, since that is where a failing command says why.
+    expect(output).toContain('line 399');
+    expect(output).not.toContain('line 0 ');
+    expect(output.length).toBeLessThanOrEqual(1024);
+
+    const spill = path.join(runtime.workspace.runDir, 'spill', 'term-1.txt');
+    const whole = fs.readFileSync(spill, 'utf8');
+    expect(whole).toContain('line 0 ');
+    expect(whole).toContain('line 399');
+    const note = runtime.transcript
+      .all()
+      .find((record) => record.type === 'note' && record.text.includes('whole output'));
+    expect(note && note.type === 'note' ? note.text : '').toContain(spill);
+  });
+
+  it('writes nothing aside when the output fit', async () => {
+    const { runtime } = await runTurn(
+      () => [{ do: 'exec', command: 'echo', args: ['short'], onResult: () => {} }],
+      { policy: { exec: { enabled: true, allow: ['echo'] } } },
+    );
+    expect(fs.existsSync(path.join(runtime.workspace.runDir, 'spill'))).toBe(false);
+  });
+});

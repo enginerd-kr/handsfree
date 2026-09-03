@@ -189,3 +189,49 @@ export function trimHistory(messages: ChatMessage[], max: number): ChatMessage[]
   const [system, ...rest] = messages;
   return system ? [system, ...rest.slice(rest.length - max)] : messages.slice(-max);
 }
+
+/**
+ * Tokens, roughly, without a tokenizer: four characters each for ASCII, and a
+ * character and a half for everything else — CJK, mostly, which the tokenizers
+ * that matter here split closer to a token per character. Overestimating is
+ * the safe direction: a budget met by this figure is met on the wire too.
+ */
+export function estimateTokens(text: string): number {
+  let ascii = 0;
+  let other = 0;
+  for (let at = 0; at < text.length; at++) {
+    if (text.charCodeAt(at) < 128) ascii++;
+    else other++;
+  }
+  return Math.ceil(ascii / 4 + other / 1.5);
+}
+
+export function estimateMessages(messages: readonly ChatMessage[]): number {
+  // A few tokens per message for the role and the framing around it.
+  return messages.reduce((total, message) => total + estimateTokens(message.content) + 4, 0);
+}
+
+/**
+ * The conversation cut to a budget from the middle: the system prompt stays,
+ * the last message stays, and the oldest of what lies between goes first, a
+ * user/assistant pair at a time so the shape a chat template expects survives.
+ * What it cannot make fit — a system prompt and one line that are over on
+ * their own — it returns as they are; that is the caller's to shorten.
+ */
+export function fitBudget(messages: readonly ChatMessage[], budgetTokens: number): ChatMessage[] {
+  if (estimateMessages(messages) <= budgetTokens) return [...messages];
+  const system = messages[0]?.role === 'system' ? messages[0] : undefined;
+  const body = system ? messages.slice(1) : [...messages];
+  const last = body.at(-1);
+  if (!last) return [...messages];
+  let middle = body.slice(0, -1);
+  const frame = () => [...(system ? [system] : []), ...middle, last];
+  while (middle.length > 0 && estimateMessages(frame()) > budgetTokens) {
+    // Drop from the front, and keep dropping until the front is a user line
+    // again: an assistant reply with no user line before it is the shape some
+    // templates refuse.
+    middle = middle.slice(1);
+    while (middle.length > 0 && middle[0]!.role === 'assistant') middle = middle.slice(1);
+  }
+  return frame();
+}
