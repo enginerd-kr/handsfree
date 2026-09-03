@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkExec, scanScript, type ExecPolicy } from './exec.js';
+import { checkExec, scanChain, scanScript, type ExecPolicy } from './exec.js';
 
 const allowlist: ExecPolicy = {
   mode: 'allowlist',
@@ -137,5 +137,59 @@ describe('checkExec', () => {
     expect(
       checkExec({ command: 'whatever', args: [] }, { ...allowlist, mode: 'ask' }).outcome,
     ).toBe('ask');
+  });
+});
+
+describe('checkExec on a chain', () => {
+  const sh = (script: string) => ({ command: 'sh', args: ['-c', script] });
+
+  it('allows a chain whose every link the allowlist names', () => {
+    // Copied from a real claude-code turn: two allowed commands, joined.
+    const check = checkExec(sh("node --version && node --experimental-strip-types -e 'import(\"./src/parser.ts\")'"), allowlist);
+    expect(check).toMatchObject({ outcome: 'allow', rule: 'exec.allow:chain(node; node)' });
+  });
+
+  it('allows a cd into the workspace at the head of a chain, and nowhere else', () => {
+    const inside = { ...allowlist, allowCd: (dir: string) => dir.startsWith('/ws') };
+    expect(checkExec(sh('cd /ws/src && pnpm test'), inside)).toMatchObject({ outcome: 'allow', rule: 'exec.allow:chain(cd; pnpm test)' });
+    expect(checkExec(sh('cd /etc && pnpm test'), inside)).toMatchObject({ outcome: 'deny', rule: 'exec.shellOperators' });
+    expect(checkExec(sh('cd /ws/src && pnpm test'), allowlist)).toMatchObject({ outcome: 'deny', rule: 'exec.shellOperators' });
+  });
+
+  it('judges pipes, semicolons and || the same way', () => {
+    expect(checkExec(sh('git status | node filter.js'), allowlist).outcome).toBe('allow');
+    expect(checkExec(sh('git status; node a.js'), allowlist).outcome).toBe('allow');
+    expect(checkExec(sh('pnpm test || node explain.js'), allowlist).outcome).toBe('allow');
+  });
+
+  it('still treats a chain with a link nobody allowed as a shell operator', () => {
+    expect(checkExec(sh('node a.js && rm -rf /'), allowlist)).toMatchObject({ outcome: 'deny', rule: 'exec.shellOperators' });
+    expect(checkExec(sh('node a.js && curl x'), { ...allowlist, shellOperators: 'ask' })).toMatchObject({ outcome: 'ask' });
+  });
+
+  it('refuses a chain with a never-command anywhere in it', () => {
+    expect(checkExec(sh('node a.js && sudo rm -rf /'), { ...allowlist, shellOperators: 'ask' })).toMatchObject({ outcome: 'deny', rule: 'exec.never' });
+  });
+
+  it('does not read a redirect, a substitution or a lone & as a chain', () => {
+    expect(checkExec(sh('node a.js > out.txt'), allowlist)).toMatchObject({ outcome: 'deny', rule: 'exec.shellOperators' });
+    expect(checkExec(sh('node a.js && node $(cat x)'), allowlist)).toMatchObject({ outcome: 'deny', rule: 'exec.shellOperators' });
+    expect(checkExec(sh('node a.js & node b.js'), allowlist)).toMatchObject({ outcome: 'deny', rule: 'exec.shellOperators' });
+  });
+
+  it('lets otherwise=allow pass links the list does not name', () => {
+    expect(checkExec(sh('node a.js && curl x'), { ...allowlist, otherwise: 'allow' }).outcome).toBe('allow');
+  });
+});
+
+describe('scanChain', () => {
+  it('splits on the chain operators and keeps quoted text whole', () => {
+    const chain = scanChain(`cd /ws && node -e 'a && b' | tee`);
+    expect(chain).toEqual({ ok: true, segments: [['cd', '/ws'], ['node', '-e', 'a && b'], ['tee']] });
+  });
+
+  it('refuses an empty link', () => {
+    expect(scanChain('node a.js &&').ok).toBe(false);
+    expect(scanChain('| node').ok).toBe(false);
   });
 });

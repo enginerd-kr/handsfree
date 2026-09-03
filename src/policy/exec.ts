@@ -16,6 +16,12 @@ export interface ExecPolicy {
   /** What becomes of a command the allowlist does not name. */
   otherwise: 'allow' | 'ask' | 'deny';
   shellOperators: 'allow' | 'ask' | 'deny';
+  /**
+   * Whether `cd <dir>` at the head of a chain may pass on its own: the
+   * directory is inside the workspace, say. Absent, a `cd` is a command like
+   * any other, and one no allowlist names.
+   */
+  allowCd?: (dir: string) => boolean;
 }
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish']);
@@ -60,6 +66,26 @@ export function checkExec(request: ExecRequest, policy: ExecPolicy): ExecCheck {
   }
 
   if (flat.operator) {
+    // A chain of commands the allowlist names — `node --version && node
+    // test.mjs`, `cd src && pnpm test` — is what an agent writes when it
+    // means two allowed things in a row, and refusing it as "a shell
+    // operator" refuses the allowlist's own entries. Each link is judged as
+    // the command it is; the chain passes when every link does. Anything
+    // that is not a plain chain — a redirect, a substitution — is still an
+    // operator, and so is a chain with a link nobody allowed.
+    if (flat.segments && policy.mode === 'allowlist') {
+      const matched: string[] = [];
+      let allowed = true;
+      for (const segment of flat.segments) {
+        const link = judgeLink(segment, policy);
+        if (link.outcome === 'never') {
+          return { outcome: 'deny', rule: 'exec.never', reason: link.reason };
+        }
+        if (link.outcome === 'allow') matched.push(link.rule);
+        else allowed = false;
+      }
+      if (allowed) return { outcome: 'allow', rule: `exec.allow:chain(${matched.join('; ')})`, argv };
+    }
     const reason = `shell operator ${flat.operator} in "${flat.script}"`;
     if (policy.shellOperators === 'deny') {
       return { outcome: 'deny', rule: 'exec.shellOperators', reason };
@@ -84,6 +110,27 @@ export function checkExec(request: ExecRequest, policy: ExecPolicy): ExecCheck {
   return { outcome: 'deny', rule: 'exec.otherwise', reason };
 }
 
+type Link =
+  | { outcome: 'allow'; rule: string }
+  | { outcome: 'never'; reason: string }
+  | { outcome: 'other' };
+
+/** One command of a chain, judged the way it would be on its own. */
+function judgeLink(argv: string[], policy: ExecPolicy): Link {
+  if (argv.length === 0) return { outcome: 'other' };
+  const name = path.basename(argv[0]!);
+  for (const { pattern, reason } of NEVER) {
+    if (pattern.test(name)) return { outcome: 'never', reason };
+  }
+  if (name === 'cd') {
+    return argv.length === 2 && policy.allowCd?.(argv[1]!) ? { outcome: 'allow', rule: 'cd' } : { outcome: 'other' };
+  }
+  const matched = policy.allow.find((entry) => matches(entry, argv, name));
+  if (matched) return { outcome: 'allow', rule: matched };
+  if (policy.otherwise === 'allow') return { outcome: 'allow', rule: 'otherwise' };
+  return { outcome: 'other' };
+}
+
 /** True when `entry`'s tokens are a prefix of `argv`, comparing argv[0] by basename. */
 function matches(entry: string, argv: string[], name: string): boolean {
   const tokens = entry.trim().split(/\s+/).filter(Boolean);
@@ -100,7 +147,14 @@ export function render(argv: string[]): string {
 }
 
 type Flattened =
-  | { ok: true; argv: string[]; operator?: string; script?: string }
+  | {
+      ok: true;
+      argv: string[];
+      operator?: string;
+      script?: string;
+      /** The commands of a plain chain, in order, when the script is one. */
+      segments?: string[][];
+    }
   | { ok: false; rule: string; reason: string };
 
 /**
@@ -124,8 +178,94 @@ function flatten(request: ExecRequest): Flattened {
 
   const scan = scanScript(script);
   if (!scan.ok) return { ok: false, rule: 'exec.unparseable', reason: scan.reason };
-  if (scan.operator) return { ok: true, argv: scan.tokens, operator: scan.operator, script };
+  if (scan.operator) {
+    const chain = scanChain(script);
+    const segments = chain.ok && chain.segments.length > 1 ? chain.segments : undefined;
+    return { ok: true, argv: scan.tokens, operator: scan.operator, script, ...(segments ? { segments } : {}) };
+  }
   return { ok: true, argv: scan.tokens, script };
+}
+
+type Chain = { ok: true; segments: string[][] } | { ok: false; reason: string };
+
+/**
+ * A script read as a chain: commands joined by `&&`, `||`, `;` or `|`, and
+ * nothing else — a redirect, a substitution, a backtick, a lone `&`, a
+ * newline all make it not a chain, and the caller falls back to judging the
+ * operator. Quoting is read the way scanScript reads it.
+ */
+export function scanChain(script: string): Chain {
+  const segments: string[][] = [];
+  let tokens: string[] = [];
+  let token = '';
+  let quote: '"' | "'" | undefined;
+  let started = false;
+  const endToken = () => {
+    if (started) tokens.push(token);
+    token = '';
+    started = false;
+  };
+  const endSegment = () => {
+    endToken();
+    if (tokens.length === 0) return false;
+    segments.push(tokens);
+    tokens = [];
+    return true;
+  };
+
+  for (let i = 0; i < script.length; i++) {
+    const ch = script[i]!;
+    if (quote) {
+      if (ch === '\\' && quote === '"' && i + 1 < script.length) {
+        token += script[++i];
+        continue;
+      }
+      if (ch === quote) {
+        quote = undefined;
+        continue;
+      }
+      if (quote === '"' && (ch === '$' || ch === '`')) return { ok: false, reason: 'substitution' };
+      token += ch;
+      started = true;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      started = true;
+      continue;
+    }
+    if (ch === '\\' && i + 1 < script.length) {
+      token += script[++i];
+      started = true;
+      continue;
+    }
+    if (ch === '&' && script[i + 1] === '&') {
+      if (!endSegment()) return { ok: false, reason: 'empty command' };
+      i++;
+      continue;
+    }
+    if (ch === '|') {
+      if (!endSegment()) return { ok: false, reason: 'empty command' };
+      if (script[i + 1] === '|') i++;
+      continue;
+    }
+    if (ch === ';') {
+      if (!endSegment()) return { ok: false, reason: 'empty command' };
+      continue;
+    }
+    if (ch === '$' || ch === '`' || ch === '&' || ch === '<' || ch === '>' || ch === '\n') {
+      return { ok: false, reason: `operator ${ch}` };
+    }
+    if (ch === ' ' || ch === '\t') {
+      endToken();
+      continue;
+    }
+    token += ch;
+    started = true;
+  }
+  if (quote) return { ok: false, reason: 'unterminated quote' };
+  if (!endSegment()) return { ok: false, reason: 'empty command' };
+  return { ok: true, segments };
 }
 
 type Scan =

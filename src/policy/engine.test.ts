@@ -123,6 +123,19 @@ describe('PolicyEngine', () => {
     expect(decision).toMatchObject({ verdict: 'allow', rule: 'exec.allow:node' });
   });
 
+  it('allows the chain claude-code asks for, when every link is on the allowlist', async () => {
+    const policy = engine({ exec: { enabled: true, allow: ['node'] } });
+    const decision = await policy.resolve({
+      kind: 'tool',
+      toolKind: 'execute',
+      title: 'Run tokenize() on a sample input with Node',
+      locations: [],
+      rawInput: { command: `cd ${root} && node --version && node --experimental-strip-types test.mjs` },
+      ...where,
+    });
+    expect(decision).toMatchObject({ verdict: 'allow', rule: 'exec.allow:chain(cd; node; node)' });
+  });
+
   it('puts a title-only command the allowlist does not name to the usual question', async () => {
     const policy = engine({ exec: { enabled: true, allow: ['node'] } });
     const decision = await policy.resolve({
@@ -253,19 +266,28 @@ describe('PolicyEngine', () => {
     expect(decision).toMatchObject({ verdict: 'allow', rule: 'exec.allow:ls' });
   });
 
-  it('refuses a chained codex command as a chain, not as a shrug', async () => {
+  it('judges a chained codex command link by link, not as a shrug', async () => {
     const policy = engine({ exec: { enabled: true, allow: ['mkdir', 'echo'] } });
-    const decision = await policy.resolve({
-      kind: 'tool',
-      toolKind: 'execute',
-      title: 'Run mkdir',
-      locations: [],
-      rawInput: { command: ['/bin/zsh', '-lc', 'mkdir -p /tmp/x && echo done'], cwd: root },
-      ...where,
+    const chained = (script: string) =>
+      policy.resolve({
+        kind: 'tool',
+        toolKind: 'execute',
+        title: 'Run mkdir',
+        locations: [],
+        rawInput: { command: ['/bin/zsh', '-lc', script], cwd: root },
+        ...where,
+      });
+    // Two allowed commands joined are two allowed commands.
+    expect(await chained('mkdir -p /tmp/x && echo done')).toMatchObject({
+      verdict: 'allow',
+      rule: 'exec.allow:chain(mkdir; echo)',
     });
-    // The verdict is still no, but it is a judgement about the `&&` rather than
-    // an admission that we could not read the request.
-    expect(decision).toMatchObject({ verdict: 'deny', rule: 'exec.shellOperators' });
+    // A link nobody allowed makes the verdict no — a judgement about the
+    // chain rather than an admission that we could not read the request.
+    expect(await chained('mkdir -p /tmp/x && curl x')).toMatchObject({
+      verdict: 'deny',
+      rule: 'exec.shellOperators',
+    });
   });
 
   it('judges a command by its argv even when the agent calls it a search', async () => {

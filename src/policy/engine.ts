@@ -286,6 +286,9 @@ export class PolicyEngine {
         allow: this.policy.exec.allow,
         otherwise: this.policy.exec.otherwise,
         shellOperators: this.policy.exec.shellOperators,
+        // `cd` somewhere inside the workspace changes nothing the boundary
+        // cares about; `cd` anywhere else is a command nobody allowed.
+        allowCd: (dir) => this.jail.check(path.resolve(this.jail.primaryRoot, dir)).ok,
       },
     );
     if (check.outcome === 'allow') return { outcome: 'allow', rule: check.rule };

@@ -236,9 +236,12 @@ export const PolicySchema = z
          */
         otherwise: Rule.default('ask'),
         /**
-         * A pipe, a redirect, a `&&` — the part of the script we stop reading at.
-         * Judged by a person, who is shown the whole script, because emulating a
-         * shell well enough to decide it is not a thing we are going to do.
+         * A redirect, a substitution, a chain with a link the allowlist does
+         * not name — the part of the script we stop reading at. Judged by a
+         * person, who is shown the whole script, because emulating a shell
+         * well enough to decide it is not a thing we are going to do. A plain
+         * chain of allowed commands — `cd src && pnpm test`, `node a && node
+         * b` — never gets here: each link is judged as the command it is.
          */
         shellOperators: Rule.default('ask'),
         timeoutMs: z.number().int().positive().default(120_000),
