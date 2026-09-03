@@ -17,6 +17,7 @@ import {
   type AgentCard,
   type AnswerStream,
 } from '../brain/plan.js';
+import { debug } from '../debug.js';
 import { SessionUnresponsiveError } from '../host/session.js';
 import type { ModelChoice } from '../host/models.js';
 import type { AgentPool } from '../host/pool.js';
@@ -146,7 +147,17 @@ export class Conversation {
    */
   private epoch = 0;
 
-  constructor(private readonly deps: ConversationDeps) {}
+  constructor(private readonly deps: ConversationDeps) {
+    // A run read back off its file has tasks and replies in it already; the
+    // next of each has to be numbered after them, or the view keys two rows
+    // on one id and the ledger reads two tasks as one.
+    for (const record of deps.transcript.all()) {
+      if (record.type === 'delegation') this.taskCounter = Math.max(this.taskCounter, record.taskId);
+      if ((record.type === 'assistant' || record.type === 'assistant_delta') && record.stream !== undefined) {
+        this.streamCounter = Math.max(this.streamCounter, record.stream);
+      }
+    }
+  }
 
   get isBusy(): boolean {
     return this.turn !== undefined;
@@ -554,7 +565,13 @@ export class Conversation {
     // so many tasks, since a session compacts from the front. What the others
     // did since is drawn from the record, from this agent's last stop; a
     // session that remembers nothing is told about its own tasks too.
-    const known = this.briefed.get(agentId);
+    const records = transcript.all();
+    // A session resumed from a previous process is not remembered here, but
+    // the record remembers it: its last task ran in this very session, so it
+    // holds its own work and needs only the rules again, not the account of
+    // itself. The mark stands at that task's stop, as it would have.
+    const resumed = this.briefed.get(agentId) ?? resumedBriefing(records, agentId, session.sessionId);
+    const known = resumed;
     const fresh = known === undefined || known.sessionId !== session.sessionId;
     const first =
       fresh ||
@@ -565,7 +582,6 @@ export class Conversation {
       // is the one from before, so nothing else here would notice.
       known.lastStop === 'unresponsive' ||
       known.tasksSinceRules >= config.limits.rebriefEveryTasks;
-    const records = transcript.all();
     const since = fresh ? floorOf(records) : known.since;
     const handoff = renderHandoff({
       tasks: tasksSince(records, since, options),
@@ -584,6 +600,11 @@ export class Conversation {
       first,
       handoff,
     });
+
+    // The brief is not on the record — the task is, and the rest is rebuilt
+    // from the record on demand — so this is the one place to read what an
+    // agent was actually sent.
+    debug('brief', `task ${taskId} to ${agentId}, ${brief.length} chars:\n${brief}`);
 
     let stopReason: StopReason | 'unresponsive';
     try {
@@ -735,4 +756,29 @@ export class Conversation {
       shown = Math.max(2, Math.floor(shown / 2));
     }
   }
+}
+
+/**
+ * What a session read back off the record is known to have heard, for an
+ * agent this process has not briefed yet. Its last task's stop is the mark;
+ * the rules are sent again, since a session that has been away may have
+ * compacted them — `tasksSinceRules` at the limit says so.
+ */
+function resumedBriefing(
+  records: readonly import('../workspace/transcript.js').TranscriptRecord[],
+  agentId: string,
+  sessionId: string,
+): Briefing | undefined {
+  for (let at = records.length - 1; at >= 0; at--) {
+    const record = records[at]!;
+    if (record.type !== 'stop' || record.agentId !== agentId) continue;
+    if (record.sessionId !== sessionId) return undefined;
+    return {
+      sessionId,
+      tasksSinceRules: Number.MAX_SAFE_INTEGER,
+      lastStop: record.stopReason,
+      since: record.seq,
+    };
+  }
+  return undefined;
 }

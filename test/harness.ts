@@ -25,16 +25,23 @@ export interface HarnessOptions {
   escalator?: Escalator;
   /** Where command files are looked for. Defaults to the process's own cwd. */
   cwd?: string;
+  /**
+   * A root and run to come back to, for a test about resuming: the second
+   * harness on the same pair finds the first one's record and sessions.
+   */
+  resume?: { root: string; runId: string };
 }
 
 export interface Harness {
   runtime: Runtime;
   workspaceDir: string;
+  /** The workspace root, so a second harness can resume this one's run. */
+  root: string;
   dispose(): Promise<void>;
 }
 
 export function harness(options: HarnessOptions): Harness {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'handsfree-test-'));
+  const root = options.resume?.root ?? fs.mkdtempSync(path.join(os.tmpdir(), 'handsfree-test-'));
   const config = ConfigSchema.parse({
     workspaceRoot: root,
     agents: Object.fromEntries(
@@ -56,6 +63,7 @@ export function harness(options: HarnessOptions): Harness {
     llm: options.llm,
     ...(options.escalator === undefined ? {} : { escalator: options.escalator }),
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+    ...(options.resume === undefined ? {} : { runId: options.resume.runId }),
     createTarget: (agentId) => {
       const agent = options.agents[agentId];
       if (!agent) throw new Error(`no fake agent registered for ${agentId}`);
@@ -66,6 +74,7 @@ export function harness(options: HarnessOptions): Harness {
   return {
     runtime,
     workspaceDir: runtime.workspace.dir,
+    root,
     async dispose() {
       await runtime.close();
       fs.rmSync(root, { recursive: true, force: true });

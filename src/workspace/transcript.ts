@@ -77,13 +77,49 @@ interface TranscriptEvents {
 export class Transcript extends EventEmitter<TranscriptEvents> {
   private seq = 0;
   private closed = false;
+  /** Whether the file ends mid-line, so the first write has to open a new one. */
+  private openLine = false;
   private readonly records: TranscriptRecord[] = [];
   private readonly stream: fs.WriteStream | undefined;
 
+  /**
+   * Opens the record, and reads back what is already in it. A run reused with
+   * `--run <id>` resumes its agents' sessions, and a ledger that started
+   * empty beside them would brief every agent as though nothing had happened
+   * — the tasks before the restart are on the file, so they are read off it
+   * first, and the sequence carries on from where the last process left it.
+   * Nothing replayed is announced or rewritten: the listeners are not on yet,
+   * and the file already has these lines.
+   */
   constructor(file?: string) {
     super();
     this.setMaxListeners(0);
+    if (file) this.replay(file);
     this.stream = file ? fs.createWriteStream(file, { flags: 'a' }) : undefined;
+  }
+
+  private replay(file: string): void {
+    let text: string;
+    try {
+      text = fs.readFileSync(file, 'utf8');
+    } catch {
+      return;
+    }
+    this.openLine = text.length > 0 && !text.endsWith('\n');
+    for (const line of text.split('\n')) {
+      if (line.trim() === '') continue;
+      let record: unknown;
+      try {
+        record = JSON.parse(line);
+      } catch {
+        // A line cut short by a process that died mid-write. What came
+        // before it is whole, and what comes after it starts a fresh line.
+        continue;
+      }
+      if (!isRecord(record)) continue;
+      this.records.push(record);
+      if (record.seq > this.seq) this.seq = record.seq;
+    }
   }
 
   append(body: TranscriptBody): TranscriptRecord {
@@ -91,7 +127,10 @@ export class Transcript extends EventEmitter<TranscriptEvents> {
     this.records.push(record);
     // A write after end would throw; a turn still settling during shutdown may
     // append after close, and losing its record beats crashing on the way out.
-    if (!this.closed) this.stream?.write(`${JSON.stringify(record)}\n`);
+    if (!this.closed) {
+      this.stream?.write(`${this.openLine ? '\n' : ''}${JSON.stringify(record)}\n`);
+      this.openLine = false;
+    }
     this.emit('record', record);
     return record;
   }
@@ -121,6 +160,12 @@ export class Transcript extends EventEmitter<TranscriptEvents> {
     this.closed = true;
     await new Promise<void>((resolve) => stream.end(resolve));
   }
+}
+
+function isRecord(value: unknown): value is TranscriptRecord {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as { type?: unknown; seq?: unknown; at?: unknown };
+  return typeof record.type === 'string' && typeof record.seq === 'number' && typeof record.at === 'number';
 }
 
 /** Plain text of an agent message, assembled from its streamed chunks. */

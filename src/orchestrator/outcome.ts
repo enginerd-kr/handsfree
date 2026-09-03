@@ -137,8 +137,14 @@ export function renderOutcome(
 export function renderOutcomeHead(outcome: TaskOutcome, workspaceDir: string): string {
   const parts = [`Task ${outcome.taskId} (${outcome.agentId}): ${outcome.status}`];
   parts.push(`after ${Math.round(outcome.durationMs / 1000)}s`);
-  const files = outcome.files.map((file) => relative(file, workspaceDir));
-  if (files.length > 0) parts.push(`touched ${files.join(', ')}`);
+  // Changed apart from merely read: a reader that sees one list calls all of
+  // it "modified", and a file that was only opened is not a change to report.
+  const changed = outcome.changed.map((file) => relative(file, workspaceDir));
+  const read = outcome.files
+    .filter((file) => !outcome.changed.includes(file))
+    .map((file) => relative(file, workspaceDir));
+  if (changed.length > 0) parts.push(`changed ${changed.join(', ')}`);
+  if (read.length > 0) parts.push(`read ${read.join(', ')}`);
   if (outcome.denials.length > 0) parts.push(`refused: ${outcome.denials.join('; ')}`);
   return parts.join(' — ');
 }

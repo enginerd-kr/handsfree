@@ -897,3 +897,74 @@ describe('Conversation', () => {
     expect(system).toContain(path.basename(h.workspaceDir));
   });
 });
+
+describe('Conversation across a restart', () => {
+  it('reads the run back so the next agent is handed what happened before it', async () => {
+    let edited = '';
+    const claude = fakeAgent({
+      // Resumable, and replays its past on load the way a real adapter does.
+      loadSession: true,
+      replay: ['Done. (replayed by the agent on session/load)'],
+      script: (_prompt, turn) =>
+        turn === 0
+          ? [
+              { do: 'tool', toolCallId: 't1', title: 'Write a.ts', kind: 'edit', locations: [edited] },
+              { do: 'say', text: 'Done.\n\nREPORT\noutcome: done\nsummary: Added parse().\ndecided: - empty input returns null' },
+            ]
+          : [{ do: 'say', text: 'Tidied.' }],
+    });
+    const before = harness({ agents: { claude }, llm: scriptedModel([answer('a')]) });
+    edited = path.join(before.workspaceDir, 'a.ts');
+    await before.runtime.conversation.send('@claude add parse()');
+    const { root } = before;
+    const runId = before.runtime.workspace.id;
+    // Closed, not disposed: the record has to survive for the next process.
+    await before.runtime.close();
+
+    const gemini = fakeAgent({ script: () => [{ do: 'say', text: 'ok' }] });
+    const after = harness({
+      agents: { claude, gemini },
+      llm: scriptedModel([answer('b'), answer('c')]),
+      resume: { root, runId },
+    });
+    open = after;
+    await after.runtime.conversation.send('@gemini test parse()');
+    await after.runtime.conversation.send('@claude tidy it');
+
+    // gemini is told what claude did in the process before this one...
+    expect(gemini.prompts[0]).toContain('Since your last task:');
+    expect(gemini.prompts[0]).toContain('claude, task 1: changed a.ts');
+    expect(gemini.prompts[0]).toContain('decided: empty input returns null');
+    // ...and its own task is numbered after claude's, not over it.
+    const delegations = after.runtime.transcript
+      .all()
+      .filter((record) => record.type === 'delegation')
+      .map((record) => (record.type === 'delegation' ? [record.taskId, record.agentId] : []));
+    expect(delegations).toEqual([
+      [1, 'claude'],
+      [2, 'gemini'],
+      [3, 'claude'],
+    ]);
+
+    // claude came back on the session it had, which holds its own work: it
+    // is told the rules again and what gemini did, not what it did itself.
+    const resumed = claude.prompts[1] ?? '';
+    expect(resumed).toContain('handsfree approves or refuses');
+    expect(resumed).toContain('gemini, task 2');
+    expect(resumed).not.toContain('claude, task 1');
+    expect(resumed).not.toContain('Added parse().');
+
+    // What the agent replayed while loading was already on the record, and
+    // is not on it twice.
+    const replayed = after.runtime.transcript
+      .all()
+      .filter(
+        (record) =>
+          record.type === 'session_update' &&
+          record.update.sessionUpdate === 'agent_message_chunk' &&
+          record.update.content.type === 'text' &&
+          record.update.content.text.includes('replayed by the agent'),
+      );
+    expect(replayed).toHaveLength(0);
+  });
+});

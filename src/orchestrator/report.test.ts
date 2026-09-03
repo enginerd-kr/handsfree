@@ -55,7 +55,8 @@ open: - the third test needs a fixture
 - and a network mock`;
     const report = parseReport(text);
     expect(report.outcome).toBe('partial');
-    expect(report.decided).toEqual(['kept the old signature', 'added a shim']);
+    // One item: the semicolon is the agent's punctuation, not a separator.
+    expect(report.decided).toEqual(['kept the old signature; added a shim']);
     expect(report.open).toEqual(['the third test needs a fixture', 'and a network mock']);
   });
 

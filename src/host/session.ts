@@ -113,6 +113,12 @@ export class HostSession {
   private busy = false;
   /** What the agent said about models, once its opening answer has said it. */
   private state: ModelState | undefined;
+  /**
+   * Whether the agent is replaying this session's past to us — the stretch of
+   * `session/load` before it answers. Updates that arrive then are history the
+   * record already holds, not news.
+   */
+  replaying = false;
 
   constructor(
     readonly agentId: string,

@@ -68,3 +68,35 @@ describe('changedFiles', () => {
     expect(changedFiles(transcript.all())).toEqual(['/ws/old.ts', '/ws/new.ts']);
   });
 });
+
+describe('Transcript replay', () => {
+  it('reads a run back off its file and carries the sequence on', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'handsfree-transcript-'));
+    const file = path.join(dir, 'transcript.jsonl');
+
+    const first = new Transcript(file);
+    first.append({ type: 'user', text: 'one' });
+    first.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's1', task: 'do it' });
+    await first.close();
+    // A line the dying process never finished.
+    fs.appendFileSync(file, '{"type":"stop","taskId":1,"agentId":"cl');
+
+    const second = new Transcript(file);
+    expect(second.all().map((record) => record.type)).toEqual(['user', 'delegation']);
+    const next = second.append({ type: 'user', text: 'two' });
+    expect(next.seq).toBe(3);
+    await second.close();
+
+    const lines = fs.readFileSync(file, 'utf8').split('\n').filter((line) => line !== '');
+    expect(lines).toHaveLength(4);
+    expect(JSON.parse(lines[3]!)).toMatchObject({ type: 'user', text: 'two', seq: 3 });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('starts empty where there is no file yet', () => {
+    expect(new Transcript().all()).toEqual([]);
+  });
+});

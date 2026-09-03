@@ -141,14 +141,16 @@ function outcomeOf(text: string): ReportOutcome | undefined {
   }
 }
 
-/** Items as listed, with an inline "a; b" or "a, b" on the field line split too. */
+/**
+ * Items as listed: one per `- ` line, or the field line itself. Not split on
+ * punctuation — a semicolon in "not verified; the command was refused" is
+ * prose, and an agent that wants two items writes two lines.
+ */
 function items(values: string[]): string[] {
   const out: string[] = [];
   for (const value of values) {
-    for (const part of value.split(/\s*;\s*/)) {
-      const trimmed = part.replace(/^[-*•]\s*/, '').trim();
-      if (trimmed !== '' && !/^(none|n\/a|nothing|-)$/i.test(trimmed)) out.push(trimmed);
-    }
+    const trimmed = value.replace(/^[-*•]\s*/, '').trim();
+    if (trimmed !== '' && !/^(none|n\/a|nothing|-)$/i.test(trimmed)) out.push(trimmed);
   }
   return out;
 }

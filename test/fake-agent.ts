@@ -69,6 +69,8 @@ export interface FakeAgentOptions {
   name?: string;
   version?: string;
   loadSession?: boolean;
+  /** What the agent replays, as message chunks, while a `session/load` is in flight. */
+  replay?: string[];
   /**
    * Advertise a model selector offering these, the first one current. This is
    * the roster the host reads: which models exist, and which one the session
@@ -160,7 +162,15 @@ export function fakeAgent(options: FakeAgentOptions): FakeAgent {
       sessionId: `fake-${++sessionCounter}`,
       ...advertised(),
     }))
-    .onRequest(methods.agent.session.load, () => advertised())
+    .onRequest(methods.agent.session.load, async (ctx) => {
+      for (const text of options.replay ?? []) {
+        await ctx.client.notify(methods.client.session.update, {
+          sessionId: ctx.params.sessionId,
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } },
+        });
+      }
+      return advertised();
+    })
     .onRequest(methods.agent.session.setConfigOption, (ctx) => {
       const value = String(ctx.params.value);
       if (ctx.params.configId !== 'model' || !roster.includes(value)) {

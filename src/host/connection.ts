@@ -228,6 +228,11 @@ export class AgentConnection {
   async loadSession(sessionId: string): Promise<HostSession | undefined> {
     if (this.capabilities.loadSession !== true) return undefined;
     const session = this.register(sessionId);
+    // What the agent replays while loading is the conversation this run
+    // already has on file — the transcript was read back before the agent
+    // was even started — so it is heard, for the model state it carries, and
+    // not written down a second time.
+    session.replaying = true;
     try {
       const response = await this.connection.agent.request(methods.agent.session.load, {
         sessionId,
@@ -239,6 +244,8 @@ export class AgentConnection {
     } catch {
       this.sessions.delete(sessionId);
       return undefined;
+    } finally {
+      session.replaying = false;
     }
   }
 
@@ -359,11 +366,14 @@ function route(
   agentId: string,
   notification: SessionNotification,
 ): void {
-  host.transcript.append({
-    type: 'session_update',
-    agentId,
-    sessionId: notification.sessionId,
-    update: notification.update,
-  });
-  sessions.get(notification.sessionId)?.receive(notification.update);
+  const session = sessions.get(notification.sessionId);
+  if (!session?.replaying) {
+    host.transcript.append({
+      type: 'session_update',
+      agentId,
+      sessionId: notification.sessionId,
+      update: notification.update,
+    });
+  }
+  session?.receive(notification.update);
 }

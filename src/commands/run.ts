@@ -49,10 +49,13 @@ export async function run(
   const stop = () => runtime.conversation.cancel();
   process.on('SIGINT', stop);
 
+  // A reused run comes back with its record read in, earlier errors and all;
+  // the exit code answers for this turn, so only what this turn wrote counts.
+  const before = runtime.transcript.all().at(-1)?.seq ?? 0;
   try {
     await runtime.conversation.send(prompt);
     const failed = runtime.transcript
-      .all()
+      .since(before)
       .some((record) => record.type === 'note' && record.level === 'error');
     return failed ? 1 : 0;
   } finally {
