@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Transcript } from '../workspace/transcript.js';
-import { buildView, turnPhase, workingAgents } from './view-model.js';
+import { buildView, describeRecord, sessionsOf, turnPhase, workingAgents } from './view-model.js';
 
 const WORKSPACE = '/ws';
 
@@ -647,5 +647,24 @@ describe('a delegation row under the line that named its agent', () => {
     t.append({ type: 'user', text: '@gemini run the tests' });
     t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'run the tests' });
     expect(buildView(t.all(), WORKSPACE)[1]?.text).toBe('run the tests');
+  });
+});
+
+describe('a session record', () => {
+  it('is no row of the conversation, and is what the header reads', () => {
+    const t = transcript();
+    t.append({ type: 'session', agentId: 'claude', sessionId: 'c1', how: 'resumed' });
+    t.append({ type: 'session', agentId: 'gemini', sessionId: 'g1', how: 'new' });
+    t.append({ type: 'user', text: 'hi' });
+    expect(buildView(t.all(), WORKSPACE)).toHaveLength(1);
+    expect(sessionsOf(t.all())).toEqual({ claude: 'resumed', gemini: 'new' });
+  });
+
+  it('is a line in run output only when the session was resumed', () => {
+    const t = transcript();
+    const resumed = t.append({ type: 'session', agentId: 'claude', sessionId: 'c1', how: 'resumed' });
+    const fresh = t.append({ type: 'session', agentId: 'gemini', sessionId: 'g1', how: 'new' });
+    expect(describeRecord(resumed, WORKSPACE)).toBe('  resumed claude session c1');
+    expect(describeRecord(fresh, WORKSPACE)).toBeUndefined();
   });
 });

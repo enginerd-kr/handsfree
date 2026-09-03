@@ -954,6 +954,16 @@ describe('Conversation across a restart', () => {
     expect(resumed).not.toContain('claude, task 1');
     expect(resumed).not.toContain('Added parse().');
 
+    // The session's return is on the record as what it is, not as a remark
+    // in the conversation.
+    const sessionRecords = after.runtime.transcript
+      .all()
+      .filter((record) => record.type === 'session' && record.agentId === 'claude');
+    expect(sessionRecords.at(-1)).toMatchObject({ how: 'resumed' });
+    expect(
+      after.runtime.transcript.all().some((record) => record.type === 'note' && record.text.includes('resumed')),
+    ).toBe(false);
+
     // What the agent replayed while loading was already on the record, and
     // is not on it twice.
     const replayed = after.runtime.transcript

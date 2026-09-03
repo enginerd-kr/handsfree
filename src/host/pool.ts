@@ -96,14 +96,13 @@ export class AgentPool {
     const connection = await this.connection(agentId);
     const saved = this.options.workspace.readSessionIds()[agentId];
     const resumed = saved ? await connection.loadSession(saved) : undefined;
-    if (resumed) {
-      this.options.transcript.append({
-        type: 'note',
-        level: 'info',
-        text: `resumed ${agentId} session ${saved}`,
-      });
-    }
     const session = resumed ?? (await connection.newSession());
+    this.options.transcript.append({
+      type: 'session',
+      agentId,
+      sessionId: session.sessionId,
+      how: resumed ? 'resumed' : 'new',
+    });
     // A profile that asks for a model gets it before anything else touches the
     // session, a resumed one included — it comes back on whatever it was last
     // on. A profile that asks for none leaves the agent on its own default,

@@ -12,6 +12,7 @@ import {
   type Tone,
   type TurnPhase,
   type ViewItem,
+  sessionsOf,
 } from '../view-model.js';
 import type { ModelChoice } from '../../host/models.js';
 import { agentRole, orchestrationModel, type Config } from '../../config/schema.js';
@@ -358,6 +359,8 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   // held here for long enough that one outing can carry it, and then the mark
   // has nothing to report again.
   const [signedOff, setSignedOff] = useState(false);
+  /** Which agents came back on a session from a previous process, for the header. */
+  const [sessions, setSessions] = useState<Record<string, 'new' | 'resumed'>>({});
   const ran = useRef(false);
   useEffect(() => {
     if (busy) {
@@ -412,6 +415,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       );
       setWorking(workingAgents(records));
       setPhase(turnPhase(records));
+      setSessions(sessionsOf(records));
     };
     render();
     runtime.transcript.on('record', render);
@@ -1103,7 +1107,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   // Claude Code's chat sits under its welcome mark.
   return (
     <Box flexDirection="column" height={rows - 1}>
-      <Header runtime={runtime} brief={brief} />
+      <Header runtime={runtime} brief={brief} sessions={sessions} />
 
       {/*
         The transcript's window: a fixed pane the prompt sits under, with the
@@ -1355,7 +1359,15 @@ function useWander(brief?: Brief): Pose {
  * measured against — so every line truncates rather than wraps, and the tail
  * of the path is the part worth keeping.
  */
-function Header({ runtime, brief }: { runtime: Runtime; brief?: Brief }): React.JSX.Element {
+function Header({
+  runtime,
+  brief,
+  sessions = {},
+}: {
+  runtime: Runtime;
+  brief?: Brief;
+  sessions?: Record<string, 'new' | 'resumed'>;
+}): React.JSX.Element {
   const { x, stance, look, say, side } = useWander(brief);
   const mark = stage(mascot(stance, useBlink(), look), x, say, side);
   const agents = Object.entries(runtime.config.agents)
@@ -1388,6 +1400,7 @@ function Header({ runtime, brief }: { runtime: Runtime; brief?: Brief }): React.
               <Text color={agentColour(id)}>{id}</Text>
             </Text>
           ))}
+          {resumedLine(agents.filter((id) => sessions[id] === 'resumed'))}
         </Text>
         <Text color={INK} wrap="truncate-start">
           {tildify(runtime.workspace.runDir)}
@@ -2320,6 +2333,16 @@ function said(value: InputValue | undefined): string {
   if (value === undefined) return '—';
   if (Array.isArray(value)) return value.join(', ');
   return String(value);
+}
+
+/**
+ * The agents that came back on a session from before, on the header's roster
+ * line: a run reopened with `--run` is one where the agents remember what
+ * this process has not seen, and that is worth a word where the roster is —
+ * not a row in the conversation, where nothing happened.
+ */
+function resumedLine(resumed: string[]): string {
+  return resumed.length === 0 ? '' : ` · resumed ${resumed.join(', ')}`;
 }
 
 function tildify(dir: string): string {

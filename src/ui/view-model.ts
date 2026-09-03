@@ -339,6 +339,11 @@ export function buildView(
         taskStart = depth === 1 ? 0 : -1;
         break;
 
+      // Where each agent's session came from is the header's to say, not a
+      // row in the conversation: nothing was asked and nothing was answered.
+      case 'session':
+        break;
+
       case 'agent_stderr':
         break; // Kept in the file, not shown: adapters are chatty on stderr.
 
@@ -789,6 +794,10 @@ export function describeRecord(
       return `  ${record.entry.verdict === 'allow' ? '+' : '-'} ${record.entry.summary}`;
     case 'stop':
       return `← ${record.agentId} (${record.stopReason})`;
+    case 'session':
+      // A fresh session is the ordinary case and says nothing; a resumed one
+      // is worth a line, since the agent remembers things this run did not do.
+      return record.how === 'resumed' ? `  resumed ${record.agentId} session ${record.sessionId}` : undefined;
     case 'session_update': {
       const update = record.update;
       if (update.sessionUpdate === 'tool_call') {
@@ -802,6 +811,18 @@ export function describeRecord(
     default:
       return undefined;
   }
+}
+
+/**
+ * How each agent's session came to be, as the record has it — the latest
+ * word on each, since a session replaced mid-run is a new one.
+ */
+export function sessionsOf(records: readonly TranscriptRecord[]): Record<string, 'new' | 'resumed'> {
+  const out: Record<string, 'new' | 'resumed'> = {};
+  for (const record of records) {
+    if (record.type === 'session') out[record.agentId] = record.how;
+  }
+  return out;
 }
 
 /**

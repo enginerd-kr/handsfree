@@ -28,6 +28,13 @@ export type TranscriptBody =
   | { type: 'clear' }
   | { type: 'agent_stderr'; agentId: string; text: string }
   /**
+   * An agent's session opened for this run: fresh, or picked up from a
+   * previous process. Not a row of the conversation — the header carries it —
+   * but on the record, since which session a task ran in is what the ledger
+   * reads a resumed run against.
+   */
+  | { type: 'session'; agentId: string; sessionId: string; how: 'new' | 'resumed' }
+  /**
    * `model` is the id the session was switched to for this task, when one was
    * asked for — the id and nothing beside it, since the id is what went on the
    * wire and what the record has to be able to be read back against.
