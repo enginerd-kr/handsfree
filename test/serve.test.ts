@@ -147,6 +147,89 @@ describe('handsfree as an ACP agent', () => {
     expect(answers).toEqual(['no']);
   });
 
+  it('offers the permission modes to the editor, and takes the one it sets', async () => {
+    const project = tempDir('handsfree-project-');
+    const root = tempDir('handsfree-root-');
+    const answers: string[] = [];
+    const sub = fakeAgent({
+      script: () => [
+        {
+          do: 'ask',
+          title: 'Do something unusual',
+          kind: 'other',
+          onAnswer: (id) => answers.push(id),
+        },
+      ],
+    });
+
+    const config = ConfigSchema.parse({
+      workspaceRoot: root,
+      agents: { claude: { command: 'unused' } },
+    });
+    config.workspaceRoot = root;
+
+    const served = createServeApp(config, {
+      llm: scriptedModel([
+        JSON.stringify({ action: 'delegate', agent: 'claude', task: 'Do the unusual thing' }),
+        JSON.stringify({ action: 'answer', message: 'Done.' }),
+      ]),
+      createTarget: () => sub.target(),
+    });
+
+    const asked: string[] = [];
+    const modeUpdates: string[] = [];
+    await client({ name: 'editor' })
+      .onNotification(methods.client.session.update, (ctx) => {
+        if (ctx.params.update.sessionUpdate === 'current_mode_update') {
+          modeUpdates.push(ctx.params.update.currentModeId);
+        }
+      })
+      .onRequest(methods.client.session.requestPermission, (ctx) => {
+        asked.push(ctx.params.toolCall.title ?? '');
+        const reject = ctx.params.options.find((option) => option.kind === 'reject_once')!;
+        return { outcome: { outcome: 'selected' as const, optionId: reject.optionId } };
+      })
+      .connectWith(served.app, async (ctx) => {
+        await ctx.request(methods.agent.initialize, {
+          protocolVersion: PROTOCOL_VERSION,
+          clientCapabilities: {},
+        });
+        const session = await ctx.request(methods.agent.session.new, {
+          cwd: project,
+          mcpServers: [],
+        });
+        // The same three the terminal walks with shift+tab, opening in ask.
+        expect(session.modes?.currentModeId).toBe('ask');
+        expect(session.modes?.availableModes.map((mode) => mode.id)).toEqual([
+          'ask',
+          'acceptEdits',
+          'bypass',
+        ]);
+
+        // A mode handsfree does not have is refused, and nothing moves.
+        await expect(
+          ctx.request(methods.agent.session.setMode, { sessionId: session.sessionId, modeId: 'yolo' }),
+        ).rejects.toThrow(/unknown mode/);
+
+        await ctx.request(methods.agent.session.setMode, {
+          sessionId: session.sessionId,
+          modeId: 'bypass',
+        });
+        return ctx.request(methods.agent.session.prompt, {
+          sessionId: session.sessionId,
+          prompt: [{ type: 'text', text: 'do it' }],
+        });
+      });
+
+    await served.dispose();
+
+    // In bypass the question never reaches the editor: the sub-agent gets its
+    // single-use yes from the mode.
+    expect(modeUpdates).toEqual(['bypass']);
+    expect(asked).toEqual([]);
+    expect(answers).toEqual(['once']);
+  });
+
   it('carries a sub-agent’s own question up to an editor that renders forms', async () => {
     const project = tempDir('handsfree-project-');
     const root = tempDir('handsfree-root-');

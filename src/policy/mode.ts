@@ -73,3 +73,10 @@ export const MODE_LABEL: Record<PermissionMode, string> = {
   acceptEdits: 'accept edits',
   bypass: 'bypass permissions',
 };
+
+/** The sentence under each label, where a mode picker has room for one. */
+export const MODE_DESCRIPTION: Record<PermissionMode, string> = {
+  ask: 'every question comes to you, every time',
+  acceptEdits: 'files in the workspace go through, commands still ask',
+  bypass: 'everything is allowed, whatever the rules say',
+};

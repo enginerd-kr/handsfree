@@ -10,10 +10,12 @@ import {
   type CreateElicitationResponse,
   type ElicitationPropertySchema,
   type RequestPermissionResponse,
+  RequestError,
 } from '@agentclientprotocol/sdk';
 import type { Config } from '../config/schema.js';
 import type { ConfigLocation } from '../config/load.js';
 import { createRuntime, type Runtime, type RuntimeOptions } from '../runtime.js';
+import { MODE_DESCRIPTION, MODE_LABEL, MODES, parsePermissionMode } from '../policy/mode.js';
 import type { Escalator, InputField, InputValue } from '../policy/types.js';
 import type { TranscriptRecord } from '../workspace/transcript.js';
 import { VERSION } from '../version.js';
@@ -71,7 +73,41 @@ export function createServeApp(config: Config, overrides: Partial<RuntimeOptions
       };
       runtime.transcript.on('record', forward);
       sessions.set(sessionId, { runtime, forward });
-      return { sessionId };
+      // The permission mode, as the editor's own mode picker: the same three
+      // shift+tab walks in the terminal, and a session opens in `ask` here
+      // as it does there.
+      return {
+        sessionId,
+        modes: {
+          currentModeId: runtime.policy.mode,
+          availableModes: MODES.map((id) => ({
+            id,
+            name: MODE_LABEL[id],
+            description: MODE_DESCRIPTION[id],
+          })),
+        },
+      };
+    })
+    .onRequest(methods.agent.session.setMode, (ctx) => {
+      const served = sessions.get(ctx.params.sessionId);
+      if (!served) throw new Error(`unknown session ${ctx.params.sessionId}`);
+      const mode = parsePermissionMode(ctx.params.modeId);
+      if (!mode) {
+        throw RequestError.invalidParams(
+          { modeId: ctx.params.modeId },
+          `unknown mode "${ctx.params.modeId}"; one of ${MODES.join(', ')}`,
+        );
+      }
+      // From the next request on. A question already put to the editor is
+      // the editor's to answer: there is no way to take a request back once
+      // it is sent, and the engine writes a yes down as the mode's where the
+      // mode would not have asked.
+      served.runtime.policy.setMode(mode);
+      void ctx.client.notify(methods.client.session.update, {
+        sessionId: ctx.params.sessionId,
+        update: { sessionUpdate: 'current_mode_update', currentModeId: mode },
+      });
+      return {};
     })
     .onRequest(methods.agent.session.prompt, async (ctx) => {
       const served = sessions.get(ctx.params.sessionId);
