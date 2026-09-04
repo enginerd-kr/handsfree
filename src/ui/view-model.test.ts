@@ -384,8 +384,8 @@ describe('buildView', () => {
     t.append({ type: 'stop', taskId: 1, agentId: 'claude', sessionId: 's', stopReason: 'end_turn' });
 
     const view = buildView(t.all(), WORKSPACE);
-    expect(view.map((item) => item.marker)).toEqual(['bullet', 'refused', 'none', 'result']);
-    expect(view[2]?.tone).toBe('bad');
+    expect(view.map((item) => item.marker)).toEqual(['bullet', 'refused', 'bullet', 'result']);
+    expect(view[2]).toMatchObject({ tone: 'bad', markerTone: 'bad', gap: true });
   });
 
   it('folds routine approvals under the call they approved', () => {
@@ -791,13 +791,11 @@ describe('a task\'s answer', () => {
     expect(view[1]?.agentId).toBe('claude');
   });
 
-  it('marks an answer that opens on a code block, so the label can stand clear of it', () => {
+  it('labels every block of an answer as prose, so the name stands over it', () => {
     const t = asked('```js\nfunction greet(name) {\n  return name;\n}\n```');
     const view = buildView(t.all(), WORKSPACE);
-    expect(view.at(-1)).toMatchObject({ label: 'claude', blockFirst: true });
-    // Prose ahead of the block keeps the label beside it.
-    expect(view[1]).toMatchObject({ label: 'claude', text: 'Let me look.' });
-    expect(view[1]?.blockFirst).toBeUndefined();
+    expect(view.at(-1)).toMatchObject({ label: 'claude', prose: true });
+    expect(view[1]).toMatchObject({ label: 'claude', text: 'Let me look.', prose: true });
   });
 
   it('never draws the REPORT block, and drops a block that was nothing else', () => {

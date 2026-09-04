@@ -271,7 +271,8 @@ describe('terminal UI', () => {
       // in the agent's name — no row saying the line again, no ledger over
       // the answer, and nothing of the block meant for the planner.
       expect(frame.split('who are you')).toHaveLength(2);
-      expect(frame).toContain('claude  I am claude.');
+      // The name stands over the answer, and the answer hangs in the text column.
+      expect(frame).toContain('claude\n  I am claude.');
       expect(frame).not.toContain('REPORT');
       expect(frame).not.toContain('task 1');
     } finally {
@@ -1283,10 +1284,12 @@ describe('terminal UI', () => {
       const row = lines.findIndex((line) => line.includes('⎿'));
       expect(row).toBeGreaterThan(0);
 
-      // The terminal answers as if the frame began three rows down the screen:
+      // The terminal answers as if the frame began four rows down the screen:
       // the cursor rests on the line under the frame, so its row is the frame
-      // top plus the frame's height.
-      app.stdin.write(`[${lines.length + 3 + 1};1R`);
+      // top plus the frame's height. Four, so that a click aimed by the old
+      // anchor falls past the whole task — its name row, its gap — onto the
+      // person's own line.
+      app.stdin.write(`[${lines.length + 4 + 1};1R`);
       await new Promise((resolve) => setTimeout(resolve, 0));
 
       // A click aimed by the old anchor now lands on nothing.
@@ -1294,8 +1297,8 @@ describe('terminal UI', () => {
       await new Promise((resolve) => setTimeout(resolve, 60));
       expect(app.lastFrame()).not.toContain('안녕?');
 
-      // Aimed three rows lower, it opens the task again.
-      app.stdin.write(`[<0;3;${row + 3 + 1}m`);
+      // Aimed four rows lower, it opens the task again.
+      app.stdin.write(`[<0;3;${row + 4 + 1}m`);
       const frame = await waitFor(() => app.lastFrame(), '안녕?');
       expect(frame).not.toContain(';1R');
     } finally {

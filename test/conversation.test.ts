@@ -221,11 +221,20 @@ describe('Conversation', () => {
     });
     open = h;
 
+    // The TUI's roster probe asks for the session while the task does, and
+    // both wait on the one attempt.
+    const probe = h.runtime.pool.session('claude').catch((err: unknown) => (err as Error).message);
     await h.runtime.conversation.send('make notes.txt');
 
     const reply = assistantText(h).at(-1) ?? '';
     expect(reply).toContain('adapter not installed');
     expect(reply).not.toContain('done');
+    expect(await probe).toContain('adapter not installed');
+    // One failure, one line on the record — however many were waiting on it.
+    const errors = h.runtime.transcript
+      .all()
+      .filter((record) => record.type === 'note' && record.level === 'error');
+    expect(errors).toHaveLength(1);
   });
 
   it('discards a summary that does not report the work', async () => {

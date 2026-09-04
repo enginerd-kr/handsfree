@@ -542,11 +542,10 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
         .session(id)
         .then(() => setModelRoster((prev) => ({ ...prev, [id]: 'ready' })))
         .catch((err: unknown) => {
-          // Said once, on the record, at the moment it is known: an agent that
-          // will not start is news now rather than at the first task sent to it.
-          const failed = (err as Error).message;
-          runtime.transcript.append({ type: 'note', level: 'warn', text: failed });
-          setModelRoster((prev) => ({ ...prev, [id]: { failed } }));
+          // The pool has put the failure on the record — once, however many
+          // were waiting on the open — so this only remembers why, for the
+          // line under the prompt.
+          setModelRoster((prev) => ({ ...prev, [id]: { failed: (err as Error).message } }));
         });
     }
   }, [agents, runtime]);

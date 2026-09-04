@@ -155,7 +155,7 @@ export class AgentConnection {
         }),
         target.broken,
         host.config.limits.handshakeTimeoutMs,
-        `${agentId} did not answer initialize`,
+        'no answer to initialize'
       );
     } catch (err) {
       debug(agentId, `initialize failed after ${Date.now() - started}ms: ${(err as Error).message}`);
@@ -163,7 +163,9 @@ export class AgentConnection {
       if (stderr) debug(agentId, `recent adapter stderr: ${stderr}`);
       connection.close();
       await target.close();
-      throw new Error(`${agentId} failed to initialize over ACP: ${(err as Error).message}`);
+      // What the person reads, so it says what happened rather than which
+      // protocol it happened over; the protocol is in the debug line above.
+      throw new Error(`${agentId} did not start: ${(err as Error).message}`);
     }
 
     const info = initialized.agentInfo;
@@ -334,6 +336,11 @@ export class AgentConnection {
   }
 }
 
+/** A wait in the words a person counts in: whole seconds where it is one, else ms. */
+function duration(ms: number): string {
+  return ms % 1000 === 0 ? `${ms / 1000}s` : `${ms}ms`;
+}
+
 /**
  * The handshake is the one exchange with no protocol-level timeout behind it: if
  * an adapter starts but never answers, nothing else will ever notice.
@@ -346,7 +353,10 @@ function orBroken<T>(
 ): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${timeoutMessage} within ${timeoutMs}ms`)), timeoutMs);
+    timer = setTimeout(
+      () => reject(new Error(`${timeoutMessage} within ${duration(timeoutMs)}`)),
+      timeoutMs,
+    );
   });
   const races: Promise<T>[] = [work, deadline];
   if (broken) {

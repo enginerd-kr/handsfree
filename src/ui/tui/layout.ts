@@ -110,12 +110,15 @@ export function headline(item: ViewItem): string {
 }
 
 /**
- * What parts a label from the text: a pair of spaces, or a line break when
- * the text opens on a fenced block — whose lines have to share a column, and
- * a first line pushed along by the label would not.
+ * What parts a label from the text: a pair of spaces on a one-line row — a
+ * tool call, a routing — and a line break over a block of prose. An agent's
+ * words hang under their name rather than starting beside it: a first line
+ * pushed along by the name wrapped back to a different column from the rest,
+ * and a fenced block, whose lines have to share a column, could not follow a
+ * name at all.
  */
 export function labelGap(item: ViewItem): string {
-  return item.blockFirst === true ? '\n' : '  ';
+  return item.prose === true ? '\n' : '  ';
 }
 
 /**

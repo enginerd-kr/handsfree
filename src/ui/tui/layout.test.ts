@@ -29,10 +29,10 @@ describe('totalHeight', () => {
 });
 
 describe('itemRows', () => {
-  it('gives a label its own row above a text that opens on a code block', () => {
+  it('gives a label its own row over prose, and a shared one over a one-line row', () => {
     const code = item('const a = 1;\nconst b = 2;', { label: 'claude' });
     expect(heightOf(code, 80)).toBe(2);
-    expect(heightOf({ ...code, blockFirst: true }, 80)).toBe(3);
+    expect(heightOf({ ...code, prose: true }, 80)).toBe(3);
   });
 
   it('places the headline past the gap and each detail line under the last', () => {

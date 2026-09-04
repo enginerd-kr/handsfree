@@ -20,7 +20,7 @@ import {
 import { debug } from '../debug.js';
 import { SessionUnresponsiveError } from '../host/session.js';
 import type { ModelChoice } from '../host/models.js';
-import type { AgentPool } from '../host/pool.js';
+import { type AgentPool, AgentStartError } from '../host/pool.js';
 import type { Transcript } from '../workspace/transcript.js';
 import type { Workspace } from '../workspace/workspace.js';
 import { expandBody } from '../slash/expand.js';
@@ -550,7 +550,10 @@ export class Conversation {
 
     const failed = (err: unknown): TaskOutcome => {
       const outcome = summarise(taskId, agentId, task, 'unresponsive', [], Date.now() - startedAt, options);
-      transcript.append({ type: 'note', level: 'error', text: (err as Error).message });
+      // An agent that would not start is already on the record, by the pool.
+      if (!(err instanceof AgentStartError)) {
+        transcript.append({ type: 'note', level: 'error', text: (err as Error).message });
+      }
       const message = (err as Error).message;
       return { ...outcome, message, report: { ...outcome.report, summary: message } };
     };

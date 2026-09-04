@@ -51,11 +51,6 @@ export interface ViewItem {
    */
   prose?: boolean;
   /**
-   * Whether the text opens on a fenced block. Its lines share a column, so a
-   * label cannot sit beside the first of them: it takes a line of its own.
-   */
-  blockFirst?: boolean;
-  /**
    * The delegated task this row belongs to, opening and closing rows included.
    * Every row of a task carries it, so hovering anywhere in the block lights
    * all of it and a click anywhere in it folds or unfolds the task.
@@ -289,16 +284,21 @@ export function buildView(
         }
         closeTool();
         if (record.level !== 'info') loud.add(`n${record.seq}`);
+        // An error or a warning is news, and stands as its own row: a dot in
+        // its colour, and a line off whatever came before — a remark hung
+        // under a task's closing line read as part of that task.
+        const tone: Tone = record.level === 'error' ? 'bad' : record.level === 'warn' ? 'warn' : 'muted';
+        const news = record.level !== 'info';
         const note = add(
           row(
             `n${record.seq}`,
             'system',
             0,
-            'none',
-            'muted',
+            news ? 'bullet' : 'none',
+            news ? tone : 'muted',
             record.text,
-            record.level === 'error' ? 'bad' : record.level === 'warn' ? 'warn' : 'muted',
-            detail.length > 0,
+            tone,
+            news || detail.length > 0,
           ),
         );
         note.lines = detail.map((text) => ({ text, tone: 'muted' as const }));
@@ -515,7 +515,6 @@ export function buildView(
   for (const item of items) {
     if (item.role === 'agent' && item.prose === true) item.text = stripReport(item.text);
     item.text = item.text.trim();
-    if (item.prose === true && FENCE_FIRST.test(item.text)) item.blockFirst = true;
     if (item.taskId === undefined || unfolded(item.taskId)) continue;
     if (answers.get(item.taskId) === item.key) continue;
     const tool = tools.get(item.key);
@@ -534,9 +533,6 @@ function asked(user: string, task: string): boolean {
   const said = user.replace(/^\s*@\S+/, '').replace(/\s+/g, ' ').trim();
   return said !== '' && said === task.replace(/\s+/g, ' ').trim();
 }
-
-/** A text that opens on a fenced block, closed or still streaming in. */
-const FENCE_FIRST = /^(?:`{3,}|~{3,})/;
 
 /** A row carrying an agent's own words, which the renderer draws as markdown. */
 function proseRow(...args: Parameters<typeof row>): ViewItem {

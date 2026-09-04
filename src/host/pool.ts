@@ -25,6 +25,24 @@ export interface PoolOptions {
 }
 
 /**
+ * An agent that would not start, already on the record. The pool writes the
+ * note the moment the attempt fails, once — every caller waiting on that
+ * attempt gets this error, and none of them has to say it again. Without it
+ * the roster probe and the first task sent to the agent, both waiting on the
+ * one open, each reported the same failure, and the transcript carried the
+ * sentence twice on consecutive rows.
+ */
+export class AgentStartError extends Error {
+  constructor(
+    readonly agentId: string,
+    cause: unknown,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = 'AgentStartError';
+  }
+}
+
+/**
  * Agents are expensive to start (an adapter fetched by `npx` can take seconds)
  * and cheap to keep, so a connection and its session live for the whole run.
  * Keeping the session is also what lets a second task build on the first without
@@ -86,7 +104,13 @@ export class AgentPool {
     const pending = this.starting.get(agentId);
     if (pending) return pending;
 
-    const attempt = this.start(agentId).finally(() => this.starting.delete(agentId));
+    const attempt = this.start(agentId)
+      .catch((err: unknown) => {
+        const failure = new AgentStartError(agentId, err);
+        this.options.transcript.append({ type: 'note', level: 'error', text: failure.message });
+        throw failure;
+      })
+      .finally(() => this.starting.delete(agentId));
     this.starting.set(agentId, attempt);
     return attempt;
   }
