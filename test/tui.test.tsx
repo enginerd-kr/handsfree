@@ -901,8 +901,9 @@ describe('terminal UI', () => {
       const roll = lines.findIndex((line) => line.includes(`${DOT_IDLE} claude`));
       // The row above the roll call is the transcript's, and it is blank.
       expect(lines[roll - 1]?.trim()).toBe('');
-      // The roll call is the fifth row from the bottom, as it has always been.
-      expect(lines.length - roll).toBe(5);
+      // The roll call is the sixth row from the bottom: the two rules with the
+      // input between them, the hints, and the permission mode under those.
+      expect(lines.length - roll).toBe(6);
     } finally {
       app.unmount();
     }
@@ -946,7 +947,7 @@ describe('terminal UI', () => {
     expect(menuFit('model', 24)).toBeGreaterThanOrEqual(6);
     // A slash still yields to the transcript at the same height, because its
     // list narrows as the name is typed and a cut there loses nothing.
-    expect(menuFit('command', 24)).toBe(5);
+    expect(menuFit('command', 24)).toBe(4);
     // Shorter still, and the menu goes rather than the frame overflowing.
     expect(menuFit('model', 14)).toBe(0);
   });
@@ -1369,9 +1370,9 @@ describe('terminal UI', () => {
       await waitFor(() => app.lastFrame(), 'line-40');
 
       // A page is the viewport less the row it keeps for the eye to land on:
-      // nine of these two-row items.
+      // eight and a half of these two-row items.
       app.stdin.write('\u001B[5~'); // page up
-      const paged = await waitFor(() => app.lastFrame(), 'line-22');
+      const paged = await waitFor(() => app.lastFrame(), 'line-23');
       expect(paged).not.toContain('line-40');
 
       // Shift and an arrow move a single row, which is half of one item: two
@@ -1379,11 +1380,11 @@ describe('terminal UI', () => {
       app.stdin.write('\u001B[1;2B'); // shift+down
       app.stdin.write('\u001B[1;2B');
       const nudged = await waitFor(() => app.lastFrame(), 'line-32');
-      expect(nudged).not.toContain('line-22');
+      expect(nudged).not.toContain('line-23');
 
       app.stdin.write('\u001B[6~'); // page down, back to the end
       const end = await waitFor(() => app.lastFrame(), 'line-40');
-      expect(end).not.toContain('line-23');
+      expect(end).not.toContain('line-24');
     } finally {
       app.unmount();
     }
@@ -1742,6 +1743,118 @@ describe('terminal UI', () => {
       expect(answers).toEqual([
         { action: 'accept', content: { approach: 'patch', name: 'notes' } },
       ]);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('cycles the permission mode on shift+tab, and says so under the prompt', async () => {
+    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      // The default is on screen too, in the row under the hints.
+      const opening = await waitFor(() => app.lastFrame(), '⏵⏵ ask every time');
+      expect(h.runtime.policy.mode).toBe('ask');
+
+      app.stdin.write('\u001B[Z'); // shift+tab
+      const edits = await waitFor(() => app.lastFrame(), '⏵⏵ accept edits');
+      expect(h.runtime.policy.mode).toBe('acceptEdits');
+      // A row of its own, under the hints, which stay where they were.
+      const lines = edits.split('\n');
+      const hints = lines.findIndex((line) => line.includes('/ for commands'));
+      expect(hints).toBeGreaterThan(-1);
+      expect(lines[hints + 1]).toContain('⏵⏵ accept edits');
+
+      app.stdin.write('\u001B[Z');
+      await waitFor(() => app.lastFrame(), '⏵⏵ bypass permissions');
+      expect(h.runtime.policy.mode).toBe('bypass');
+
+      // Round again, and the row says the default again, where it was.
+      app.stdin.write('\u001B[Z');
+      const back = await waitFor(() => app.lastFrame(), '⏵⏵ ask every time');
+      expect(back).toContain('/ for commands');
+      expect(back.split('\n').length).toBe(opening.split('\n').length);
+      expect(h.runtime.policy.mode).toBe('ask');
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('answers the question on screen when the mode moves to bypass', async () => {
+    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      const decision = h.runtime.policy.resolve({
+        kind: 'exec',
+        agentId: 'claude',
+        sessionId: 's1',
+        command: 'git',
+        args: ['commit', '-m', 'wip'],
+        cwd: undefined,
+      });
+      const asked = await waitFor(() => app.lastFrame(), 'allow once');
+      expect(asked).toContain('shift+tab');
+
+      // A command is still a question in acceptEdits: the box stays.
+      app.stdin.write('\u001B[Z');
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(app.lastFrame()).toContain('allow once');
+      expect(h.runtime.policy.mode).toBe('acceptEdits');
+
+      // In bypass it is not, and the switch is the answer.
+      app.stdin.write('\u001B[Z');
+      expect(await decision).toMatchObject({
+        verdict: 'allow',
+        rule: 'exec.otherwise',
+        escalated: true,
+        mode: 'bypass',
+      });
+      await waitFor(() => app.lastFrame(), '⏵⏵ bypass permissions');
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('answers only the file question when the mode moves to acceptEdits', async () => {
+    const h = harness({
+      agents: { claude: fakeAgent({ script: () => [] }) },
+      config: { policy: { fs: { write: 'ask' } } },
+    });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      const write = h.runtime.policy.resolve({
+        kind: 'fs.write',
+        agentId: 'claude',
+        sessionId: 's1',
+        path: path.join(h.workspaceDir, 'notes.txt'),
+        bytes: 5,
+      });
+      await waitFor(() => app.lastFrame(), 'write notes.txt');
+      const commit = h.runtime.policy.resolve({
+        kind: 'exec',
+        agentId: 'claude',
+        sessionId: 's1',
+        command: 'git',
+        args: ['commit', '-m', 'wip'],
+        cwd: undefined,
+      });
+
+      app.stdin.write('\u001B[Z');
+      expect(await write).toMatchObject({ verdict: 'allow', rule: 'fs.write', mode: 'acceptEdits' });
+      // The command question was next in line, and now it is up.
+      const next = await waitFor(() => app.lastFrame(), 'git commit');
+      expect(next).toContain('allow once');
+
+      app.stdin.write('n');
+      expect(await commit).toMatchObject({ verdict: 'deny', escalated: true });
     } finally {
       app.unmount();
     }

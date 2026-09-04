@@ -534,3 +534,120 @@ describe('commandFromRawInput', () => {
     expect(commandFromRawInput({ command: ['sh', { nested: true }] })).toBeUndefined();
   });
 });
+
+describe('PolicyEngine under a permission mode', () => {
+  const commit: PolicyRequest = {
+    kind: 'exec',
+    command: 'git',
+    args: ['commit', '-m', 'wip'],
+    cwd: undefined,
+    ...where,
+  };
+  const outside: PolicyRequest = { kind: 'fs.write', path: '/etc/passwd', bytes: 1, ...where };
+  const switchMode: PolicyRequest = {
+    kind: 'tool',
+    toolKind: 'switch_mode',
+    title: 'switch_mode',
+    locations: [],
+    rawInput: null,
+    ...where,
+  };
+
+  it('starts in ask, and answers a file question in acceptEdits but not a command one', async () => {
+    const policy = engine({ fs: { write: 'ask' } });
+    expect(policy.mode).toBe('ask');
+    policy.setMode('acceptEdits');
+
+    const write = await policy.resolve({ kind: 'fs.write', path: inside('a.ts'), bytes: 3, ...where });
+    expect(write).toMatchObject({ verdict: 'allow', rule: 'fs.write', mode: 'acceptEdits' });
+    expect(write.escalated).toBeUndefined();
+
+    // Still a question, and with nobody there still a denial.
+    expect(await policy.resolve(commit)).toMatchObject({ verdict: 'deny', rule: 'exec.otherwise' });
+    // A denial is not a question, and the mode answers questions.
+    expect(await policy.resolve(outside)).toMatchObject({ verdict: 'deny', rule: 'fs.write.outside' });
+  });
+
+  it('lifts every ruling in bypass, keeps the rule name, and refuses a mode switch still', async () => {
+    const policy = engine({ exec: { enabled: false } });
+    policy.setMode('bypass');
+
+    expect(await policy.resolve(outside)).toMatchObject({
+      verdict: 'allow',
+      rule: 'fs.write.outside',
+      mode: 'bypass',
+    });
+    expect(await policy.resolve(commit)).toMatchObject({
+      verdict: 'allow',
+      rule: 'exec.disabled',
+      mode: 'bypass',
+    });
+    const refused = await policy.resolve(switchMode);
+    expect(refused).toMatchObject({ verdict: 'deny', rule: 'tool.switchMode' });
+    expect(refused.mode).toBeUndefined();
+  });
+
+  it('records the mode only on the decisions it changed', async () => {
+    const audit: AuditEntry[] = [];
+    const policy = engine({}, undefined, audit);
+    policy.setMode('bypass');
+    await policy.resolve({ kind: 'fs.read', path: inside('a.ts'), ...where });
+    await policy.resolve(commit);
+    expect(audit.map((entry) => [entry.rule, entry.mode])).toEqual([
+      ['fs.read', undefined],
+      ['exec.otherwise', 'bypass'],
+    ]);
+  });
+
+  it('takes the standing approval in bypass without asking', async () => {
+    let asked = 0;
+    const policy = engine({}, { ask: () => ((asked += 1), Promise.resolve(false)) });
+    policy.setMode('bypass');
+    const widened = await policy.confirm(commit, { rule: 'tool.sessionWideOnly', reason: 'whole session' });
+    expect(widened).toMatchObject({ verdict: 'allow', rule: 'tool.sessionWideOnly', mode: 'bypass' });
+    expect(widened.escalated).toBeUndefined();
+    expect(asked).toBe(0);
+
+    // In acceptEdits a standing approval is still a person's call.
+    policy.setMode('acceptEdits');
+    expect(await policy.confirm(commit, { rule: 'tool.sessionWideOnly', reason: 'whole session' })).toMatchObject({
+      verdict: 'deny',
+      escalated: true,
+    });
+    expect(asked).toBe(1);
+  });
+
+  it('marks a question answered by a mode switch as the mode’s, not a person’s', async () => {
+    let policy!: PolicyEngine;
+    const escalator: Escalator = {
+      ask: async () => {
+        // The seat flushes what it holds when the mode moves: a switch to
+        // bypass while this question is up answers it.
+        policy.setMode('bypass');
+        return true;
+      },
+    };
+    policy = engine({}, escalator);
+    expect(await policy.resolve(commit)).toMatchObject({
+      verdict: 'allow',
+      rule: 'exec.otherwise',
+      escalated: true,
+      mode: 'bypass',
+    });
+    // A yes in ask mode is a person's, and carries no mode.
+    const byHand = await engine({}, { ask: async () => true }).resolve(commit);
+    expect(byHand).toMatchObject({ verdict: 'allow', escalated: true });
+    expect(byHand.mode).toBeUndefined();
+  });
+
+  it('leaves an agent’s own question alone in bypass', async () => {
+    const policy = engine({});
+    policy.setMode('bypass');
+    expect(
+      await policy.elicit(where, {
+        summary: 'which way?',
+        fields: [{ key: 'way', label: 'way', kind: 'string', required: true }],
+      }),
+    ).toEqual({ action: 'cancel' });
+  });
+});

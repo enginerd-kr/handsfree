@@ -1,5 +1,6 @@
 import type { Config } from '../config/schema.js';
 import type { ConfigLocation } from '../config/load.js';
+import type { PermissionMode } from '../policy/mode.js';
 import { createRuntime } from '../runtime.js';
 import { stdinSeat } from '../ui/stdin-seat.js';
 import { describeRecord } from '../ui/view-model.js';
@@ -13,6 +14,12 @@ export interface RunOptions {
   attachTo?: string;
   /** The files the settings were read from, strongest first, for `/config` to name. */
   configSources?: readonly ConfigLocation[];
+  /**
+   * The mode to start in; `ask` when unset. Piped or in CI there is no seat,
+   * so `acceptEdits` lets the file questions through and denies the rest,
+   * and `bypass` needs no seat at all.
+   */
+  permissionMode?: PermissionMode;
 }
 
 /**
@@ -35,6 +42,9 @@ export async function run(
     ...(options.attachTo === undefined ? {} : { attachTo: options.attachTo }),
     ...(options.configSources === undefined ? {} : { configSources: options.configSources }),
   });
+  // Set before the turn, so no request can be judged under the mode it did
+  // not start in.
+  if (options.permissionMode) runtime.policy.setMode(options.permissionMode);
 
   const onRecord = (record: TranscriptRecord) => {
     if (options.json) {

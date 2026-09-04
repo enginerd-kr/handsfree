@@ -5,6 +5,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, Transform, useApp, useInput, usePaste, useStdout } from 'ink';
 import type { Runtime } from '../../runtime.js';
 import type { InputAnswer, InputField, InputValue } from '../../policy/types.js';
+import { MODE_LABEL, modeAllows, nextMode, type PermissionMode } from '../../policy/mode.js';
 import { debugDestination } from '../../debug.js';
 import { lineAround, lineCount, stepLine } from './draft.js';
 import {
@@ -197,10 +198,13 @@ const MODEL_FLOOR = 4;
 
 /**
  * Rows below it: the status line, the prompt's two rules with its input between
- * them, and the hint. The status line is always drawn — blank when nothing is
- * running — so the transcript's budget never changes as a turn starts.
+ * them, the hint, and the permission mode under that. The status line is
+ * always drawn — blank when nothing is running — so the transcript's budget
+ * never changes as a turn starts, and the mode is always drawn for the same
+ * reason: a row that came and went with shift+tab would move the transcript
+ * under a click.
  */
-const PROMPT_ROWS = 5;
+const PROMPT_ROWS = 6;
 
 /**
  * How far one turn of the wheel moves the transcript. Three rows is what a
@@ -389,6 +393,11 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   const pending = useRef<Question[]>([]);
   /** The question actually on screen, kept in step with `ask` synchronously. */
   const head = useRef<Question | undefined>(undefined);
+  // The permission mode, for the footer; the engine holds the one that
+  // decides. A session always opens in `ask`, whatever a previous one was
+  // moved to — the mode is never written down anywhere it could be read back.
+  const [mode, setMode] = useState<PermissionMode>('ask');
+  const modeRef = useRef<PermissionMode>('ask');
   const busy = startedAt !== undefined;
 
   // The mark's last word on a turn. A turn ending leaves no record of its own
@@ -955,6 +964,24 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       frameTop.current = Math.max(0, cursorRow - (rows - 1));
       return;
     }
+    // Shift+Tab moves the permission mode, from anywhere — a question up on
+    // screen included, since the mode is the answer to some of them. It sits
+    // above the question block, which takes every other key, and above the
+    // menu, which owns a plain tab.
+    if (key.tab && key.shift) {
+      const next = nextMode(modeRef.current);
+      modeRef.current = next;
+      setMode(next);
+      runtime.policy.setMode(next);
+      // Whatever the new mode would not have asked is answered now. The line
+      // is walked from a copy: each answer retires its own entry and shifts
+      // the queue under the walk. An agent's own question is never one of
+      // them — it is a question, not a permission.
+      for (const entry of [head.current, ...pending.current]) {
+        if (entry?.kind === 'ask' && modeAllows(next, entry.rule)) entry.answer(true);
+      }
+      return;
+    }
     // A question owns the screen while it is up — it is taller than the prompt
     // it stands in for, so the transcript above it gives up rows and no longer
     // sits where a click was measured against. Answering it is the only input
@@ -1314,6 +1341,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
           following={scrolled === undefined}
           copied={copied}
           cwd={runtime.workspace.dir}
+          mode={mode}
         />
       )}
     </Box>
@@ -1902,7 +1930,8 @@ function openings(runtime: Runtime, agents: readonly string[]): readonly Opening
  * the transcript above never reflows the moment one starts. The one row that
  * comes and goes on its own is the spend line above the roll call, and it
  * comes once for the run — the first call that costs anything — and then
- * stays; the input's rows come and go with what is typed into it.
+ * stays; the input's rows come and go with what is typed into it. The
+ * permission mode has the last row, whichever mode it is.
  *
  * The hint line is also where the transcript says it has stopped following the
  * end — scrolled up, what arrives next lands off screen, and only this says so
@@ -1928,6 +1957,7 @@ function Prompt({
   following,
   copied,
   cwd,
+  mode,
 }: {
   draft: Draft;
   attachments: Attachments;
@@ -1942,6 +1972,7 @@ function Prompt({
   copied: number | undefined;
   /** The directory the agents work in, drawn at the hint line's right edge. */
   cwd: string;
+  mode: PermissionMode;
 }): React.JSX.Element {
   // Where debug lines are going, when they are going anywhere. It cannot
   // change while the UI is up, so reading it at render is enough.
@@ -2000,6 +2031,15 @@ function Prompt({
           </Text>
         </Box>
       </Box>
+      {/* The mode, on a line of its own under the hints: it is the one thing
+          down here that stays true until someone changes it, and it must not
+          be read as a shortcut. Drawn in `ask` too, so the answer to "will
+          this ask me" is always on screen. */}
+      <Box height={1} paddingLeft={2} paddingRight={1}>
+        <Text color={modeInk(mode)} wrap="truncate">
+          {`${MODE_MARK} ${MODE_LABEL[mode]} · shift+tab to cycle`}
+        </Text>
+      </Box>
     </Box>
   );
 }
@@ -2025,6 +2065,25 @@ interface AgentStatusEntry {
  * rather than remembered, because that is where `@orchestrator:agent:model`
  * writes what it moved.
  */
+/** What the footer opens a mode with, the way Claude Code marks its own. */
+const MODE_MARK = '⏵⏵';
+
+/**
+ * A mode's colour, the traffic light read from the safe end: green for
+ * `ask`, where nothing happens without a person, warning yellow for edits
+ * going through, red for everything going through.
+ */
+function modeInk(mode: PermissionMode): string {
+  switch (mode) {
+    case 'ask':
+      return 'green';
+    case 'acceptEdits':
+      return 'yellow';
+    case 'bypass':
+      return 'red';
+  }
+}
+
 function plannerStatus(config: Config, busy: boolean): AgentStatusEntry {
   const { orchestration } = config;
   const id = orchestration.provider === 'acp' ? orchestration.acp.agent : ORCHESTRATOR;
@@ -2283,6 +2342,8 @@ function Ask({ ask }: { ask: Extract<Question, { kind: 'ask' }> }): React.JSX.El
           <Text color="green">y</Text> <Text color={INK}>allow once</Text>
           <Text color={INK_FAINT}>{'   ·   '}</Text>
           <Text color="red">n</Text> <Text color={INK}>refuse</Text>
+          <Text color={INK_FAINT}>{'   ·   '}</Text>
+          <Text color={INK_FAINT}>shift+tab to change the mode</Text>
         </Text>
       </Box>
     </Box>

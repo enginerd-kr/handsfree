@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { CreateElicitationResponse } from '@agentclientprotocol/sdk';
+import type { PermissionMode } from '../src/policy/mode.js';
 import type { Escalator, InputAnswer, InputField } from '../src/policy/types.js';
 import { fakeAgent, type Act } from './fake-agent.js';
 import { harness, type Harness } from './harness.js';
@@ -42,13 +43,16 @@ function pause(ms: number): Promise<void> {
 
 async function runTurn(
   script: (workspaceDir: string) => Act[],
-  options: Omit<Parameters<typeof harness>[0], 'agents'> = {},
+  options: Omit<Parameters<typeof harness>[0], 'agents'> & { mode?: PermissionMode } = {},
 ) {
   let workspaceDir = '';
   const agent = fakeAgent({ script: () => script(workspaceDir) });
-  const h = harness({ agents: { claude: agent }, ...options });
+  const { mode, ...rest } = options;
+  const h = harness({ agents: { claude: agent }, ...rest });
   open = h;
   workspaceDir = h.workspaceDir;
+  // As `handsfree run --permission-mode` sets it: before any request is judged.
+  if (mode) h.runtime.policy.setMode(mode);
 
   const session = await h.runtime.pool.session('claude');
   const { stopReason } = await session.prompt('go', {
@@ -133,6 +137,94 @@ describe('an agent that offers no single-use approval', () => {
     await runTurn((dir) => [sessionWide(dir, (id) => answers.push(id))]);
 
     expect(answers).toEqual(['cancelled']);
+  });
+});
+
+describe('a turn under a permission mode', () => {
+  const decisions = (h: Harness) =>
+    h.runtime.transcript
+      .all()
+      .filter((record): record is Extract<typeof record, { type: 'decision' }> => record.type === 'decision')
+      .map((record) => record.entry);
+
+  it('answers a question itself in bypass, once, and writes down that the mode did', async () => {
+    const answers: string[] = [];
+    const h = await runTurn(
+      () => [{ do: 'ask', title: 'Do something unusual', kind: 'other', onAnswer: (id) => answers.push(id) }],
+      { mode: 'bypass' },
+    );
+
+    // No seat, and still a yes — the single-use one, never the standing one.
+    expect(answers).toEqual(['once']);
+    expect(decisions(h).at(-1)).toMatchObject({
+      verdict: 'allow',
+      rule: 'tool.unknownKind',
+      mode: 'bypass',
+    });
+  });
+
+  it('takes the standing approval in bypass without asking, and says so', async () => {
+    const answers: string[] = [];
+    const asked: string[] = [];
+    const h = await runTurn(
+      (dir) => [
+        {
+          do: 'ask',
+          title: 'Edit notes.txt',
+          kind: 'edit',
+          locations: [path.join(dir, 'notes.txt')],
+          options: [
+            { optionId: 'always', name: 'Always allow', kind: 'allow_always' },
+            { optionId: 'no', name: 'Reject', kind: 'reject_once' },
+          ],
+          onAnswer: (id) => answers.push(id),
+        },
+      ],
+      { mode: 'bypass', escalator: seat({ allow: false, onAsk: (summary) => asked.push(summary) }) },
+    );
+
+    expect(asked).toEqual([]);
+    expect(answers).toEqual(['always']);
+    expect(decisions(h).at(-1)).toMatchObject({ rule: 'tool.sessionWideOnly', mode: 'bypass' });
+    const warned = h.runtime.transcript
+      .all()
+      .some((record) => record.type === 'note' && record.level === 'warn' && /whole session|rest of/.test(record.text));
+    expect(warned).toBe(true);
+  });
+
+  it('lets an edit through in acceptEdits, and still asks about a command', async () => {
+    const answers: string[] = [];
+    const asked: string[] = [];
+    const h = await runTurn(
+      (dir) => [
+        {
+          do: 'ask',
+          title: 'Edit notes.txt',
+          kind: 'edit',
+          locations: [path.join(dir, 'notes.txt')],
+          onAnswer: (id) => answers.push(id),
+        },
+        {
+          do: 'ask',
+          title: 'git commit',
+          kind: 'execute',
+          rawInput: { command: 'git commit -m wip' },
+          onAnswer: (id) => answers.push(id),
+        },
+      ],
+      {
+        mode: 'acceptEdits',
+        config: { policy: { fs: { write: 'ask' } } },
+        escalator: seat({ allow: true, onAsk: (summary) => asked.push(summary) }),
+      },
+    );
+
+    expect(answers).toEqual(['once', 'once']);
+    expect(asked).toEqual(['git commit']);
+    expect(decisions(h).map((entry) => [entry.rule, entry.mode, entry.escalated])).toEqual([
+      ['tool.write', 'acceptEdits', undefined],
+      ['exec.otherwise', undefined, true],
+    ]);
   });
 });
 

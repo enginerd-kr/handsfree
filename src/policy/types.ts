@@ -1,4 +1,5 @@
 import type { ToolKind } from '@agentclientprotocol/sdk';
+import type { PermissionMode } from './mode.js';
 
 export interface RequestContext {
   agentId: string;
@@ -24,6 +25,11 @@ export interface Decision {
   reason?: string;
   /** True when a human (rather than a rule) made the call. */
   escalated?: boolean;
+  /**
+   * Set only when the session's permission mode turned an ask or a denial
+   * into this allow. `rule` still names the rule that was overridden.
+   */
+  mode?: Exclude<PermissionMode, 'ask'>;
 }
 
 export interface AuditEntry extends Decision {

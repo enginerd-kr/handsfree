@@ -1,6 +1,7 @@
 import os from 'node:os';
 import { agentRole, orchestrationModel } from '../config/schema.js';
 import { spendOf } from '../orchestrator/usage.js';
+import type { PermissionMode } from '../policy/mode.js';
 import { commandSearchPaths } from './files.js';
 import type { Command, CommandHost } from './command.js';
 
@@ -158,6 +159,7 @@ function help(host: CommandHost): string[] {
     lines.push(`${source} commands: ${tildify(dir)}/*.md`);
   }
   lines.push(
+    'shift+tab cycles the permission mode — ask, acceptEdits, bypass; /config shows the current one',
     'a command file can carry !`cmd` and @file; both are judged like an agent’s own,',
     host.config.policy.exec.enabled
       ? `and commands run in the workspace — ${tildify(host.workspace.dir)}`
@@ -198,10 +200,28 @@ function configuration(host: CommandHost): string[] {
       ? `exec: ${policy.exec.mode}, shell operators ${policy.exec.shellOperators}, allowing ${policy.exec.allow.join(', ') || 'nothing'}`
       : 'exec: off — no command runs, whoever asks',
     `ask:  ${policy.escalation.join(', ') || 'nobody'}, within ${Math.round(policy.decisionTimeoutMs / 1000)}s`,
+    modeLine(host.policy.mode),
     host.config.capabilities.elicitation
       ? 'q&a:  agents may stop and ask you a question of their own'
       : 'q&a:  off — an agent that needs an answer has to end its turn to ask',
   ];
+}
+
+/**
+ * The permission mode, said with what it does to the lines above it. It is
+ * not read from any file, which is why it stands apart from them and names
+ * the two ways it is set.
+ */
+function modeLine(mode: PermissionMode): string {
+  const how = 'shift+tab in the UI, --permission-mode with run';
+  switch (mode) {
+    case 'ask':
+      return `mode: ask — every question comes to you (${how})`;
+    case 'acceptEdits':
+      return `mode: acceptEdits — files in the workspace go through, commands still ask (${how})`;
+    case 'bypass':
+      return `mode: bypass — everything is allowed, whatever the rules above say (${how})`;
+  }
 }
 
 /**

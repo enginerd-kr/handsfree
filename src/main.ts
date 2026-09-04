@@ -6,6 +6,7 @@ import { describeSources, loadConfig } from './config/load.js';
 import { doctor } from './commands/doctor.js';
 import { run } from './commands/run.js';
 import { debug, debugTargetFromEnv, describeProxyEnv, enableDebug, fileSink } from './debug.js';
+import { parsePermissionMode } from './policy/mode.js';
 import { VERSION } from './version.js';
 
 const USAGE = `handsfree — an ACP host for frontier coding agents
@@ -23,6 +24,8 @@ Options
   --sandbox                     work in an empty scratch workspace instead of this directory
   --json                        with run: emit the transcript as NDJSON
   --run <id>                    reuse an existing run directory
+  --permission-mode <mode>      with run: start in ask (the default), acceptEdits or bypass;
+                                the terminal UI always starts in ask, shift+tab moves it
   --debug                       diagnostics on stderr: launches, environment, handshakes
                                 (also HANDSFREE_DEBUG=1, or =<path> to append to a file;
                                 the TUI logs to a file, since stderr would be drawn over)
@@ -38,6 +41,13 @@ interface Args {
   /** Work in a fresh empty workspace rather than the directory we were started in. */
   sandbox: boolean;
   runId: string | undefined;
+  /**
+   * The mode a `run` starts in, as typed. Checked in `main`, not here, so a
+   * misspelling is refused with a message and an exit code rather than a
+   * stack trace. The UI never takes it: it starts in `ask` and moves on
+   * shift+tab. This is handsfree's own flag — the agents still never get one.
+   */
+  permissionMode: string | undefined;
 }
 
 export function parseArgs(argv: string[]): Args {
@@ -48,6 +58,7 @@ export function parseArgs(argv: string[]): Args {
     debug: false,
     sandbox: false,
     runId: undefined,
+    permissionMode: undefined,
   };
   const rest: string[] = [];
 
@@ -58,6 +69,7 @@ export function parseArgs(argv: string[]): Args {
     else if (arg === '--debug') args.debug = true;
     else if (arg === '--acp') args.command = 'serve';
     else if (arg === '--run') args.runId = argv[++i];
+    else if (arg === '--permission-mode') args.permissionMode = argv[++i];
     else if (arg === '-h' || arg === '--help') args.command = 'help';
     else if (arg === '-v' || arg === '--version') args.command = 'version';
     else rest.push(arg);
@@ -202,9 +214,22 @@ async function main(): Promise<number> {
     return reports.every((report) => report.ok) ? 0 : 1;
   }
 
+  // Said before the UI is chosen, so the flag is never a silent no-op there.
+  if (args.permissionMode !== undefined && args.command !== 'run') {
+    process.stderr.write('--permission-mode only applies to `handsfree run`; the UI starts in ask.\n');
+    return 2;
+  }
+
   if (args.command === 'run') {
     if (args.prompt.trim() === '') {
       process.stderr.write('handsfree run needs a prompt.\n');
+      return 2;
+    }
+    const permissionMode = parsePermissionMode(args.permissionMode);
+    if (args.permissionMode !== undefined && permissionMode === undefined) {
+      process.stderr.write(
+        `--permission-mode takes ask, acceptEdits or bypass, not "${args.permissionMode}".\n`,
+      );
       return 2;
     }
     return run(
@@ -212,6 +237,7 @@ async function main(): Promise<number> {
       args.prompt,
       {
         json: args.json,
+        ...(permissionMode === undefined ? {} : { permissionMode }),
         ...(args.runId === undefined ? {} : { runId: args.runId }),
         ...(attachTo === undefined ? {} : { attachTo }),
         configSources: sources,

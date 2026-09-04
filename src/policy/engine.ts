@@ -3,6 +3,7 @@ import type { ToolKind } from '@agentclientprotocol/sdk';
 import type { Policy, RuleOutcome } from '../config/schema.js';
 import { Jail } from './jail.js';
 import { checkExec, render, scanScript } from './exec.js';
+import { applyMode, type PermissionMode } from './mode.js';
 import type {
   AuditEntry,
   Decision,
@@ -46,6 +47,7 @@ export class PolicyEngine {
   private readonly policy: Policy;
   private readonly jail: Jail;
   private escalator: Escalator | undefined;
+  private currentMode: PermissionMode = 'ask';
   private readonly onDecision: ((entry: AuditEntry) => void) | undefined;
   private readonly now: () => number;
   /** Open questions per agent, so a turn can be told to stop its clocks. */
@@ -62,6 +64,21 @@ export class PolicyEngine {
   /** The TUI installs itself once it is mounted; before that, `ask` means deny. */
   setEscalator(escalator: Escalator | undefined): void {
     this.escalator = escalator;
+  }
+
+  /**
+   * The session's permission mode. Runtime state and nothing more: the config
+   * is neither read for it nor written with it, and the rules go on answering
+   * exactly as configured — the mode decides what becomes of their answer.
+   * One engine serves the agents, the planner and a command file's own
+   * expansions alike, so a mode set here is the mode for all of them.
+   */
+  setMode(mode: PermissionMode): void {
+    this.currentMode = mode;
+  }
+
+  get mode(): PermissionMode {
+    return this.currentMode;
   }
 
   async resolve(request: PolicyRequest, options: AskOptions = {}): Promise<Decision> {
@@ -130,10 +147,23 @@ export class PolicyEngine {
   ): Promise<Decision> {
     const summary = describe(request, this.jail);
 
+    // The mode has its say here, on the ruling and before anyone is asked, so
+    // there is no window between the rule and the question for it to fall in.
+    // The rule keeps its own name either way: a decision the mode made still
+    // says which rule it overrode.
+    const mode = this.currentMode;
+    const ruled = applyMode(mode, ruling);
+    const lifted = ruled.outcome !== ruling.outcome;
+
     let decision: Decision;
-    if (ruling.outcome === 'allow') {
-      decision = { verdict: 'allow', rule: ruling.rule, reason: ruling.reason };
-    } else if (ruling.outcome === 'deny') {
+    if (ruled.outcome === 'allow') {
+      decision = {
+        verdict: 'allow',
+        rule: ruling.rule,
+        reason: ruling.reason,
+        ...(lifted && mode !== 'ask' ? { mode } : {}),
+      };
+    } else if (ruled.outcome === 'deny') {
       decision = { verdict: 'deny', rule: ruling.rule, reason: ruling.reason };
     } else {
       decision = await this.escalate(request, ruling, summary, signal);
@@ -181,11 +211,17 @@ export class PolicyEngine {
           throw new Error('timed out');
         }),
       ]);
+      // A yes to a question the mode, as it stands now, would not have asked
+      // was the mode switch answering — the seat flushes what it holds when
+      // the mode moves — and is written down as the mode's, not a person's.
+      const mode = this.currentMode;
+      const byMode = allowed && mode !== 'ask' && applyMode(mode, ruling).outcome === 'allow';
       return {
         verdict: allowed ? 'allow' : 'deny',
         rule: ruling.rule,
         reason: allowed ? undefined : 'declined',
         escalated: true,
+        ...(byMode ? { mode } : {}),
       };
     } catch (err) {
       // A prompt that errors, times out, or is torn down is a denial. Every

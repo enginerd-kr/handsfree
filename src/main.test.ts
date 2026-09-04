@@ -14,6 +14,15 @@ describe('parseArgs', () => {
     expect(args.sandbox).toBe(true);
     expect(args.prompt).toBe('draft a script');
   });
+
+  it('takes --permission-mode as typed, and leaves it unset otherwise', () => {
+    const args = parseArgs(['run', '--permission-mode', 'bypass', 'go']);
+    expect(args.permissionMode).toBe('bypass');
+    expect(args.prompt).toBe('go');
+    expect(parseArgs(['run', 'go']).permissionMode).toBeUndefined();
+    // Not judged here: a misspelling is main's to refuse with a message.
+    expect(parseArgs(['run', '--permission-mode', 'yolo', 'go']).permissionMode).toBe('yolo');
+  });
 });
 
 describe('tooBroadToAttach', () => {

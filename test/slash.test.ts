@@ -92,6 +92,22 @@ describe('slash commands', () => {
     expect(h.runtime.transcript.all().some((record) => record.type === 'assistant')).toBe(false);
   });
 
+  it('names the permission mode in /config, and the key that moves it in /help', async () => {
+    const llm = scriptedModel([]);
+    const h = harness({ agents: {}, llm });
+    open = h;
+
+    await h.runtime.conversation.send('/config');
+    expect(notes(h).at(-1)?.lines?.some((line) => line.startsWith('mode: ask'))).toBe(true);
+
+    h.runtime.policy.setMode('bypass');
+    await h.runtime.conversation.send('/config');
+    expect(notes(h).at(-1)?.lines?.some((line) => line.startsWith('mode: bypass'))).toBe(true);
+
+    await h.runtime.conversation.send('/help');
+    expect(notes(h).at(-1)?.lines?.join('\n')).toContain('shift+tab');
+  });
+
   // The conversation goes, and so does what was drawn before it — the note
   // saying so is all that is left standing.
   it('takes the screen with the conversation on /clear', async () => {

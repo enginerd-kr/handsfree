@@ -9,6 +9,7 @@ import type {
   ToolCallStatus,
 } from '@agentclientprotocol/sdk';
 import { stripReport } from '../orchestrator/report.js';
+import { MODE_LABEL } from '../policy/mode.js';
 import { shortTokens, tokensOf } from '../orchestrator/usage.js';
 import type { TranscriptRecord } from '../workspace/transcript.js';
 
@@ -340,7 +341,11 @@ export function buildView(
       case 'decision': {
         closeBlocks();
         const allowed = record.entry.verdict === 'allow';
-        if (allowed && fold({ text: `✓ ${record.entry.summary}`, tone: 'muted' })) break;
+        // A yes the mode gave says so, since the rules on their own would
+        // have asked or refused — a reader of the record should not have
+        // to wonder who let this one through.
+        const via = record.entry.mode ? ` (${MODE_LABEL[record.entry.mode]})` : '';
+        if (allowed && fold({ text: `✓ ${record.entry.summary}${via}`, tone: 'muted' })) break;
         closeTool();
         const why = record.entry.reason ? ` — ${record.entry.reason}` : '';
         if (!allowed) loud.add(`p${record.seq}`);
@@ -351,7 +356,7 @@ export function buildView(
             0,
             allowed ? 'allowed' : 'refused',
             allowed ? 'muted' : 'bad',
-            `${record.entry.summary}${allowed ? '' : why}`,
+            `${record.entry.summary}${allowed ? via : why}`,
             allowed ? 'muted' : 'bad',
             false,
           ),
@@ -907,7 +912,10 @@ export function describeRecord(record: TranscriptRecord, workspaceDir: string): 
     case 'note':
       return [record.text, ...(record.lines ?? [])].map((line) => `  ${line}`).join('\n');
     case 'decision':
-      return `  ${record.entry.verdict === 'allow' ? '+' : '-'} ${record.entry.summary}`;
+      return (
+        `  ${record.entry.verdict === 'allow' ? '+' : '-'} ${record.entry.summary}` +
+        (record.entry.mode ? ` (${record.entry.mode})` : '')
+      );
     case 'stop':
       return `← ${record.agentId} (${record.stopReason}${
         record.usage ? `, ${shortTokens(tokensOf(record.usage))} tokens` : ''
