@@ -143,6 +143,8 @@ export function buildView(
   let taskTools = 0;
   // Where the current task's rows begin, and which of them survive folding.
   let taskStart = -1;
+  // Where the task begins on screen: its routing row, where it has one.
+  let taskHead = -1;
   const loud = new Set<string>();
   // The line the person last typed, for telling a brief that repeats it.
   let lastUser = '';
@@ -263,6 +265,7 @@ export function buildView(
         // A brief that is the person's own line gets no row of its own: the
         // agent's rows follow the line directly, at the margin, in its name.
         bare = asked(lastUser, record.task);
+        taskHead = items.length;
         if (bare) bareTasks.add(record.taskId);
         else {
           // The routing and the brief on one line, the way the person's own
@@ -348,6 +351,7 @@ export function buildView(
           loud.add(answer);
           answered.add(String(record.taskId));
         }
+        const foldable = foldableRows(items, loud, taskStart);
         const hidden = unfolded(record.taskId) ? 0 : foldTask(items, byKey, loud, taskStart);
         // The closing line belongs to the task, so it keeps the task's indent
         // and its id; whatever comes next is handsfree talking again.
@@ -363,11 +367,18 @@ export function buildView(
             false,
           ),
         );
+        // A task with nothing to fold has nothing for a click to do, so its
+        // rows are nobody's to hover or open: the hover would only promise a
+        // click that changes nothing.
+        if (foldable === 0) {
+          for (const item of items.slice(Math.max(0, taskHead))) item.taskId = undefined;
+        }
         depth = 0;
         bare = false;
         currentTask = undefined;
         currentAgent = undefined;
         taskStart = -1;
+        taskHead = -1;
         break;
       }
 
@@ -385,6 +396,7 @@ export function buildView(
         closeBlocks();
         closeTool();
         taskStart = currentTask !== undefined ? 0 : -1;
+        taskHead = taskStart;
         break;
 
       // Where each agent's session came from is the header's to say, not a
@@ -555,6 +567,12 @@ function row(
   gap: boolean,
 ): ViewItem {
   return { key, role, depth, marker, markerTone, text, tone, lines: [], gap };
+}
+
+/** How many of a task's rows folding would take off screen. */
+function foldableRows(items: readonly ViewItem[], loud: Set<string>, from: number): number {
+  if (from < 0 || from >= items.length) return 0;
+  return items.slice(from).filter((item) => !loud.has(item.key)).length;
 }
 
 /**

@@ -723,6 +723,32 @@ describe('a task that was the person\'s own line', () => {
     expect(view[1]?.lines).toEqual([]);
   });
 
+  it('is nobody\'s to hover or click once it ends with nothing folded away', () => {
+    const t = transcript();
+    t.append({ type: 'user', text: '@claude what is a monad' });
+    t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'what is a monad' });
+    t.append({
+      type: 'session_update',
+      agentId: 'claude',
+      sessionId: 's',
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'A monoid.' } },
+    });
+    // Running, the block is the task's: a hover lights it, a click lifts the cap.
+    expect(buildView(t.all(), WORKSPACE).map((item) => item.taskId)).toEqual([undefined, 1]);
+
+    t.append({ type: 'stop', taskId: 1, agentId: 'claude', sessionId: 's', stopReason: 'end_turn' });
+    // Ended with the answer as its only row, there is nothing a click could
+    // fold or unfold — so nothing invites one, and the closing line offers
+    // nothing back.
+    const view = buildView(t.all(), WORKSPACE, { expandHint: 'ctrl+o to expand' });
+    expect(view.map((item) => [item.text, item.taskId])).toEqual([
+      ['@claude what is a monad', undefined],
+      ['A monoid.', undefined],
+      ['Done (1s)', undefined],
+    ]);
+    expect(view[1]?.agentId).toBe('claude');
+  });
+
   it('never draws the REPORT block, and drops a block that was nothing else', () => {
     const t = asked('A monad is a monoid in the category of endofunctors.\n\nREPORT\noutcome: done\nsummary: explained\nchanged: none');
     t.append({
