@@ -5,7 +5,12 @@ import type { AuditEntry } from '../policy/types.js';
 import type { TurnUsage } from '../host/session.js';
 
 export type TranscriptBody =
-  | { type: 'user'; text: string }
+  /**
+   * `text` is what the model was given. `shown`, where it differs, is the line
+   * as the person saw it: a long paste or an image folded to a placeholder,
+   * which the transcript draws again rather than the pages behind it.
+   */
+  | { type: 'user'; text: string; shown?: string }
   /**
    * When `stream` is set, this closes the `assistant_delta` records that share
    * it: the text here is the reply's final form, and an empty text retracts the

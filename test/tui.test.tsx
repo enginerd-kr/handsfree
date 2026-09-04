@@ -1,9 +1,12 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import React from 'react';
 import { render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { disableDebug, enableDebug } from '../src/debug.js';
 import { App, menuFit } from '../src/ui/tui/app.js';
-import { copyToClipboard } from '../src/ui/tui/clipboard.js';
+import { copyToClipboard, readClipboardImage } from '../src/ui/tui/clipboard.js';
 import { DOT_BUSY, DOT_IDLE, PLAN_BUSY, PLAN_IDLE, PROMPT_CHAR } from '../src/ui/tui/theme.js';
 import { fakeAgent } from './fake-agent.js';
 import { harness, scriptedModel, type Harness } from './harness.js';
@@ -14,6 +17,7 @@ import type { ChatClient } from '../src/brain/client.js';
 vi.mock('../src/ui/tui/clipboard.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/ui/tui/clipboard.js')>()),
   copyToClipboard: vi.fn(),
+  readClipboardImage: vi.fn(),
 }));
 
 let open: Harness | undefined;
@@ -501,6 +505,66 @@ describe('terminal UI', () => {
       expect(plain().split('\n')[promptAt + 1]?.trim()).toMatch(/^─+$/);
     } finally {
       app.unmount();
+    }
+  });
+
+  it('folds a long paste and an image to placeholders, and unfolds them in what is sent', async () => {
+    const llm = scriptedModel([JSON.stringify({ action: 'answer', message: 'seen.' })]);
+    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) }, llm });
+    open = h;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hf-paste-'));
+    const picture = path.join(dir, 'shot one.png');
+    fs.writeFileSync(picture, 'not really a png');
+    const fromClipboard = path.join(dir, 'clipboard.png');
+    vi.mocked(readClipboardImage).mockResolvedValue(fromClipboard);
+
+    const app = render(<App runtime={h.runtime} />);
+    const plain = () => (app.lastFrame() ?? '').replace(/\[[0-9;]*m/g, '');
+    const press = async (...keys: string[]) => {
+      for (const key of keys) {
+        app.stdin.write(key);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    };
+    const paste = (text: string) => press(`\u001B[200~${text}\u001B[201~`);
+    const pages = ['alpha', 'beta', 'gamma', 'delta'].join('\n');
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      await press(...'see ');
+      await paste(pages);
+      await waitFor(plain, `${PROMPT_CHAR} see [Pasted text #1 +4 lines]`);
+      expect(plain()).not.toContain('gamma');
+
+      // A short paste is typed as it is, line break and all.
+      await paste(' and\nthen ');
+      // The frame is drawn without its trailing space.
+      await waitFor(plain, '\n  then');
+
+      // A file's path, dragged in with its space escaped, is the image it names.
+      await paste(picture.replace(/ /g, '\\ '));
+      await waitFor(plain, 'then [Image #1]');
+      // Ctrl+v asks the clipboard, and attaches what it had.
+      await press('\x16');
+      await waitFor(plain, '[Image #1][Image #2]');
+      expect(vi.mocked(readClipboardImage).mock.calls[0]?.[0]).toBe(
+        path.join(h.runtime.workspace.dir, '.handsfree', 'images'),
+      );
+
+      // Backspace takes the last placeholder whole, not a bracket off it.
+      await press('\x7f');
+      await waitFor(plain, 'then [Image #1]\n');
+      expect(plain()).not.toContain('[Image #2');
+
+      await press('\r');
+      await waitFor(() => app.lastFrame(), 'seen.');
+      const sent = `see ${pages} and\nthen [Image #1: ${picture}]`;
+      expect(llm.seen[0]?.some((message) => message.content === sent)).toBe(true);
+      // The transcript shows the line as it was seen, folded.
+      expect(plain()).toContain('see [Pasted text #1 +4 lines] and');
+      expect(plain()).not.toContain('gamma');
+    } finally {
+      app.unmount();
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 

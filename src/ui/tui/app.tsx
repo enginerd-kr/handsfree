@@ -1,10 +1,22 @@
+import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Box, Text, Transform, useApp, useInput, useStdout } from 'ink';
+import { Box, Text, Transform, useApp, useInput, usePaste, useStdout } from 'ink';
 import type { Runtime } from '../../runtime.js';
 import type { InputAnswer, InputField, InputValue } from '../../policy/types.js';
 import { debugDestination } from '../../debug.js';
 import { lineAround, lineCount, stepLine } from './draft.js';
+import {
+  NOTHING_ATTACHED,
+  attach,
+  expand,
+  imagePathIn,
+  isLongPaste,
+  placeholderSpans,
+  type Attachment,
+  type Attachments,
+} from './attachments.js';
 import {
   buildView,
   turnPhase,
@@ -35,7 +47,7 @@ import {
   suggestAgents,
   suggestModels,
 } from '../../mention/mention.js';
-import { copyToClipboard } from './clipboard.js';
+import { copyToClipboard, readClipboardImage } from './clipboard.js';
 import { NOTHING_SENT, recall, remember, settle, type History } from './history.js';
 import {
   DETAIL_INDENT,
@@ -256,6 +268,15 @@ interface Draft {
 }
 
 /**
+ * A line on its way out: what the model is given, and — where a paste or an
+ * image was folded in it — the line as the person saw it, for the transcript.
+ */
+interface Outgoing {
+  text: string;
+  shown?: string;
+}
+
+/**
  * One row of the menu, whichever list it came from. A slash offers commands
  * and an at-sign offers agents; the two never fire together — a command is
  * still being spelled while the line has no spaces, and by then it holds no
@@ -340,7 +361,13 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   // Typed while a turn was running. The prompt stays open the whole time, so
   // what is entered has to go somewhere; it goes here and leaves in order once
   // the turn that was in the way finishes.
-  const [queued, setQueued] = useState<readonly string[]>([]);
+  const [queued, setQueued] = useState<readonly Outgoing[]>([]);
+  // What the prompt holds folded: the pastes and images behind the
+  // placeholders in the draft, kept for the run so a recalled line still
+  // unfolds. The ref is what the handlers read, since several keys can land
+  // before a render.
+  const [attachments, setAttachments] = useState<Attachments>(NOTHING_ATTACHED);
+  const attachmentsRef = useRef<Attachments>(NOTHING_ATTACHED);
   const [ask, setAsk] = useState<Question | undefined>();
   // The form being filled in, when the question on screen is one. It keeps a
   // ref for the reason the draft does: several keys can arrive in one stdin
@@ -798,21 +825,45 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     return { start: shift(start), end: shift(end) };
   }, [selection, from]);
 
-  const start = (text: string) => {
+  const start = (line: Outgoing) => {
     setStartedAt(Date.now());
-    void runtime.conversation.send(text).finally(() => setStartedAt(undefined));
+    void runtime.conversation
+      .send(line.text, line.shown)
+      .finally(() => setStartedAt(undefined));
+  };
+
+  /** Types `text` at the cursor and moves the cursor past it. */
+  const insert = (text: string): void =>
+    applyDraft((d) => {
+      const chars = [...d.value];
+      const typed = [...text];
+      chars.splice(d.cursor, 0, ...typed);
+      return { value: chars.join(''), cursor: d.cursor + typed.length };
+    });
+
+  /** Folds an attachment into the draft at the cursor, as its placeholder. */
+  const attachToDraft = (attachment: Attachment): void => {
+    const added = attach(attachmentsRef.current, attachment);
+    attachmentsRef.current = added.list;
+    setAttachments(added.list);
+    insert(added.placeholder);
   };
 
   const submit = (text: string) => {
-    const trimmed = text.trim();
+    const shown = text.trim();
     applyDraft(() => ({ value: '', cursor: 0 }));
     dismissedRef.current = undefined;
     setDismissed(undefined);
-    if (trimmed === '') return;
+    if (shown === '') return;
     // Sent is sent: it joins the prompt's memory whether it goes to the model,
     // to an agent, or nowhere but a local command, because the arrows walk
-    // back through what was typed rather than through what became of it.
-    historyRef.current = remember(historyRef.current, trimmed);
+    // back through what was typed rather than through what became of it — and
+    // as typed means folded: the placeholders come back, not the pages.
+    historyRef.current = remember(historyRef.current, shown);
+    // What goes out is the line unfolded. The transcript keeps the folded
+    // form beside it, where it differs, so what is drawn is what was seen.
+    const trimmed = expand(shown, attachmentsRef.current);
+    const outgoing: Outgoing = { text: trimmed, ...(trimmed === shown ? {} : { shown }) };
     // Whatever was being read further up, the answer to what was just sent is
     // what matters now: sending follows the end again — and forgives whatever
     // scroll was still owed, or the drain would drag the view straight back.
@@ -837,17 +888,17 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     // A command handsfree answers itself is over the moment it runs, so it
     // never queues behind a turn and never wears the spinner.
     if (command?.kind === 'local') {
-      void runtime.conversation.send(trimmed);
+      void runtime.conversation.send(outgoing.text, outgoing.shown);
       return;
     }
 
     // Everything else the user sends mid-turn takes its place in line behind
     // the turn already running.
     if (busy) {
-      setQueued((line) => [...line, trimmed]);
+      setQueued((line) => [...line, outgoing]);
       return;
     }
-    start(trimmed);
+    start(outgoing);
   };
 
   // Whatever was typed mid-turn goes in one at a time, each one waiting for the
@@ -861,6 +912,28 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     // `start` is rebuilt every render and is deliberately not a dependency:
     // the queue and whether a turn is running are what decide when one leaves.
   }, [busy, queued]);
+
+  // A paste comes on its own channel, bracketed by the terminal, so it is
+  // known for one: a file's path is the image it names, pages of text are
+  // folded to a placeholder, and anything shorter is typed as it is — line
+  // breaks included, which typed by hand would each have been an enter.
+  usePaste((pasted) => {
+    if (ask) {
+      // A form's text field takes a paste as typing.
+      if (ask.kind !== 'input') return;
+      const state = formRef.current;
+      const field = state && ask.fields[state.index];
+      if (!state || !field) return;
+      const next = typed(ask.fields, state, field, pasted, {});
+      if (next.done) ask.answer({ action: 'accept', content: next.values });
+      else applyForm(next.state);
+      return;
+    }
+    const image = imagePathIn(pasted, (file) => fs.existsSync(file));
+    if (image !== undefined) return attachToDraft({ kind: 'image', path: image });
+    if (isLongPaste(pasted)) return attachToDraft({ kind: 'text', text: pasted });
+    insert(pasted.replace(/\r\n?/g, '\n'));
+  });
 
   // The prompt is edited here, not by a text-input component. A second
   // component would keep its own cursor state and see every keypress this
@@ -972,6 +1045,16 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       if (taskId !== undefined) toggleTask(taskId);
       return;
     }
+    // An image off the clipboard, where the terminal leaves ctrl+v to us —
+    // the platform's paste is another key. It lands in the agents' directory,
+    // the one place they are allowed to open it from.
+    if (key.ctrl && char === 'v') {
+      const into = path.join(runtime.workspace.dir, '.handsfree', 'images');
+      void readClipboardImage(into).then((file) => {
+        if (file !== undefined) attachToDraft({ kind: 'image', path: file });
+      });
+      return;
+    }
     // Folded tasks are still in the transcript; this is the way back to all of
     // them at once, where a click opens the one it landed on.
     if (key.ctrl && char === 'o') {
@@ -1054,14 +1137,6 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       }
       return;
     }
-    /** Types `text` at the cursor and moves the cursor past it. */
-    const insert = (text: string): void =>
-      applyDraft((d) => {
-        const chars = [...d.value];
-        const typed = [...text];
-        chars.splice(d.cursor, 0, ...typed);
-        return { value: chars.join(''), cursor: d.cursor + typed.length };
-      });
     // A break in the line without sending it: shift+enter, or option+enter
     // where a terminal cannot tell the shift apart. Shift+enter reaches us
     // only through the kitty keyboard protocol, asked for at render — in the
@@ -1121,12 +1196,18 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       applyDraft((d) => ({ ...d, cursor: lineAround(d.value, d.cursor).end }));
       return;
     }
+    // Either delete takes a placeholder whole: it stands for one thing, and
+    // half of it would stand for nothing.
     if (key.backspace) {
       applyDraft((d) => {
         if (d.cursor === 0) return d;
+        const folded = placeholderSpans(d.value, attachmentsRef.current).find(
+          (span) => span.end === d.cursor,
+        );
+        const from = folded ? folded.start : d.cursor - 1;
         const chars = [...d.value];
-        chars.splice(d.cursor - 1, 1);
-        return { value: chars.join(''), cursor: d.cursor - 1 };
+        chars.splice(from, d.cursor - from);
+        return { value: chars.join(''), cursor: from };
       });
       return;
     }
@@ -1135,7 +1216,10 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       applyDraft((d) => {
         const chars = [...d.value];
         if (d.cursor >= chars.length) return d;
-        chars.splice(d.cursor, 1);
+        const folded = placeholderSpans(d.value, attachmentsRef.current).find(
+          (span) => span.start === d.cursor,
+        );
+        chars.splice(d.cursor, folded ? folded.end - folded.start : 1);
         return { ...d, value: chars.join('') };
       });
       return;
@@ -1220,6 +1304,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       ) : (
         <Prompt
           draft={draft}
+          attachments={attachments}
           agents={agents}
           status={status}
           spend={spend.models}
@@ -1833,6 +1918,7 @@ function openings(runtime: Runtime, agents: readonly string[]): readonly Opening
  */
 function Prompt({
   draft,
+  attachments,
   agents,
   status,
   spend,
@@ -1844,6 +1930,7 @@ function Prompt({
   cwd,
 }: {
   draft: Draft;
+  attachments: Attachments;
   agents: readonly string[];
   status: readonly AgentStatusEntry[];
   /** What each model has spent over the run, in the order they were first used. */
@@ -1883,7 +1970,7 @@ function Prompt({
       >
         <Text color={busy ? INK_FAINT : INK}>{`${PROMPT_CHAR} `}</Text>
         <Box flexGrow={1}>
-          <DraftLine draft={draft} agents={agents} />
+          <DraftLine draft={draft} attachments={attachments} agents={agents} />
         </Box>
       </Box>
       <Box paddingLeft={2} paddingRight={1} justifyContent="space-between" gap={2}>
@@ -2088,15 +2175,26 @@ function MenuNote({ text }: { text: string }): React.JSX.Element {
  * inverted cell is a piece of its own, so a cursor sitting inside a mention
  * splits the colour around itself instead of losing it.
  */
-function DraftLine({ draft, agents }: { draft: Draft; agents: readonly string[] }): React.JSX.Element {
+function DraftLine({
+  draft,
+  attachments,
+  agents,
+}: {
+  draft: Draft;
+  attachments: Attachments;
+  agents: readonly string[];
+}): React.JSX.Element {
   const spans = mentionSpans(draft.value, agents);
+  // A placeholder wears the quiet ink: it is a stand-in, not the words.
+  const folded = placeholderSpans(draft.value, attachments);
   // A cursor at the end rests on a space one past the text; the virtual cell
   // joins the array so one loop draws every cursor position the same way.
   const chars = [...draft.value];
   if (draft.cursor >= chars.length) chars.push(' ');
   const colourAt = (index: number): string | undefined => {
     const span = spans.find((s) => index >= s.start && index < s.end);
-    return span ? agentColour(span.agent) : undefined;
+    if (span) return agentColour(span.agent);
+    return folded.some((s) => index >= s.start && index < s.end) ? INK : undefined;
   };
   const pieces: { text: string; colour: string | undefined; inverse: boolean }[] = [];
   for (const [index, char] of chars.entries()) {

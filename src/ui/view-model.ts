@@ -204,7 +204,18 @@ export function buildView(
         // than hung on the next turn's answer.
         planned = { tokens: 0, estimated: false };
         lastUser = record.text;
-        add(row(`u${record.seq}`, 'user', 0, 'prompt', 'muted', record.text, 'normal', true));
+        add(
+          row(
+            `u${record.seq}`,
+            'user',
+            0,
+            'prompt',
+            'muted',
+            record.shown ?? record.text,
+            'normal',
+            true,
+          ),
+        );
         break;
 
       case 'assistant': {

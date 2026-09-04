@@ -189,8 +189,8 @@ export class Conversation {
     await this.inflight?.catch(() => {});
   }
 
-  async send(text: string): Promise<void> {
-    const work = this.run(text);
+  async send(text: string, shown?: string): Promise<void> {
+    const work = this.run(text, shown);
     this.inflight = work;
     try {
       await work;
@@ -199,15 +199,16 @@ export class Conversation {
     }
   }
 
-  private async run(text: string): Promise<void> {
+  private async run(text: string, shown?: string): Promise<void> {
     const { config, transcript, workspace } = this.deps;
+    const said = { type: 'user' as const, text, ...(shown === undefined ? {} : { shown }) };
 
     // A command is answered before the agent roster is even consulted:
     // `/help` and `/config` are wanted most on exactly the machine where
     // nothing is configured yet.
     const invoked = this.invoked(text);
     if (invoked === 'unknown') {
-      transcript.append({ type: 'user', text });
+      transcript.append(said);
       transcript.append({
         type: 'note',
         level: 'error',
@@ -216,7 +217,7 @@ export class Conversation {
       return;
     }
 
-    transcript.append({ type: 'user', text });
+    transcript.append(said);
 
     if (invoked && invoked.command.kind === 'local') {
       this.local(invoked.command, invoked.args);
