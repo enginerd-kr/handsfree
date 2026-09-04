@@ -19,11 +19,6 @@ export type Marker = 'none' | 'prompt' | 'bullet' | 'thought' | 'result' | 'allo
 export interface ViewLine {
   text: string;
   tone: Tone;
-  /**
-   * `brief` is the task under a delegation row: set like the agent's own rows
-   * under it — one level in, with a bullet — rather than like a result.
-   */
-  kind?: 'brief';
 }
 
 export interface ViewItem {
@@ -238,12 +233,11 @@ export function buildView(
       case 'delegation': {
         closeBlocks();
         closeTool();
-        // The routing on its own line, and the brief under it, set the way
-        // the agent's own rows are set — one level in, behind a bullet — so
-        // the words handsfree sent and the words the agent said back wrap
-        // alike, and neither trails off the end of a label.
-        const item = add(row(`d${record.seq}`, 'system', 0, 'bullet', 'brand', '', 'normal', true));
-        item.lines = [{ text: record.task, tone: 'muted', kind: 'brief' }];
+        // The routing and the brief on one line, the way the person's own
+        // line reads: the agent where the @ was, and the task after it.
+        const item = add(
+          row(`d${record.seq}`, 'system', 0, 'bullet', 'brand', record.task, 'normal', true),
+        );
         // The label spells the routing the way it was asked for: the agent,
         // and the model when the task chose one — by the id it was switched
         // by, which is the id the mention typed and the id that went on the

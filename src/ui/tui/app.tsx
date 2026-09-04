@@ -13,7 +13,6 @@ import {
   type TurnPhase,
   type ViewItem,
   sessionsOf,
-  type ViewLine,
 } from '../view-model.js';
 import type { ModelChoice } from '../../host/models.js';
 import { agentRole, orchestrationModel, type Config } from '../../config/schema.js';
@@ -1486,7 +1485,7 @@ function Entry({
           <Row
             key={index}
             indent={DETAIL_INDENT}
-            gutter={detailGutter(item.lines, index)}
+            gutter={index === 0 ? RESULT_GUTTER : RESULT_INDENT}
             tone="muted"
             highlight={highlightFor(
               selection,
@@ -2334,18 +2333,6 @@ function said(value: InputValue | undefined): string {
   if (value === undefined) return '—';
   if (Array.isArray(value)) return value.join(', ');
   return String(value);
-}
-
-/**
- * The glyph a continuation line sits behind. A brief wears the bullet the
- * agent's rows wear, since it is set among them; the first result line wears
- * the result mark, and the rest hang under it.
- */
-function detailGutter(lines: readonly ViewLine[], index: number): string {
-  const line = lines[index]!;
-  if (line.kind === 'brief') return GLYPH.bullet;
-  const firstResult = lines.findIndex((entry) => entry.kind !== 'brief');
-  return index === firstResult ? RESULT_GUTTER : RESULT_INDENT;
 }
 
 /**

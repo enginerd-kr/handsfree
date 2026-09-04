@@ -626,21 +626,12 @@ describe('turnPhase', () => {
 });
 
 describe('a delegation row', () => {
-  it('is the routing on one line and the brief under it, set like the agent\'s own rows', () => {
+  it('reads like the line that asked: the agent where the @ was, the task after it', () => {
     const t = transcript();
     t.append({ type: 'user', text: '@claude run the tests' });
     t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'run the tests' });
-    t.append({
-      type: 'session_update',
-      agentId: 'claude',
-      sessionId: 's',
-      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'On it.' } },
-    });
     const view = buildView(t.all(), WORKSPACE);
-    expect(view[1]).toMatchObject({ label: 'claude', text: '', depth: 0, agentId: 'claude' });
-    expect(view[1]?.lines).toEqual([{ text: 'run the tests', tone: 'muted', kind: 'brief' }]);
-    // The agent's reply sits one level in, where the brief is drawn.
-    expect(view[2]).toMatchObject({ text: 'On it.', depth: 1, marker: 'bullet' });
+    expect(view[1]).toMatchObject({ label: 'claude', text: 'run the tests', depth: 0, agentId: 'claude', lines: [] });
   });
 
   it('keeps the brief in view when the task folds', () => {
@@ -654,9 +645,9 @@ describe('a delegation row', () => {
       update: { sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Read a.ts', kind: 'read', status: 'completed' },
     });
     t.append({ type: 'stop', taskId: 1, agentId: 'claude', sessionId: 's', stopReason: 'end_turn' });
-    const view = buildView(t.all(), WORKSPACE);
-    expect(view[1]?.lines.map((line) => line.text)).toEqual(['Fix the failing test']);
-    expect(view.map((item) => item.text)).not.toContain('Read a.ts');
+    const texts = buildView(t.all(), WORKSPACE).map((item) => item.text);
+    expect(texts).toContain('Fix the failing test');
+    expect(texts).not.toContain('Read a.ts');
   });
 });
 
