@@ -20,7 +20,10 @@ export async function tui(config: Config, options: TuiOptions = {}): Promise<num
     ...(options.attachTo === undefined ? {} : { attachTo: options.attachTo }),
     ...(options.configSources === undefined ? {} : { configSources: options.configSources }),
   });
-  const instance = render(<App runtime={runtime} />);
+  // The kitty keyboard protocol, where the terminal offers it: it is what
+  // tells shift+enter apart from enter, which the legacy encoding cannot.
+  // Ink asks the terminal and falls back quietly where nothing answers.
+  const instance = render(<App runtime={runtime} />, { kittyKeyboard: { mode: 'auto' } });
   try {
     await instance.waitUntilExit();
     return 0;

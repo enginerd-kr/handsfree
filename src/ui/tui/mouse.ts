@@ -64,6 +64,17 @@ export function parseCursorReport(input: string): number | undefined {
 }
 
 /**
+ * Whether `input` is a terminal's answer to Ink's kitty keyboard query,
+ * `ESC[?flags u`, as Ink delivers it: without the escape byte. Ink reads the
+ * answer to decide whether to switch the protocol on, but reads it on a
+ * second path that also hands it to `useInput` — and a prompt that took it
+ * would open every run with `[?0u` already typed.
+ */
+export function isKittyQueryReply(input: string): boolean {
+  return /^\[\?\d+u$/.test(input);
+}
+
+/**
  * Decode one SGR report as Ink delivers it: without the leading escape byte.
  * Ink buffers incomplete CSI sequences itself, so reports split across stdin
  * chunks still arrive here as one value.

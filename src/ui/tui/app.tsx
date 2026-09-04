@@ -4,6 +4,7 @@ import { Box, Text, Transform, useApp, useInput, useStdout } from 'ink';
 import type { Runtime } from '../../runtime.js';
 import type { InputAnswer, InputField, InputValue } from '../../policy/types.js';
 import { debugDestination } from '../../debug.js';
+import { lineAround, lineCount, stepLine } from './draft.js';
 import {
   buildView,
   turnPhase,
@@ -48,7 +49,14 @@ import {
   windowAt,
 } from './layout.js';
 import { type Highlighter, loadHighlighter, renderMarkdown } from './markdown.js';
-import { CURSOR_QUERY, isMouseReport, parseCursorReport, parseMouseEvent, trackMouse } from './mouse.js';
+import {
+  CURSOR_QUERY,
+  isKittyQueryReply,
+  isMouseReport,
+  parseCursorReport,
+  parseMouseEvent,
+  trackMouse,
+} from './mouse.js';
 import { type Bounds, highlightFor, order, type Point, selectedText } from './selection.js';
 import {
   agentColour,
@@ -625,9 +633,14 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     );
   }, [ask, dismissed, draft, agents, menu, modelRoster, runtime]);
   // The menu's own rows — or the one line standing in for them — plus the blank
-  // line that keeps either off the transcript.
+  // line that keeps either off the transcript, plus every line the draft has
+  // grown past its first: a break typed into the prompt lifts it, and the
+  // transcript gives up the row rather than being drawn over.
   const promptRows =
-    PROMPT_ROWS + (menu.length > 0 ? menu.length + 1 : modelNote ? 2 : 0) + (spend.models.length > 0 ? 1 : 0);
+    PROMPT_ROWS +
+    (menu.length > 0 ? menu.length + 1 : modelNote ? 2 : 0) +
+    (spend.models.length > 0 ? 1 : 0) +
+    (lineCount(draft.value) - 1);
   // An agent's own words arrive as markdown, so they are drawn as markdown.
   // This sits above the windowing rather than inside `Entry` because the rows a
   // block occupies are what the viewport below and every click are measured
@@ -859,6 +872,9 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       exit();
       return;
     }
+    // The terminal answering Ink's kitty keyboard query, on its way through
+    // the input as well as to Ink: not something anyone typed.
+    if (isKittyQueryReply(char)) return;
     const cursorRow = parseCursorReport(char);
     if (cursorRow !== undefined) {
       // The frame fills the window whatever it holds, so the answer minus its
@@ -1038,9 +1054,41 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       }
       return;
     }
+    /** Types `text` at the cursor and moves the cursor past it. */
+    const insert = (text: string): void =>
+      applyDraft((d) => {
+        const chars = [...d.value];
+        const typed = [...text];
+        chars.splice(d.cursor, 0, ...typed);
+        return { value: chars.join(''), cursor: d.cursor + typed.length };
+      });
+    // A break in the line without sending it: shift+enter, or option+enter
+    // where a terminal cannot tell the shift apart. Shift+enter reaches us
+    // only through the kitty keyboard protocol, asked for at render — in the
+    // legacy encoding it is the same byte as enter — or through xterm's
+    // `modifyOtherKeys`, which Ink does not decode and would otherwise hand
+    // over as text to type.
+    if (key.return && (key.shift || key.meta)) {
+      insert('\n');
+      return;
+    }
+    if (/^\u001B?\[27;[2-9];13~$/.test(char)) {
+      insert('\n');
+      return;
+    }
     if (key.return) {
       submit(draftRef.current.value);
       return;
+    }
+    // Inside a draft of several lines, up and down first move between them;
+    // only past the top and the bottom do they reach the history below.
+    if (key.upArrow || key.downArrow) {
+      const { value, cursor } = draftRef.current;
+      const stepped = stepLine(value, cursor, key.upArrow ? 'up' : 'down');
+      if (stepped !== undefined) {
+        applyDraft((d) => ({ ...d, cursor: stepped }));
+        return;
+      }
     }
     // With no menu open the plain arrows are the prompt's memory: up walks
     // back through the lines this run has sent, down comes forward again and
@@ -1063,12 +1111,14 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       applyDraft((d) => ({ ...d, cursor: Math.min([...d.value].length, d.cursor + 1) }));
       return;
     }
+    // Home and end mean the line the cursor is on, which is the whole draft
+    // until a break is typed into it.
     if (key.home || (key.ctrl && char === 'a')) {
-      applyDraft((d) => ({ ...d, cursor: 0 }));
+      applyDraft((d) => ({ ...d, cursor: lineAround(d.value, d.cursor).start }));
       return;
     }
     if (key.end || (key.ctrl && char === 'e')) {
-      applyDraft((d) => ({ ...d, cursor: [...d.value].length }));
+      applyDraft((d) => ({ ...d, cursor: lineAround(d.value, d.cursor).end }));
       return;
     }
     if (key.backspace) {
@@ -1098,13 +1148,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     // enter it carries, so it submits right where it sits.
     for (const [index, segment] of char.split(/\r\n|[\r\n]/).entries()) {
       if (index > 0) submit(draftRef.current.value);
-      if (segment === '') continue;
-      applyDraft((d) => {
-        const chars = [...d.value];
-        const typed = [...segment];
-        chars.splice(d.cursor, 0, ...typed);
-        return { value: chars.join(''), cursor: d.cursor + typed.length };
-      });
+      if (segment !== '') insert(segment);
     }
   });
 
@@ -1768,11 +1812,12 @@ function openings(runtime: Runtime, agents: readonly string[]): readonly Opening
  * The input never goes away. A turn already running does not take the keyboard
  * with it — what is typed meanwhile is queued, and the count says so.
  *
- * Kept to exactly PROMPT_ROWS rows: the status line above the top rule holds
- * its row whether or not a turn is running, so the transcript above never
- * reflows the moment one starts. The one row that comes and goes is the
- * spend line above the roll call, and it comes once for the run — the first
- * call that costs anything — and then stays.
+ * Kept to PROMPT_ROWS rows plus one per line break in the draft: the status
+ * line above the top rule holds its row whether or not a turn is running, so
+ * the transcript above never reflows the moment one starts. The one row that
+ * comes and goes on its own is the spend line above the roll call, and it
+ * comes once for the run — the first call that costs anything — and then
+ * stays; the input's rows come and go with what is typed into it.
  *
  * The hint line is also where the transcript says it has stopped following the
  * end — scrolled up, what arrives next lands off screen, and only this says so
@@ -2057,6 +2102,12 @@ function DraftLine({ draft, agents }: { draft: Draft; agents: readonly string[] 
   for (const [index, char] of chars.entries()) {
     const colour = colourAt(index);
     const inverse = index === draft.cursor;
+    // A break has no cell to invert: the cursor on one is drawn as a cell at
+    // the end of that line, and the break itself follows it unmarked.
+    if (inverse && char === '\n') {
+      pieces.push({ text: ' ', colour, inverse: true }, { text: '\n', colour, inverse: false });
+      continue;
+    }
     const last = pieces[pieces.length - 1];
     if (last && last.colour === colour && last.inverse === inverse && !inverse) last.text += char;
     else pieces.push({ text: char, colour, inverse });

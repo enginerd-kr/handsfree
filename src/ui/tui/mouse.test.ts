@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { CURSOR_QUERY, isMouseReport, parseCursorReport, parseMouseEvent, trackMouse } from './mouse.js';
+import {
+  CURSOR_QUERY,
+  isKittyQueryReply,
+  isMouseReport,
+  parseCursorReport,
+  parseMouseEvent,
+  trackMouse,
+} from './mouse.js';
 
 const ESC = '';
 
@@ -48,6 +55,19 @@ describe('parseMouseEvent', () => {
     // The middle button dragging, and the right button coming up.
     expect(parseMouseEvent('[<33;12;5M')).toBeUndefined();
     expect(parseMouseEvent('[<2;12;5m')).toBeUndefined();
+  });
+});
+
+describe('isKittyQueryReply', () => {
+  it('knows the answer to a kitty keyboard query, whatever flags it carries', () => {
+    expect(isKittyQueryReply('[?0u')).toBe(true);
+    expect(isKittyQueryReply('[?31u')).toBe(true);
+  });
+
+  it('leaves cursor reports, mouse reports and plain text alone', () => {
+    expect(isKittyQueryReply('[12;1R')).toBe(false);
+    expect(isKittyQueryReply('[<0;12;5m')).toBe(false);
+    expect(isKittyQueryReply('?0u')).toBe(false);
   });
 });
 

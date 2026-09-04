@@ -455,6 +455,55 @@ describe('terminal UI', () => {
     }
   });
 
+  it('breaks the line on shift+enter or option+enter, and sends every line on enter', async () => {
+    const llm = scriptedModel([JSON.stringify({ action: 'answer', message: 'got it.' })]);
+    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) }, llm });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    const plain = () => (app.lastFrame() ?? '').replace(/\[[0-9;]*m/g, '');
+    const press = async (...keys: string[]) => {
+      for (const key of keys) {
+        app.stdin.write(key);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    };
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      // The terminal's answer to the kitty query reaches the prompt as well
+      // as Ink, and must not be typed.
+      await press('\u001B[?0u');
+      await press(...'one');
+      await waitFor(plain, `${PROMPT_CHAR} one`);
+      expect(plain()).not.toContain('?0u');
+      await press('\u001B[13;2u'); // shift+enter, as the kitty protocol encodes it
+      await press(...'two');
+      await press('\u001B\r'); // option+enter, in the legacy encoding
+      await press(...'three');
+      // Three lines in the prompt, nothing sent: the model has not been asked.
+      await waitFor(plain, `${PROMPT_CHAR} one`);
+      expect(plain()).toContain('\n  two');
+      expect(plain()).toContain('\n  three');
+      expect(llm.seen).toHaveLength(0);
+
+      // Up walks the lines before it reaches the history: home on the middle
+      // line, then a character typed there, lands on that line alone.
+      await press('\u001B[A', '\x01', '-');
+      await waitFor(plain, '\n  -two');
+
+      await press('\r');
+      await waitFor(() => app.lastFrame(), 'got it.');
+      expect(llm.seen[0]?.some((message) => message.content === 'one\n-two\nthree')).toBe(true);
+      // Sent, the prompt is empty and back to one line — the lines above it
+      // now are the transcript's copy of what went.
+      const promptAt = plain().split('\n').findIndex((line) => line.includes(PROMPT_CHAR));
+      expect(plain().split('\n')[promptAt]?.trim()).toBe(PROMPT_CHAR);
+      expect(plain().split('\n')[promptAt + 1]?.trim()).toMatch(/^─+$/);
+    } finally {
+      app.unmount();
+    }
+  });
+
   it('walks back through what was sent with the arrows, and forward to the draft', async () => {
     const h = harness({
       agents: { claude: fakeAgent({ script: () => [] }) },
