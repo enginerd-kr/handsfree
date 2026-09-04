@@ -275,6 +275,32 @@ describe('terminal UI', () => {
     }
   });
 
+  it('starts a code block on the line under the agent\'s name, in one column', async () => {
+    const h = harness({
+      agents: {
+        claude: fakeAgent({
+          script: () => [{ do: 'say', text: '```js\nfunction greet(name) {\n  return name;\n}\n```' }],
+        }),
+      },
+      llm: scriptedModel([]),
+    });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      await h.runtime.conversation.send('@claude show me');
+      const frame = await waitFor(() => app.lastFrame(), 'Done');
+      const lines = frame.split('\n');
+      const name = lines.findIndex((line) => /claude\s*$/.test(line));
+      expect(name).toBeGreaterThan(-1);
+      // The block's lines share a column, the first no further right than the rest.
+      expect(lines[name + 1]?.indexOf('function')).toBe(lines[name + 3]?.indexOf('}'));
+    } finally {
+      app.unmount();
+    }
+  });
+
   it('opens the task a click lands on, and leaves the prompt alone', async () => {
     const h = harness({
       agents: {

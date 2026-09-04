@@ -107,7 +107,16 @@ export function visualRows(items: readonly ViewItem[], columns: number): VisualR
 
 /** The text of the first row, including the label that wraps along with it. */
 export function headline(item: ViewItem): string {
-  return `${item.label ? `${item.label}  ` : ''}${item.text}`;
+  return `${item.label ? `${item.label}${labelGap(item)}` : ''}${item.text}`;
+}
+
+/**
+ * What parts a label from the text: a pair of spaces, or a line break when
+ * the text opens on a fenced block — whose lines have to share a column, and
+ * a first line pushed along by the label would not.
+ */
+export function labelGap(item: ViewItem): string {
+  return item.blockFirst === true ? '\n' : '  ';
 }
 
 /**

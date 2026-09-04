@@ -40,6 +40,7 @@ import {
   GUTTER,
   itemAt,
   itemRows,
+  labelGap,
   placeItems,
   totalHeight,
   visualRows,
@@ -1473,7 +1474,7 @@ function Entry({
           )}
         >
           {item.label ? (
-            <Text {...paint(accent ? 'brand' : 'muted', accent)}>{`${item.label}  `}</Text>
+            <Text {...paint(accent ? 'brand' : 'muted', accent)}>{`${item.label}${labelGap(item)}`}</Text>
           ) : null}
           {item.marker === 'prompt' ? (
             <Mentioned text={item.text} tone={item.tone} agents={agents} />

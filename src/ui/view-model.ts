@@ -51,6 +51,11 @@ export interface ViewItem {
    */
   prose?: boolean;
   /**
+   * Whether the text opens on a fenced block. Its lines share a column, so a
+   * label cannot sit beside the first of them: it takes a line of its own.
+   */
+  blockFirst?: boolean;
+  /**
    * The delegated task this row belongs to, opening and closing rows included.
    * Every row of a task carries it, so hovering anywhere in the block lights
    * all of it and a click anywhere in it folds or unfolds the task.
@@ -530,6 +535,7 @@ export function buildView(
   for (const item of items) {
     if (item.role === 'agent' && item.prose === true) item.text = stripReport(item.text);
     item.text = item.text.trim();
+    if (item.prose === true && FENCE_FIRST.test(item.text)) item.blockFirst = true;
     if (item.taskId === undefined || unfolded(item.taskId)) continue;
     if (bareTasks.has(item.taskId) && answers.get(item.taskId) === item.key) continue;
     const tool = tools.get(item.key);
@@ -548,6 +554,9 @@ function asked(user: string, task: string): boolean {
   const said = user.replace(/^\s*@\S+/, '').replace(/\s+/g, ' ').trim();
   return said !== '' && said === task.replace(/\s+/g, ' ').trim();
 }
+
+/** A text that opens on a fenced block, closed or still streaming in. */
+const FENCE_FIRST = /^(?:`{3,}|~{3,})/;
 
 /** A row carrying an agent's own words, which the renderer draws as markdown. */
 function proseRow(...args: Parameters<typeof row>): ViewItem {

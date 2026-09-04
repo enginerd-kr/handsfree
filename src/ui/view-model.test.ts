@@ -749,6 +749,15 @@ describe('a task that was the person\'s own line', () => {
     expect(view[1]?.agentId).toBe('claude');
   });
 
+  it('marks an answer that opens on a code block, so the label can stand clear of it', () => {
+    const t = asked('```js\nfunction greet(name) {\n  return name;\n}\n```');
+    const view = buildView(t.all(), WORKSPACE);
+    expect(view.at(-1)).toMatchObject({ label: 'claude', blockFirst: true });
+    // Prose ahead of the block keeps the label beside it.
+    expect(view[1]).toMatchObject({ label: 'claude', text: 'Let me look.' });
+    expect(view[1]?.blockFirst).toBeUndefined();
+  });
+
   it('never draws the REPORT block, and drops a block that was nothing else', () => {
     const t = asked('A monad is a monoid in the category of endofunctors.\n\nREPORT\noutcome: done\nsummary: explained\nchanged: none');
     t.append({
