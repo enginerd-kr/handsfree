@@ -149,7 +149,7 @@ describe('buildView', () => {
     ]);
   });
 
-  it('indents an agent under the task it was given, and closes it on stop', () => {
+  it('keeps an agent\'s rows at the margin, in its name, and closes the task on stop', () => {
     const t = transcript();
     t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'say hi' });
     t.append({
@@ -161,7 +161,8 @@ describe('buildView', () => {
     t.append({ type: 'stop', taskId: 1, agentId: 'claude', sessionId: 's', stopReason: 'end_turn' });
 
     const view = buildView(t.all(), WORKSPACE, { expanded: true });
-    expect(view.map((item) => item.depth)).toEqual([0, 1, 1]);
+    expect(view.map((item) => item.depth)).toEqual([0, 0, 0]);
+    expect(view.map((item) => item.label)).toEqual(['claude', 'claude', undefined]);
     expect(view[2]?.marker).toBe('result');
     expect(view[2]?.text).toMatch(/^Done/);
   });
@@ -200,13 +201,18 @@ describe('buildView', () => {
 
     t.append({ type: 'stop', taskId: 1, agentId: 'claude', sessionId: 's', stopReason: 'end_turn' });
 
+    // Ended: the brief folds, the answer stays, the closing line offers the
+    // rest back.
     const folded = buildView(t.all(), WORKSPACE, { expandHint: 'ctrl+o to expand' });
-    expect(folded.map((item) => item.marker)).toEqual(['bullet', 'result']);
-    expect(folded[1]?.text).toBe('Done (1s · ctrl+o to expand)');
+    expect(folded.map((item) => [item.marker, item.text])).toEqual([
+      ['bullet', 'hi'],
+      ['result', 'Done (1s · ctrl+o to expand)'],
+    ]);
   });
 
-  // Asked for a file, an agent hands the file back. Whole, that is the screen.
-  it('keeps a running task to the head of what it says, and counts the rest', () => {
+  // Asked for a file, an agent hands the file back, then goes on. Whole, the
+  // file is the screen; what the agent is saying now is what matters.
+  it('keeps a running task to the head of what it said earlier, and counts the rest', () => {
     const t = transcript();
     const readme = Array.from({ length: 40 }, (_, line) => `line ${line + 1}`).join('\n');
     t.append({ type: 'delegation', taskId: 1, agentId: 'gemini', sessionId: 's', task: 'show it' });
@@ -216,13 +222,28 @@ describe('buildView', () => {
       sessionId: 's',
       update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: readme } },
     });
+    // While it is the latest thing said, it is the answer so far: whole.
+    expect(buildView(t.all(), WORKSPACE)[1]?.text).toBe(readme);
 
+    t.append({
+      type: 'session_update',
+      agentId: 'gemini',
+      sessionId: 's',
+      update: { sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Read more.md', kind: 'read', status: 'completed' },
+    });
+    t.append({
+      type: 'session_update',
+      agentId: 'gemini',
+      sessionId: 's',
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'That is all of it.' } },
+    });
     const view = buildView(t.all(), WORKSPACE, { expandHint: 'ctrl+o to expand' });
     expect(view[1]?.text.split('\n')).toHaveLength(12);
     expect(view[1]?.text.endsWith('line 12')).toBe(true);
     expect(view[1]?.lines.map((line) => line.text)).toEqual([
       '… +28 lines (ctrl+o to expand)',
     ]);
+    expect(view[3]?.text).toBe('That is all of it.');
 
     // Unfolding the task is the way back to all of it.
     const open = buildView(t.all(), WORKSPACE, { expandedTasks: new Set([1]) });
@@ -319,12 +340,16 @@ describe('buildView', () => {
 
     const view = buildView(t.all(), WORKSPACE, { expanded: true });
     expect(view.map((item) => item.text)).toEqual(['and done', 'Done (1s)']);
-    expect(view.map((item) => item.taskId)).toEqual([1, 1]);
-    expect(view.map((item) => item.depth)).toEqual([1, 1]);
+    expect(view.map((item) => item.agentId)).toEqual(['claude', 'claude']);
+    expect(view.map((item) => item.label)).toEqual(['claude', undefined]);
 
-    // And the closing row still folds what is left of the task away.
+    // What is left of the task is its answer, which is kept — so there is
+    // nothing to fold, and nothing for a click to do.
     const folded = buildView(t.all(), WORKSPACE);
-    expect(folded.map((item) => item.marker)).toEqual(['result']);
+    expect(folded.map((item) => [item.marker, item.taskId])).toEqual([
+      ['bullet', undefined],
+      ['result', undefined],
+    ]);
   });
 
   it('never folds a refusal away with the rest of the task', () => {
@@ -626,12 +651,19 @@ describe('turnPhase', () => {
 });
 
 describe('a delegation row', () => {
-  it('is drawn when the brief is the planner\'s own words', () => {
+  it('is drawn when the brief is the planner\'s own words, and folds with the work', () => {
     const t = transcript();
     t.append({ type: 'user', text: 'make it pass' });
     t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'run the tests' });
     const view = buildView(t.all(), WORKSPACE);
-    expect(view[1]).toMatchObject({ label: 'claude', text: 'run the tests', depth: 0, agentId: 'claude', lines: [] });
+    expect(view[1]).toMatchObject({
+      label: 'claude',
+      text: 'run the tests',
+      depth: 0,
+      agentId: 'claude',
+      taskId: 1,
+      lines: [],
+    });
   });
 
   it('is not drawn when it would only say the line again', () => {
@@ -661,7 +693,7 @@ describe('a delegation row', () => {
     expect(view[1]?.gap).toBe(true);
   });
 
-  it('keeps the brief in view when the task folds', () => {
+  it('folds with the work, and comes back when the task is unfolded', () => {
     const t = transcript();
     t.append({ type: 'user', text: 'make it' });
     t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'Fix the failing test' });
@@ -671,14 +703,24 @@ describe('a delegation row', () => {
       sessionId: 's',
       update: { sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Read a.ts', kind: 'read', status: 'completed' },
     });
+    t.append({
+      type: 'session_update',
+      agentId: 'claude',
+      sessionId: 's',
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Fixed.' } },
+    });
     t.append({ type: 'stop', taskId: 1, agentId: 'claude', sessionId: 's', stopReason: 'end_turn' });
-    const texts = buildView(t.all(), WORKSPACE).map((item) => item.text);
-    expect(texts).toContain('Fix the failing test');
-    expect(texts).not.toContain('Read a.ts');
+    const folded = buildView(t.all(), WORKSPACE).map((item) => item.text);
+    expect(folded).not.toContain('Fix the failing test');
+    expect(folded).not.toContain('Read a.ts');
+    expect(folded).toContain('Fixed.');
+    const open = buildView(t.all(), WORKSPACE, { expandedTasks: new Set([1]) }).map((item) => item.text);
+    expect(open).toContain('Fix the failing test');
+    expect(open).toContain('Read a.ts');
   });
 });
 
-describe('a task that was the person\'s own line', () => {
+describe('a task\'s answer', () => {
   const asked = (text: string) => {
     const t = transcript();
     t.append({ type: 'user', text: '@claude what is a monad' });

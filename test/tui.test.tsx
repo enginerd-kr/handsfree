@@ -235,12 +235,13 @@ describe('terminal UI', () => {
       await h.runtime.conversation.send('who are you');
       await waitFor(() => app.lastFrame(), 'claude answered.');
 
-      // Folded: the task is one line, and what the agent said is not on screen.
+      // Folded: the answer stays, and the planner's brief is off screen.
       expect(app.lastFrame()).toContain('ctrl+o');
-      expect(app.lastFrame()).not.toContain('the long agent answer');
+      expect(app.lastFrame()).toContain('the long agent answer');
+      expect(app.lastFrame()).not.toContain('who?');
 
       app.stdin.write('\x0f'); // ctrl+o
-      await waitFor(() => app.lastFrame(), 'the long agent answer');
+      await waitFor(() => app.lastFrame(), 'who?');
     } finally {
       app.unmount();
     }
@@ -318,7 +319,7 @@ describe('terminal UI', () => {
       await waitFor(() => app.lastFrame(), PROMPT_CHAR);
       await h.runtime.conversation.send('who are you');
       await waitFor(() => app.lastFrame(), 'claude answered.');
-      expect(app.lastFrame()).not.toContain('the long agent answer');
+      expect(app.lastFrame()).not.toContain('안녕?');
 
       // Type first: a click must not disturb what is half-written.
       app.stdin.write('half typed');
@@ -331,7 +332,7 @@ describe('terminal UI', () => {
 
       app.stdin.write(`\u001B[<0;3;${row + 1}M`); // press
       app.stdin.write(`\u001B[<0;3;${row + 1}m`); // release
-      const frame = await waitFor(() => app.lastFrame(), 'the long agent answer');
+      const frame = await waitFor(() => app.lastFrame(), '안녕?');
       expect(frame).toContain('half typed');
       expect(frame).not.toContain('[<0;3;');
     } finally {
@@ -1092,17 +1093,17 @@ describe('terminal UI', () => {
       await waitFor(() => app.lastFrame(), 'claude answered.');
 
       app.stdin.write('\x0f'); // ctrl+o, so the block has inner rows
-      await waitFor(() => app.lastFrame(), 'the long agent answer');
+      await waitFor(() => app.lastFrame(), '안녕?');
 
-      // The agent's own words are neither the opening row nor the closing one,
-      // but they belong to the task, so a click on them folds it back up.
+      // The agent's answer is neither the opening row nor the closing one,
+      // but it belongs to the task, so a click on it folds the task back up.
       const row = (app.lastFrame() ?? '')
         .split('\n')
         .findIndex((line) => line.includes('the long agent answer'));
       expect(row).toBeGreaterThan(0);
       app.stdin.write(`\u001B[<0;3;${row + 1}m`);
       const deadline = Date.now() + 2_000;
-      while ((app.lastFrame() ?? '').includes('the long agent answer')) {
+      while ((app.lastFrame() ?? '').includes('안녕?')) {
         if (Date.now() > deadline) throw new Error('the click never folded the task');
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
@@ -1227,15 +1228,15 @@ describe('terminal UI', () => {
   });
 
   it('still aims true when the rows above the target wrap', async () => {
-    // Korean is double-width and the brief is long enough to wrap several
+    // Korean is double-width and the answer is long enough to wrap several
     // times: if the row maths counted characters the click would miss.
-    const task = '워크스페이스 안에 파일을 만들고 그 안에 정확히 다음 문장을 적어줘: '.repeat(3);
+    const answer = '워크스페이스 안에 파일을 만들고 그 안에 정확히 다음 문장을 적었습니다: '.repeat(3);
     const h = harness({
       agents: {
-        claude: fakeAgent({ script: () => [{ do: 'say', text: 'the long agent answer' }] }),
+        claude: fakeAgent({ script: () => [{ do: 'say', text: answer }] }),
       },
       llm: scriptedModel([
-        JSON.stringify({ action: 'delegate', agent: 'claude', kind: 'answer', task }),
+        JSON.stringify({ action: 'delegate', agent: 'claude', kind: 'answer', task: '안녕?' }),
         JSON.stringify({ action: 'answer', message: 'claude answered.' }),
       ]),
     });
@@ -1248,10 +1249,10 @@ describe('terminal UI', () => {
       await waitFor(() => app.lastFrame(), 'claude answered.');
 
       const row = (app.lastFrame() ?? '').split('\n').findIndex((line) => line.includes('⎿'));
-      expect(row).toBeGreaterThan(3); // the brief really did wrap
+      expect(row).toBeGreaterThan(3); // the answer really did wrap
 
       app.stdin.write(`[<0;3;${row + 1}m`);
-      await waitFor(() => app.lastFrame(), 'the long agent answer');
+      await waitFor(() => app.lastFrame(), '안녕?');
     } finally {
       app.unmount();
     }
@@ -1288,11 +1289,11 @@ describe('terminal UI', () => {
       // A click aimed by the old anchor now lands on nothing.
       app.stdin.write(`[<0;3;${row + 1}m`);
       await new Promise((resolve) => setTimeout(resolve, 60));
-      expect(app.lastFrame()).not.toContain('the long agent answer');
+      expect(app.lastFrame()).not.toContain('안녕?');
 
       // Aimed three rows lower, it opens the task again.
       app.stdin.write(`[<0;3;${row + 3 + 1}m`);
-      const frame = await waitFor(() => app.lastFrame(), 'the long agent answer');
+      const frame = await waitFor(() => app.lastFrame(), '안녕?');
       expect(frame).not.toContain(';1R');
     } finally {
       app.unmount();
@@ -1320,7 +1321,7 @@ describe('terminal UI', () => {
       app.stdin.write('\u001B[<0;3;1M');
       app.stdin.write('\u001B[<0;3;1m'); // the header row
       await new Promise((resolve) => setTimeout(resolve, 60));
-      expect(app.lastFrame()).not.toContain('the long agent answer');
+      expect(app.lastFrame()).not.toContain('안녕?');
     } finally {
       app.unmount();
     }
@@ -1443,7 +1444,7 @@ describe('terminal UI', () => {
         }),
       },
       llm: scriptedModel([
-        JSON.stringify({ action: 'delegate', agent: 'claude', kind: 'answer', task: 'go' }),
+        JSON.stringify({ action: 'delegate', agent: 'claude', kind: 'answer', task: 'read it and change one line' }),
         JSON.stringify({ action: 'answer', message: 'claude answered.' }),
       ]),
     });
@@ -1455,8 +1456,8 @@ describe('terminal UI', () => {
       await h.runtime.conversation.send('who are you');
       await waitFor(() => app.lastFrame(), 'claude answered.');
 
-      app.stdin.write('\x0f'); // ctrl+o, so the block has inner rows
-      await waitFor(() => app.lastFrame(), 'the agent answer');
+      app.stdin.write('\x0f'); // ctrl+o, so the block has inner rows: the brief
+      await waitFor(() => app.lastFrame(), 'read it and change one line');
 
       // The click lands on the last line of a block whose earlier lines are
       // markdown — so it only folds if those lines were measured correctly.
@@ -1467,7 +1468,7 @@ describe('terminal UI', () => {
       app.stdin.write(`\u001B[<0;3;${row + 1}m`);
 
       const deadline = Date.now() + 2_000;
-      while ((app.lastFrame() ?? '').includes('the agent answer')) {
+      while ((app.lastFrame() ?? '').includes('read it and change one line')) {
         if (Date.now() > deadline) throw new Error('the click never folded the task');
         await new Promise((resolve) => setTimeout(resolve, 20));
       }

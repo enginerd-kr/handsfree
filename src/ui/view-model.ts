@@ -26,7 +26,7 @@ export interface ViewItem {
   key: string;
   /** Who is speaking: the user, handsfree itself, an agent, or the machinery. */
   role: 'user' | 'handsfree' | 'agent' | 'system';
-  /** 0 for handsfree's own conversation, 1 for anything inside a delegated task. */
+  /** How far in the row sits. Every row of the conversation sits at 0 now. */
   depth: number;
   marker: Marker;
   markerTone: Tone;
@@ -101,19 +101,18 @@ export interface ViewOptions {
  * this is the only place that decides what a person sees — thoughts, tool
  * output, diffs and plans included, not just the prose at the end.
  *
- * A task is watched while it runs and folded once it ends. What it did is
- * already in handsfree's report by then, so leaving the whole stream on screen
- * only says everything twice — but a refusal never folds, because that is the
- * one thing the report cannot make up for. While it runs, each of its blocks
- * is capped at its head: what an agent hands back is often a whole file, and
- * one of those is the whole screen. Unfolding a task lifts both.
- *
- * A task that is the person's own line — an @mention, or a brief the planner
- * passed on as typed — is drawn as the conversation it is: no routing row,
- * since it would only say the line again, the agent's rows at the margin
- * wearing its name, and what the agent last said kept whole when the task
- * folds, because that is the answer. What it said for the planner's benefit,
- * the REPORT block at the end of its turn, is never drawn.
+ * A delegated task is drawn as the conversation it is: the agent's rows follow
+ * the person's line at the margin, wearing the agent's name, and what the
+ * agent last said is the answer — kept whole when the task folds, and never
+ * capped while it streams. The rest of the task is watched while it runs and
+ * folded once it ends: the brief, where the planner wrote one of its own
+ * (a brief that only says the person's line again is never drawn), the tool
+ * calls, and whatever the agent said before its answer. A refusal never
+ * folds, because that is the one thing the answer cannot make up for. While
+ * the task runs, those earlier blocks are capped at their heads — what an
+ * agent hands back is often a whole file, and one of those is the whole
+ * screen — and unfolding the task lifts both. What the agent said for the
+ * planner's benefit, the REPORT block at the end of its turn, is never drawn.
  */
 export function buildView(
   records: readonly TranscriptRecord[],
@@ -139,23 +138,16 @@ export function buildView(
   // folded under the call they belong to. Refusals never fold.
   let openTool: { state: ToolState; item: ViewItem } | undefined;
 
-  // Everything between a delegation and its stop belongs to the agent, and is
-  // indented under the task the way a nested call reads.
-  let depth = 0;
+  // Everything between a delegation and its stop belongs to the agent.
   let currentTask: number | undefined;
   let currentAgent: string | undefined;
   let taskStartedAt = 0;
   let taskTools = 0;
   // Where the current task's rows begin, and which of them survive folding.
   let taskStart = -1;
-  // Where the task begins on screen: its routing row, where it has one.
-  let taskHead = -1;
   const loud = new Set<string>();
   // The line the person last typed, for telling a brief that repeats it.
   let lastUser = '';
-  // Whether the current task is the person's own line, drawn at the margin.
-  let bare = false;
-  const bareTasks = new Set<number>();
   // The latest block of each task's own words: what the agent has answered so
   // far, and what stands as the answer once the task ends.
   const answers = new Map<number, string>();
@@ -170,12 +162,10 @@ export function buildView(
     if (currentTask !== undefined) {
       item.taskId = currentTask;
       item.agentId ??= currentAgent;
-      if (bare) {
-        // With no routing row above them, the agent's own rows say whose
-        // they are — and the first stands off the person's line.
-        if (item.role === 'agent' && item.marker === 'bullet') item.label ??= currentAgent;
-        if (items.length === taskStart) item.gap = true;
-      }
+      // The agent's own rows say whose they are, and the task's first row
+      // stands a line off the person's.
+      if (item.role === 'agent' && item.marker === 'bullet') item.label ??= currentAgent;
+      if (items.length === taskStart) item.gap = true;
     }
     items.push(item);
     byKey.set(item.key, item);
@@ -267,14 +257,16 @@ export function buildView(
       case 'delegation': {
         closeBlocks();
         closeTool();
-        // A brief that is the person's own line gets no row of its own: the
-        // agent's rows follow the line directly, at the margin, in its name.
-        bare = asked(lastUser, record.task);
-        taskHead = items.length;
-        if (bare) bareTasks.add(record.taskId);
-        else {
-          // The routing and the brief on one line, the way the person's own
-          // line reads: the agent where the @ was, and the task after it.
+        currentTask = record.taskId;
+        currentAgent = record.agentId;
+        taskStartedAt = record.at;
+        taskTools = 0;
+        taskStart = items.length;
+        // The brief, where the planner wrote one of its own, opens the task
+        // the way the person's line reads — the agent where the @ would be,
+        // the task after it — and folds with the work. A brief that is the
+        // person's own line gets no row: the agent's rows follow the line.
+        if (!asked(lastUser, record.task)) {
           const item = add(
             row(`d${record.seq}`, 'system', 0, 'bullet', 'brand', record.task, 'normal', true),
           );
@@ -283,15 +275,7 @@ export function buildView(
           // switched by, which is the id the mention typed and the id that
           // went on the wire.
           item.label = modelled(record.agentId, record);
-          item.agentId = record.agentId;
-          item.taskId = record.taskId;
         }
-        depth = bare ? 0 : 1;
-        currentTask = record.taskId;
-        currentAgent = record.agentId;
-        taskStartedAt = record.at;
-        taskTools = 0;
-        taskStart = items.length;
         break;
       }
 
@@ -309,7 +293,7 @@ export function buildView(
           row(
             `n${record.seq}`,
             'system',
-            depth,
+            0,
             'none',
             'muted',
             record.text,
@@ -332,7 +316,7 @@ export function buildView(
           row(
             `p${record.seq}`,
             'system',
-            depth,
+            0,
             allowed ? 'allowed' : 'refused',
             allowed ? 'muted' : 'bad',
             `${record.entry.summary}${allowed ? '' : why}`,
@@ -347,12 +331,12 @@ export function buildView(
         closeBlocks();
         closeTool();
         const took = taskStartedAt > 0 ? Math.max(1, Math.round((record.at - taskStartedAt) / 1000)) : 0;
-        // What the agent last said in a task that was the person's own line
-        // is the answer, and stays when the rest folds. A task that did not
-        // finish keeps the ledger's account instead: the words it got out
-        // are not the whole story, and the head says what became of it.
+        // What the agent last said is the answer, and stays when the rest
+        // folds. A task that did not finish keeps the ledger's account
+        // instead: the words it got out are not the whole story, and the
+        // head says what became of it.
         const answer = answers.get(record.taskId);
-        if (bare && record.stopReason === 'end_turn' && answer !== undefined && byKey.has(answer)) {
+        if (record.stopReason === 'end_turn' && answer !== undefined && byKey.has(answer)) {
           loud.add(answer);
           answered.add(String(record.taskId));
         }
@@ -364,7 +348,7 @@ export function buildView(
           row(
             `s${record.seq}`,
             'system',
-            depth,
+            0,
             'result',
             'muted',
             stopText(record.stopReason, taskTools, took, hidden > 0 ? options.expandHint : undefined),
@@ -376,20 +360,17 @@ export function buildView(
         // rows are nobody's to hover or open: the hover would only promise a
         // click that changes nothing.
         if (foldable === 0) {
-          for (const item of items.slice(Math.max(0, taskHead))) item.taskId = undefined;
+          for (const item of items.slice(taskStart)) item.taskId = undefined;
         }
-        depth = 0;
-        bare = false;
         currentTask = undefined;
         currentAgent = undefined;
         taskStart = -1;
-        taskHead = -1;
         break;
       }
 
       case 'clear':
         // The screen starts over; the run does not. A task still in flight
-        // keeps its depth, its id and its agent, so the rows it goes on to
+        // keeps its id and its agent, so the rows it goes on to
         // send are still its own and its closing line still folds them — from
         // the top of the emptied list, which is where the task now begins.
         // What the tool calls know about themselves is kept for the same
@@ -401,7 +382,6 @@ export function buildView(
         closeBlocks();
         closeTool();
         taskStart = currentTask !== undefined ? 0 : -1;
-        taskHead = taskStart;
         break;
 
       // Where each agent's session came from is the header's to say, not a
@@ -422,7 +402,7 @@ export function buildView(
             if (openText) openText.text += update.content.text;
             else {
               openText = add(
-                proseRow(`m${record.seq}`, 'agent', depth, 'bullet', 'brand', update.content.text, 'normal', true),
+                proseRow(`m${record.seq}`, 'agent', 0, 'bullet', 'brand', update.content.text, 'normal', true),
               );
               if (currentTask !== undefined) answers.set(currentTask, openText.key);
             }
@@ -436,7 +416,7 @@ export function buildView(
             if (openThought) openThought.text += update.content.text;
             else {
               openThought = add(
-                proseRow(`h${record.seq}`, 'agent', depth, 'thought', 'muted', update.content.text, 'muted', true),
+                proseRow(`h${record.seq}`, 'agent', 0, 'thought', 'muted', update.content.text, 'muted', true),
               );
             }
             break;
@@ -463,7 +443,7 @@ export function buildView(
 
             const existing = byKey.get(key);
             const target =
-              existing ?? add(row(key, 'agent', depth, 'bullet', 'muted', '', 'normal', false));
+              existing ?? add(row(key, 'agent', 0, 'bullet', 'muted', '', 'normal', false));
             if (!existing) taskTools++;
             target.text = headline(state, workspaceDir);
             target.tone = state.status === 'failed' ? 'bad' : 'normal';
@@ -489,12 +469,12 @@ export function buildView(
               const text = update.sessionUpdate === 'plan_update' && update.plan.type === 'markdown'
                 ? update.plan.content
                 : 'Plan updated';
-              const item = byKey.get(key) ?? add(row(key, 'agent', depth, 'bullet', 'accent', '', 'muted', true));
+              const item = byKey.get(key) ?? add(row(key, 'agent', 0, 'bullet', 'accent', '', 'muted', true));
               item.text = clip(text, MAX_LINE_CHARS);
               break;
             }
 
-            const item = byKey.get(key) ?? add(row(key, 'agent', depth, 'bullet', 'accent', '', 'normal', true));
+            const item = byKey.get(key) ?? add(row(key, 'agent', 0, 'bullet', 'accent', '', 'normal', true));
             const done = entries.filter((entry) => entry.status === 'completed').length;
             item.text = `Plan (${done}/${entries.length})`;
             item.lines = entries.map(planLine);
@@ -507,7 +487,7 @@ export function buildView(
               row(
                 `c${record.seq}`,
                 'agent',
-                depth,
+                0,
                 'none',
                 'muted',
                 `mode: ${update.currentModeId}`,
@@ -537,7 +517,7 @@ export function buildView(
     item.text = item.text.trim();
     if (item.prose === true && FENCE_FIRST.test(item.text)) item.blockFirst = true;
     if (item.taskId === undefined || unfolded(item.taskId)) continue;
-    if (bareTasks.has(item.taskId) && answers.get(item.taskId) === item.key) continue;
+    if (answers.get(item.taskId) === item.key) continue;
     const tool = tools.get(item.key);
     if (tool) item.lines = toolLines(tool, workspaceDir, MAX_BLOCK_LINES, options.expandHint);
     else if (item.prose === true) capText(item, options.expandHint);
