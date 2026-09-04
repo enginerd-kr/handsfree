@@ -94,28 +94,20 @@ export const DEFAULT_AGENTS: Record<string, z.input<typeof AgentProfileSchema>> 
 };
 
 /**
- * Proxy configuration for every process handsfree starts. This exists because
- * the shell is the wrong place to fix a corporate proxy: agents are spawned
- * directly, so rc-file aliases never apply to them, and `HTTP_PROXY=` in a
- * shell sets an empty string rather than unsetting. Here the semantics are
- * explicit — a key that is omitted inherits the shell's value, `""` removes
- * the variable entirely, and anything else sets it — and each key writes both
- * spellings (`HTTPS_PROXY` and `https_proxy`), since tools disagree on which
- * one they read. An agent profile's `env` still wins over this block.
+ * Environment for every process handsfree starts, keyed by the variable's own
+ * name. This exists because the shell is the wrong place to fix a corporate
+ * network: agents are spawned directly, so rc-file aliases never apply to
+ * them, and `HTTP_PROXY=` in a shell sets an empty string rather than
+ * unsetting. Here the semantics are explicit — a variable that is omitted
+ * inherits the shell's value, `null` removes it entirely, and a string sets
+ * it — and nothing is renamed on the way through, so `HTTPS_PROXY`,
+ * `NODE_EXTRA_CA_CERTS`, `NODE_TLS_REJECT_UNAUTHORIZED` and whatever else a
+ * network needs are all spelled exactly as the tools read them. Set both
+ * spellings of a proxy variable yourself when a tool insists on the lower
+ * one. An agent profile's `env` still wins over this block.
  */
-export const ProxySchema = z
-  .object({
-    /** HTTP_PROXY / http_proxy */
-    http: z.string().optional(),
-    /** HTTPS_PROXY / https_proxy — the one API traffic actually reads. */
-    https: z.string().optional(),
-    /** ALL_PROXY / all_proxy */
-    all: z.string().optional(),
-    /** NO_PROXY / no_proxy */
-    noProxy: z.string().optional(),
-  })
-  .prefault({});
-export type ProxyConfig = z.infer<typeof ProxySchema>;
+export const EnvSchema = z.record(z.string(), z.string().nullable()).prefault({});
+export type EnvConfig = z.infer<typeof EnvSchema>;
 
 const Rule = z.enum(['allow', 'ask', 'deny']);
 export type RuleOutcome = z.infer<typeof Rule>;
@@ -336,7 +328,7 @@ export const ConfigSchema = z
      */
     cleanupPeriodDays: z.number().int().nonnegative().default(30),
     orchestration: OrchestrationSchema.prefault({}),
-    proxy: ProxySchema,
+    env: EnvSchema,
     agents: z.record(z.string(), AgentProfileSchema).prefault(DEFAULT_AGENTS),
     roles: RolesSchema,
     capabilities: z

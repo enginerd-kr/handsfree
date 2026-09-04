@@ -86,19 +86,20 @@ describe('defaults', () => {
   });
 });
 
-describe('proxy', () => {
+describe('env', () => {
   it('defaults to inheriting everything', () => {
     const config = ConfigSchema.parse({});
-    expect(config.proxy).toEqual({});
+    expect(config.env).toEqual({});
   });
 
-  it('accepts values, empty strings and omissions side by side', () => {
+  it('takes variables by their own names, with null meaning remove', () => {
     const config = ConfigSchema.parse({
-      proxy: { https: 'http://proxy.corp:8080', http: '' },
+      env: { HTTPS_PROXY: 'http://proxy.corp:8080', NODE_EXTRA_CA_CERTS: '/etc/ssl/corp.pem', HTTP_PROXY: null },
     });
-    expect(config.proxy.https).toBe('http://proxy.corp:8080');
-    expect(config.proxy.http).toBe('');
-    expect(config.proxy.noProxy).toBeUndefined();
+    expect(config.env['HTTPS_PROXY']).toBe('http://proxy.corp:8080');
+    expect(config.env['NODE_EXTRA_CA_CERTS']).toBe('/etc/ssl/corp.pem');
+    expect(config.env['HTTP_PROXY']).toBeNull();
+    expect(config.env['NO_PROXY']).toBeUndefined();
   });
 
   it('lets an agent profile null out an inherited variable', () => {

@@ -16,7 +16,7 @@
     "relayAnswers": false
   },
 
-  "proxy": {},
+  "env": {},
 
   "agents": {
     "claude": { "command": "npx", "args": ["-y", "@agentclientprotocol/claude-agent-acp"] },

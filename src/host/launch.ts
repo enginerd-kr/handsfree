@@ -1,50 +1,36 @@
 import { spawn } from 'node:child_process';
 import { Readable, Writable } from 'node:stream';
 import { ndJsonStream, type ClientApp, type ClientConnection } from '@agentclientprotocol/sdk';
-import { assertLaunchArgsAllowed, type AgentProfile, type ProxyConfig } from '../config/schema.js';
+import { assertLaunchArgsAllowed, type AgentProfile, type EnvConfig } from '../config/schema.js';
 import { debug, debugEnabled, describeProxyEnv } from '../debug.js';
 import type { ConnectionTarget } from './connection.js';
 
 export interface SpawnOptions {
   cwd: string;
-  /** The config's `proxy` block, applied to the child before the profile's `env`. */
-  proxy?: ProxyConfig;
+  /** The config's top-level `env` block, applied to the child before the profile's `env`. */
+  env?: EnvConfig;
   /** Diagnostics from the adapter. Never parsed — only surfaced. */
   onStderr?: (text: string) => void;
 }
 
-const PROXY_VARIABLES: [keyof ProxyConfig, string, string][] = [
-  ['http', 'HTTP_PROXY', 'http_proxy'],
-  ['https', 'HTTPS_PROXY', 'https_proxy'],
-  ['all', 'ALL_PROXY', 'all_proxy'],
-  ['noProxy', 'NO_PROXY', 'no_proxy'],
-];
-
 /**
  * The environment an agent actually starts with, layered so the most specific
- * intent wins: the parent environment, then the config's `proxy` block (where
- * `""` means "remove the variable", covering both spellings), then the
- * profile's own `env` (where `null` removes). This is the handsfree-owned
- * replacement for wrapping the CLI in a shell alias, which never applies to
- * processes spawned directly.
+ * intent wins: the parent environment, then the config's top-level `env`
+ * block, then the profile's own `env` — in both blocks a `null` removes the
+ * variable. This is the handsfree-owned replacement for wrapping the CLI in a
+ * shell alias, which never applies to processes spawned directly.
  */
 export function childEnv(
   profile: AgentProfile,
-  proxy: ProxyConfig | undefined,
+  shared: EnvConfig | undefined,
   base: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base };
-  for (const [key, upper, lower] of PROXY_VARIABLES) {
-    const value = proxy?.[key];
-    if (value === undefined) continue;
-    for (const name of [upper, lower]) {
-      if (value === '') delete env[name];
+  for (const layer of [shared ?? {}, profile.env]) {
+    for (const [name, value] of Object.entries(layer)) {
+      if (value === null) delete env[name];
       else env[name] = value;
     }
-  }
-  for (const [name, value] of Object.entries(profile.env)) {
-    if (value === null) delete env[name];
-    else env[name] = value;
   }
   env['NO_COLOR'] = '1';
   return env;
@@ -60,16 +46,20 @@ export function spawnTarget(profile: AgentProfile, options: SpawnOptions): Conne
   // Last gate before exec: a bypass flag must never reach an agent's argv.
   assertLaunchArgsAllowed(profile.args, `${profile.command} argv`, profile.command);
 
-  const env = childEnv(profile, options.proxy);
+  const env = childEnv(profile, options.env);
   if (debugEnabled()) {
     debug('spawn', `${[profile.command, ...profile.args].join(' ')} (cwd ${options.cwd})`);
-    const configured = PROXY_VARIABLES.filter(([key]) => options.proxy?.[key] !== undefined).map(
-      ([key]) => `${key}=${options.proxy![key] === '' ? '<unset>' : 'set'}`,
-    );
-    if (configured.length > 0) debug('spawn', `proxy from config: ${configured.join(' ')}`);
+    const describe = (layer: EnvConfig) =>
+      Object.entries(layer)
+        .map(([name, value]) => `${name}=${value === null ? '<unset>' : 'set'}`)
+        .join(' ');
+    if (options.env && Object.keys(options.env).length > 0) {
+      debug('spawn', `env from config: ${describe(options.env)}`);
+    }
+    if (Object.keys(profile.env).length > 0) {
+      debug('spawn', `profile env overrides: ${describe(profile.env)}`);
+    }
     debug('spawn', `child proxy env: ${describeProxyEnv(env)}`);
-    const overrides = Object.keys(profile.env);
-    if (overrides.length > 0) debug('spawn', `profile env overrides: ${overrides.join(', ')}`);
   }
 
   // Its own process group: adapters hide behind wrappers — npx execs its

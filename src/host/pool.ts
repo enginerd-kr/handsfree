@@ -154,7 +154,7 @@ export class AgentPool {
         ? this.options.createTarget(agentId, profileForAttempt)
         : spawnTarget(profileForAttempt, {
             cwd: this.options.workspace.dir,
-            proxy: this.options.config.proxy,
+            env: this.options.config.env,
             onStderr: (text) =>
               this.options.transcript.append({ type: 'agent_stderr', agentId, text }),
           });

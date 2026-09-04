@@ -88,6 +88,17 @@ Configuration is loaded from two locations and layered, with project-specific se
 "orchestration": { "provider": "local", "local": { "baseURL": "http://localhost:1234/v1" } }
 ```
 
+Agents are spawned directly, not through a shell, so aliases and rc-file tricks never reach them. Behind a corporate proxy, put the variables in the top-level `env` block under their own names — every agent starts with them, and `null` removes one the shell set:
+
+```json
+"env": {
+  "HTTPS_PROXY": "http://proxy.corp:8080",
+  "NO_PROXY": "localhost,127.0.0.1",
+  "NODE_EXTRA_CA_CERTS": "/etc/ssl/certs/corp-ca.pem",
+  "ALL_PROXY": null
+}
+```
+
 Use the `/config` command to inspect active settings and their origins. Refer to `handsfree.config.example.json` for the complete configuration schema—all options have sensible built-in defaults.
 
 ## Development
