@@ -94,9 +94,8 @@ export function visualRows(items: readonly ViewItem[], columns: number): VisualR
   for (const item of items) {
     const indent = item.depth * 2;
     if (item.gap) rows.push({ text: '', left: 0, wrapped: false });
-    // The user's line carries no gutter — its text starts where the marks
-    // do — while every other headline sits one gutter in.
-    const head = indent + (item.marker === 'prompt' ? 0 : GUTTER);
+    // Every headline sits one gutter in.
+    const head = indent + GUTTER;
     wrap(headline(item), width(columns, indent), head);
     for (const line of item.lines) {
       wrap(line.text, width(columns, indent + DETAIL_INDENT), indent + DETAIL_INDENT + GUTTER);

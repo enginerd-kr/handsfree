@@ -208,10 +208,13 @@ describe('terminal UI', () => {
       await waitFor(() => app.lastFrame(), PROMPT_CHAR);
       await h.runtime.conversation.send('hi');
       const frame = await waitFor(() => app.lastFrame(), 'Hello there.');
-      // The user's line is on screen, but no longer opened by a `>` — its
-      // wash is what marks it now.
-      expect(frame).toContain('hi');
-      expect(frame).not.toContain('> hi');
+      // The user's line opens on a hollow dot rather than a `>`, so its text
+      // starts in the column the reply's does.
+      const lines = frame.split('\n');
+      const asked = lines.find((line) => line.includes('hi') && !line.includes('Hello'));
+      const answered = lines.find((line) => line.includes('Hello there.'));
+      expect(asked).toContain('○ hi');
+      expect(asked?.indexOf('hi')).toBe(answered?.indexOf('Hello there.'));
     } finally {
       app.unmount();
     }
@@ -353,7 +356,7 @@ describe('terminal UI', () => {
       await h.runtime.conversation.send('hi');
       await waitFor(() => app.lastFrame(), 'Hello there.');
 
-      // The user's line has no gutter, so its text sits in the first column.
+      // The user's line sits one gutter in, like every other row.
       const lines = (app.lastFrame() ?? '').split('\n');
       const from = lines.findIndex((line) => line.includes('hi') && !line.includes('Hello'));
       const to = lines.findIndex((line) => line.includes('Hello there.'));
@@ -361,7 +364,7 @@ describe('terminal UI', () => {
       expect(to).toBeGreaterThan(from);
 
       // Down on the h of hi, across to past the end of the answer.
-      app.stdin.write(`\u001B[<0;1;${from + 1}M`); // press
+      app.stdin.write(`\u001B[<0;3;${from + 1}M`); // press
       app.stdin.write(`\u001B[<32;15;${to + 1}M`); // drag
       // The crossed cells wear the selection wash while the button is down.
       await waitFor(() => app.lastFrame(), '48;2;38;79;120');

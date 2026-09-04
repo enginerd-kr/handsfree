@@ -84,9 +84,9 @@ export const PLAN_IDLE = '◇';
 
 export const GLYPH: Record<Marker, string> = {
   none: ' ',
-  // The user's line is marked by its wash now, not by a glyph — no gutter at
-  // all, so the text starts in the column the other rows' marks do.
-  prompt: '',
+  // The user's line wears the hollow dot the roster gives an idle agent, so
+  // its text starts in the column every other row's does.
+  prompt: DOT_IDLE,
   bullet: DOT,
   thought: '✻',
   result: '⎿',
