@@ -433,6 +433,21 @@ export function orchestrationModel(config: Config): string | undefined {
 }
 
 /**
+ * The planner as a line names it, spelled the way the mention that moves it
+ * is: `claude:haiku` for an agent over ACP — the agent alone when it plans on
+ * its own default — and the model id alone for a local endpoint, which has no
+ * agent to name. Read off the config at the moment it is needed, because that
+ * is where `@orchestrator:agent:model` writes what it moved.
+ */
+export function plannerLabel(config: Config): string {
+  const { orchestration } = config;
+  if (orchestration.provider !== 'acp') return orchestration.local.model;
+  const agent = orchestration.acp.agent;
+  const on = orchestrationModel(config);
+  return on ? `${agent}:${on}` : agent;
+}
+
+/**
  * The one line the planner is told about an agent: the role a config file wrote
  * for it, and failing that the launch profile's own note. Empty means nobody
  * said, and the caller decides what an undescribed agent is called.

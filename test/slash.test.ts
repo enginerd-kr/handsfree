@@ -264,4 +264,35 @@ describe('/cost', () => {
     expect(lines).toMatch(/tasks: {3}1, briefs [\d,]+ chars sent/);
     expect(lines).toMatch(/agents said [\d,]+ chars; the planner was handed [\d,]+ \(\d+%\)/);
   });
+
+  it('lists each agent at what its turns cost, as its CLI counted them', async () => {
+    const claude = fakeAgent({
+      script: () => [
+        { do: 'say', text: 'hi' },
+        {
+          do: 'stop',
+          reason: 'end_turn',
+          usage: { inputTokens: 2, outputTokens: 61, totalTokens: 19_865, cachedReadTokens: 10_123, cachedWriteTokens: 9_679 },
+        },
+      ],
+    });
+    const gemini = fakeAgent({ script: () => [{ do: 'say', text: 'hi' }] });
+    const h = harness({ agents: { claude, gemini }, llm: scriptedModel([]) });
+    open = h;
+    h.runtime.transcript.append({
+      type: 'session_update',
+      agentId: 'claude',
+      sessionId: 's',
+      update: { sessionUpdate: 'usage_update', used: 19_865, size: 1_000_000 },
+    });
+
+    await h.runtime.conversation.send('@claude say hi');
+    await h.runtime.conversation.send('@gemini say hi');
+    await h.runtime.conversation.send('/cost');
+
+    const lines = notes(h).at(-1)?.lines ?? [];
+    expect(lines).toContain('claude:  1 turn, 19,865 tokens (2 in + 61 out + 19,802 cached)');
+    expect(lines).toContain('         context 19,865 of 1,000,000 (2%)');
+    expect(lines).toContain('gemini:  1 turn, tokens not counted by the agent');
+  });
 });

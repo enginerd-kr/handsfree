@@ -14,8 +14,9 @@ import {
   type ViewItem,
   sessionsOf,
 } from '../view-model.js';
+import { shortTokens, spendOf, type RunSpend, type Spend } from '../../orchestrator/usage.js';
 import type { ModelChoice } from '../../host/models.js';
-import { agentRole, orchestrationModel, type Config } from '../../config/schema.js';
+import { agentRole, plannerLabel, type Config } from '../../config/schema.js';
 import {
   findCommand,
   parseSlashCommand,
@@ -362,6 +363,8 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   const [signedOff, setSignedOff] = useState(false);
   /** Which agents came back on a session from a previous process, for the header. */
   const [sessions, setSessions] = useState<Record<string, 'new' | 'resumed'>>({});
+  /** What the run has spent so far, by the orchestrator and by each agent, for the roll call. */
+  const [spend, setSpend] = useState<RunSpend>(() => spendOf([]));
   const ran = useRef(false);
   useEffect(() => {
     if (busy) {
@@ -417,6 +420,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       setWorking(workingAgents(records));
       setPhase(turnPhase(records));
       setSessions(sessionsOf(records));
+      setSpend(spendOf(records));
     };
     render();
     runtime.transcript.on('record', render);
@@ -521,7 +525,9 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   // a short terminal that is nothing at all: losing the menu is much the
   // cheaper of the two ways a fixed frame can fail.
   const budgeted = (offered: MenuItem[]): MenuItem[] =>
-    offered.length === 0 ? offered : offered.slice(0, menuFit(offered[0]!.kind, rows));
+    offered.length === 0
+      ? offered
+      : offered.slice(0, menuFit(offered[0]!.kind, rows - (spend.models.length > 0 ? 1 : 0)));
   // Who a mention can name. The roster is fixed for the life of the run, so
   // reading it once is enough.
   const agents = useMemo(() => runtime.pool.available(), [runtime]);
@@ -620,7 +626,8 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   }, [ask, dismissed, draft, agents, menu, modelRoster, runtime]);
   // The menu's own rows — or the one line standing in for them — plus the blank
   // line that keeps either off the transcript.
-  const promptRows = PROMPT_ROWS + (menu.length > 0 ? menu.length + 1 : modelNote ? 2 : 0);
+  const promptRows =
+    PROMPT_ROWS + (menu.length > 0 ? menu.length + 1 : modelNote ? 2 : 0) + (spend.models.length > 0 ? 1 : 0);
   // An agent's own words arrive as markdown, so they are drawn as markdown.
   // This sits above the windowing rather than inside `Entry` because the rows a
   // block occupies are what the viewport below and every click are measured
@@ -1171,6 +1178,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
           draft={draft}
           agents={agents}
           status={status}
+          spend={spend.models}
           startedAt={startedAt}
           queued={queued.length}
           allOpen={allOpen}
@@ -1762,7 +1770,9 @@ function openings(runtime: Runtime, agents: readonly string[]): readonly Opening
  *
  * Kept to exactly PROMPT_ROWS rows: the status line above the top rule holds
  * its row whether or not a turn is running, so the transcript above never
- * reflows the moment one starts.
+ * reflows the moment one starts. The one row that comes and goes is the
+ * spend line above the roll call, and it comes once for the run — the first
+ * call that costs anything — and then stays.
  *
  * The hint line is also where the transcript says it has stopped following the
  * end — scrolled up, what arrives next lands off screen, and only this says so
@@ -1780,6 +1790,7 @@ function Prompt({
   draft,
   agents,
   status,
+  spend,
   startedAt,
   queued,
   allOpen,
@@ -1790,6 +1801,8 @@ function Prompt({
   draft: Draft;
   agents: readonly string[];
   status: readonly AgentStatusEntry[];
+  /** What each model has spent over the run, in the order they were first used. */
+  spend: RunSpend['models'];
   startedAt: number | undefined;
   queued: number;
   allOpen: boolean;
@@ -1804,6 +1817,11 @@ function Prompt({
   const busy = startedAt !== undefined;
   return (
     <Box flexDirection="column" flexShrink={0}>
+      {spend.length > 0 ? (
+        <Box height={1} paddingLeft={2} paddingRight={1} justifyContent="flex-end">
+          <SpendLine spend={spend} />
+        </Box>
+      ) : null}
       <Box height={1} paddingLeft={2} paddingRight={1} justifyContent="space-between" gap={2}>
         <Box>{busy ? <Working startedAt={startedAt} queued={queued} /> : null}</Box>
         <AgentStatus status={status} />
@@ -1871,19 +1889,14 @@ interface AgentStatusEntry {
 
 /**
  * The orchestration model as the roll tells it: which agent is planning and on
- * what, spelled the way the mention that moves it is — `claude:haiku`. A local
- * endpoint has no agent to name, so it is the model id alone. Read off the
- * config every render rather than remembered, because that is where
- * `@orchestrator:agent:model` writes what it moved.
+ * what, spelled as `plannerLabel` spells it. Read off the config every render
+ * rather than remembered, because that is where `@orchestrator:agent:model`
+ * writes what it moved.
  */
 function plannerStatus(config: Config, busy: boolean): AgentStatusEntry {
   const { orchestration } = config;
-  if (orchestration.provider !== 'acp') {
-    return { id: ORCHESTRATOR, label: orchestration.local.model, busy, planner: true };
-  }
-  const agent = orchestration.acp.agent;
-  const on = orchestrationModel(config);
-  return { id: agent, label: on ? `${agent}:${on}` : agent, busy, planner: true };
+  const id = orchestration.provider === 'acp' ? orchestration.acp.agent : ORCHESTRATOR;
+  return { id, label: plannerLabel(config), busy, planner: true };
 }
 
 /**
@@ -1911,6 +1924,28 @@ function AgentStatus({ status }: { status: readonly AgentStatusEntry[] }): React
                 : DOT_IDLE}
           </Text>
           <Text color={agent.busy ? INK : INK_FAINT}>{` ${agent.label}`}</Text>
+        </Text>
+      ))}
+    </Text>
+  );
+}
+
+/**
+ * What the run has spent, by the model that spent it, on a line of its own
+ * above the roll call: `gemini:gemini-3.1-flash-lite ≈28k · claude-fable-5-1 21k`.
+ * Apart from the roll on purpose — the roll names the model each agent is on
+ * now, and a person moves that mid-run, while a figure belongs to the model
+ * that earned it. Ordered as the models were first used, so a model moved to
+ * joins at the end and the ones before it keep their place.
+ */
+function SpendLine({ spend }: { spend: RunSpend['models'] }): React.JSX.Element {
+  return (
+    <Text wrap="truncate-start">
+      {spend.map(({ label, spend: figure }, index) => (
+        <Text key={label}>
+          {index > 0 ? <Text color={INK_FAINT}>{' · '}</Text> : null}
+          <Text color={INK_FAINT}>{label}</Text>
+          <Text color={INK}>{tokensLine(figure)}</Text>
         </Text>
       ))}
     </Text>
@@ -2343,6 +2378,17 @@ function said(value: InputValue | undefined): string {
  */
 function resumedLine(resumed: string[]): string {
   return resumed.length === 0 ? '' : ` · resumed ${resumed.join(', ')}`;
+}
+
+/**
+ * What one model has spent over the run, set after its name on the spend
+ * line: ` 21k`. Nothing spent, or nothing counted, is nothing said — a zero
+ * would read as a claim. A `≈` marks a figure that is handsfree's own count
+ * of characters rather than the endpoint's.
+ */
+function tokensLine(spend: Spend | undefined): string {
+  if (!spend || spend.tokens === 0) return '';
+  return ` ${spend.estimated ? '≈' : ''}${shortTokens(spend.tokens)}`;
 }
 
 function tildify(dir: string): string {

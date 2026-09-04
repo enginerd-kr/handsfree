@@ -735,6 +735,66 @@ describe('terminal UI', () => {
     }
   });
 
+  it('keeps the spend by model on a line of its own above the roll call', async () => {
+    const h = harness({
+      agents: {
+        claude: fakeAgent({ models: ['opus', 'haiku'], script: () => [] }),
+        gemini: fakeAgent({ script: () => [] }),
+      },
+      llm: scriptedModel([]),
+    });
+    open = h;
+    const { transcript } = h.runtime;
+    // A planning call the endpoint counted, and one it did not.
+    transcript.append({ type: 'usage', purpose: 'plan', model: 'google/gemma-3-12b', promptChars: 4_000, replyChars: 400, promptTokens: 900, completionTokens: 100 });
+    transcript.append({ type: 'usage', purpose: 'plan', model: 'google/gemma-3-12b', promptChars: 4_000, replyChars: 400 });
+    // Two tasks of claude's, on two models: the session was moved between them.
+    for (const [taskId, model, tokens] of [[1, 'opus', 12_300], [2, 'haiku', 1_500]] as const) {
+      transcript.append({ type: 'delegation', taskId, agentId: 'claude', sessionId: 's', task: 'go' });
+      transcript.append({
+        type: 'stop',
+        taskId,
+        agentId: 'claude',
+        sessionId: 's',
+        stopReason: 'end_turn',
+        usage: { inputTokens: tokens - 300, outputTokens: 300, totalTokens: tokens },
+        model,
+      });
+    }
+
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      // Each model at what it earned, in the order they were first used; the
+      // planner's figure is part measured, so it wears the estimate's mark.
+      const frame = await waitFor(() => app.lastFrame(), 'google/gemma-3-12b ≈2.1k · opus 12k · haiku 1.5k');
+      // The roll call stays names and dots: the model it shows is the one
+      // claude is on now, which is not the one most of the spend went to.
+      expect(frame).toContain(`${PLAN_IDLE} google/gemma-3-12b · ${DOT_IDLE} opus · ${DOT_IDLE} gemini`);
+      // And the header roster stays names only.
+      expect(frame).toContain('google/gemma-3-12b · claude, gemini\n');
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('gives the spend line no row until something has been spent', async () => {
+    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) }, llm: scriptedModel([]) });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      const frame = await waitFor(() => app.lastFrame(), `${DOT_IDLE} claude`);
+      const lines = frame.split('\n');
+      const roll = lines.findIndex((line) => line.includes(`${DOT_IDLE} claude`));
+      // The row above the roll call is the transcript's, and it is blank.
+      expect(lines[roll - 1]?.trim()).toBe('');
+      // The roll call is the fifth row from the bottom, as it has always been.
+      expect(lines.length - roll).toBe(5);
+    } finally {
+      app.unmount();
+    }
+  });
+
   it('holds a whole roster at once, however long it is', async () => {
     // The roster gemini actually advertises, to the row: a list cut short is
     // one you cannot be sure you have read.

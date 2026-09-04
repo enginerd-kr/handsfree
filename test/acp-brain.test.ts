@@ -54,6 +54,39 @@ describe('acp orchestration', () => {
     }
   });
 
+  it('writes the planning turn down at the count the agent gave', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'handsfree-acp-brain-'));
+    const brain = fakeAgent({
+      script: () => [
+        { do: 'say', text: JSON.stringify({ action: 'answer', message: 'Counted.' }) },
+        {
+          do: 'stop',
+          reason: 'end_turn',
+          // Claude's shape: what was read from cache is counted apart.
+          usage: { inputTokens: 500, outputTokens: 40, cachedReadTokens: 2_000, totalTokens: 2_540 },
+        },
+      ],
+    });
+    const config = ConfigSchema.parse({
+      workspaceRoot: root,
+      orchestration: { provider: 'acp', acp: { agent: 'claude', timeoutMs: 5_000 } },
+      agents: { claude: { command: 'unused', args: [] } },
+      limits: { turnTimeoutMs: 5_000, idleTimeoutMs: 5_000, cancelGraceMs: 500 },
+    });
+    const runtime = createRuntime({ config, createTarget: () => brain.target() });
+
+    try {
+      await runtime.conversation.send('hello');
+
+      const usage = runtime.transcript.all().find((record) => record.type === 'usage');
+      // The cached read was still read, so it sits on the prompt side.
+      expect(usage).toMatchObject({ purpose: 'plan', promptTokens: 2_500, completionTokens: 40 });
+    } finally {
+      await runtime.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('opens a fresh session for every reply', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'handsfree-acp-brain-'));
     const brain = fakeAgent({

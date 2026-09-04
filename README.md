@@ -59,7 +59,9 @@ You can also explicitly address an agent using `@`, and optionally specify a tar
 > @codex:gpt-4o write a test first
 ```
 
-Lines starting with `/` are interpreted as commands. `/agents` lists the active roster, `/cost` shows what the run has spent on planning and how much of the agents' replies reached the planner, `/help` displays all available commands, and you can extend this by adding custom markdown-defined commands in `.handsfree/commands/*.md` within your project directory.
+Lines starting with `/` are interpreted as commands. `/agents` lists the active roster, `/cost` shows what the run has spent in tokens — on planning, and on each agent's turns as its CLI counted them — and how much of the agents' replies reached the planner, `/help` displays all available commands, and you can extend this by adding custom markdown-defined commands in `.handsfree/commands/*.md` within your project directory.
+
+Above the roll call, a line of its own keeps a running count by model, in the order they were first used: `gemini:gemini-3.1-flash-lite 3.2k · claude-fable-5-1 12k · gpt-5.6 4.1k`. It is by model rather than by agent because the roll call shows the model each agent is on *now*, and you move that mid-run with `@agent:model` — a figure stays with the model that earned it. In the conversation, each task closes on what it cost and each of handsfree's own replies on what the orchestrator's calls cost. The figures are the agents' own — claude and codex count in the prompt response, gemini in its `_meta.quota` — and a `≈` marks an orchestrator figure handsfree had to estimate from characters because its endpoint gave none.
 
 The directory where you launch `handsfree` serves as the workspace—the single, sandboxed directory where all agents read and write.
 

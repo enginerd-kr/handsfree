@@ -70,12 +70,24 @@ export class AcpModel implements ChatClient {
 
     let stopReason;
     try {
-      stopReason = await session.prompt(render(messages, options.schema), {
+      const end = await session.prompt(render(messages, options.schema), {
         turnTimeoutMs: this.options.timeoutMs,
         idleTimeoutMs: this.options.timeoutMs,
         cancelGraceMs: this.options.cancelGraceMs,
         signal: options.signal,
       });
+      stopReason = end.stopReason;
+      // The agent's own count of the planning turn, in the shape every other
+      // endpoint's arrives in. What was read from cache was still read, so it
+      // goes on the prompt side: the figure is what the turn took, not what
+      // it was billed.
+      if (end.usage) {
+        const { inputTokens, outputTokens, cachedReadTokens = 0, cachedWriteTokens = 0 } = end.usage;
+        options.onUsage?.({
+          promptTokens: inputTokens + cachedReadTokens + cachedWriteTokens,
+          completionTokens: outputTokens,
+        });
+      }
     } catch (err) {
       if (err instanceof SessionUnresponsiveError) await this.discard(connection);
       throw err;

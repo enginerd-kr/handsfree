@@ -1,5 +1,5 @@
 import type { StopReason } from '@agentclientprotocol/sdk';
-import { agentRole, contextBudgetTokens, type Config } from '../config/schema.js';
+import { agentRole, contextBudgetTokens, plannerLabel, type Config } from '../config/schema.js';
 import {
   estimateTokens,
   fitBudget,
@@ -18,7 +18,7 @@ import {
   type AnswerStream,
 } from '../brain/plan.js';
 import { debug } from '../debug.js';
-import { SessionUnresponsiveError } from '../host/session.js';
+import { SessionUnresponsiveError, type TurnUsage } from '../host/session.js';
 import type { ModelChoice } from '../host/models.js';
 import { type AgentPool, AgentStartError } from '../host/pool.js';
 import type { Transcript } from '../workspace/transcript.js';
@@ -393,7 +393,7 @@ export class Conversation {
             }
           : outcomes.length > 0 || notes.length > 0
             ? await narrate(
-                this.deps.llm && metered(this.deps.llm, 'narrate', transcript),
+                this.deps.llm && metered(this.deps.llm, 'narrate', transcript, plannerLabel(config)),
                 { userMessage: prompt, outcomes, notes, workspaceDir: workspace.dir },
                 turn.signal,
                 (piece) => stream.delta(piece),
@@ -506,7 +506,7 @@ export class Conversation {
       return { ok: false as const, error: 'no orchestration model is configured' };
     }
     try {
-      const llm = metered(this.deps.llm, 'plan', this.deps.transcript);
+      const llm = metered(this.deps.llm, 'plan', this.deps.transcript, plannerLabel(this.deps.config));
       // Cut to the budget on the way out, not in place: the history keeps
       // every message a turn adds, and what is dropped is the oldest of it.
       const budget = contextBudgetTokens(this.deps.config.orchestration);
@@ -629,13 +629,16 @@ export class Conversation {
     debug('brief', `task ${taskId} to ${agentId}, ${brief.length} chars:\n${brief}`);
 
     let stopReason: StopReason | 'unresponsive';
+    let usage: TurnUsage | undefined;
     try {
-      stopReason = await session.prompt(brief, {
+      const end = await session.prompt(brief, {
         turnTimeoutMs: config.limits.turnTimeoutMs,
         idleTimeoutMs: config.limits.idleTimeoutMs,
         cancelGraceMs: config.limits.cancelGraceMs,
         signal,
       });
+      stopReason = end.stopReason;
+      usage = end.usage;
     } catch (err) {
       stopReason = 'unresponsive';
       transcript.append({
@@ -656,6 +659,8 @@ export class Conversation {
       agentId,
       sessionId: session.sessionId,
       stopReason: stopReason === 'unresponsive' ? 'cancelled' : stopReason,
+      ...(usage === undefined ? {} : { usage }),
+      ...(session.currentModel() === undefined ? {} : { model: session.currentModel() }),
     });
     if (epoch === this.epoch) {
       this.briefed.set(agentId, {

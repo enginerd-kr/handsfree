@@ -9,6 +9,7 @@ import type {
   ToolCallStatus,
 } from '@agentclientprotocol/sdk';
 import { stripReport } from '../orchestrator/report.js';
+import { shortTokens, tokensOf } from '../orchestrator/usage.js';
 import type { TranscriptRecord } from '../workspace/transcript.js';
 
 export type Tone = 'normal' | 'muted' | 'good' | 'bad' | 'warn' | 'accent' | 'brand';
@@ -148,6 +149,18 @@ export function buildView(
   const answers = new Map<number, string>();
   // The tasks whose answer is on screen, so the ledger has nothing to add.
   const answered = new Set<string>();
+  // What the orchestrator's calls have cost since its last reply, so the
+  // reply can close on the figure the way a task's closing line does.
+  let planned = { tokens: 0, estimated: false };
+  const spent = (item: ViewItem) => {
+    if (planned.tokens > 0) {
+      item.lines.push({
+        text: `${planned.estimated ? '≈' : ''}${shortTokens(planned.tokens)} tokens`,
+        tone: 'muted',
+      });
+    }
+    planned = { tokens: 0, estimated: false };
+  };
 
   /** Whether a task's rows are shown in full: nothing folded, nothing capped. */
   const unfolded = (taskId: number): boolean =>
@@ -187,6 +200,9 @@ export function buildView(
       case 'user':
         closeBlocks();
         closeTool();
+        // A turn that never got to reply leaves its spend unaccounted rather
+        // than hung on the next turn's answer.
+        planned = { tokens: 0, estimated: false };
         lastUser = record.text;
         add(row(`u${record.seq}`, 'user', 0, 'prompt', 'muted', record.text, 'normal', true));
         break;
@@ -208,6 +224,7 @@ export function buildView(
           if (!record.ledger) break;
         } else if (streamed) {
           streamed.text = record.text;
+          spent(streamed);
           break;
         }
         // A retraction whose block is already gone has nothing left to say.
@@ -216,20 +233,24 @@ export function buildView(
           // Not handsfree's words but the agents': the ledger is each task's
           // head and the agent's own summary, so the row wears the agent's
           // colour, and its name once, in the label rather than in every head.
+          let last: ViewItem | undefined;
           for (const entry of ledgerEntries(record.text)) {
             // The answer is on screen already; a head over it says less.
             if (answered.has(entry.taskId)) continue;
-            const item = add(
+            last = add(
               proseRow(`a${record.seq}-${entry.taskId}`, 'handsfree', 0, 'bullet', 'brand', entry.text, 'normal', true),
             );
             if (entry.agentId) {
-              item.agentId = entry.agentId;
-              item.label = entry.agentId;
+              last.agentId = entry.agentId;
+              last.label = entry.agentId;
             }
           }
+          // The planner may have spent something before the ledger stood in
+          // for it, and that goes under the ledger's last line.
+          if (last) spent(last);
           break;
         }
-        add(proseRow(`a${record.seq}`, 'handsfree', 0, 'bullet', 'brand', record.text, 'normal', true));
+        spent(add(proseRow(`a${record.seq}`, 'handsfree', 0, 'bullet', 'brand', record.text, 'normal', true)));
         break;
       }
 
@@ -351,7 +372,13 @@ export function buildView(
             0,
             'result',
             'muted',
-            stopText(record.stopReason, taskTools, took, hidden > 0 ? options.expandHint : undefined),
+            stopText(
+              record.stopReason,
+              taskTools,
+              took,
+              record.usage ? tokensOf(record.usage) : 0,
+              hidden > 0 ? options.expandHint : undefined,
+            ),
             record.stopReason === 'end_turn' ? 'muted' : 'warn',
             false,
           ),
@@ -391,6 +418,18 @@ export function buildView(
 
       case 'agent_stderr':
         break; // Kept in the file, not shown: adapters are chatty on stderr.
+
+      // The orchestrator's own calls, added up for the reply that closes them.
+      // A task's usage record is about characters relayed, not tokens spent.
+      case 'usage':
+        if (record.purpose === 'task') break;
+        if (record.promptTokens !== undefined) {
+          planned.tokens += record.promptTokens + (record.completionTokens ?? 0);
+        } else {
+          planned.tokens += Math.ceil(record.promptChars / 4) + Math.ceil(record.replyChars / 4);
+          planned.estimated = true;
+        }
+        break;
 
       case 'session_update': {
         const update = record.update;
@@ -597,15 +636,22 @@ function statusTone(status: ToolCallStatus): Tone {
   }
 }
 
+/**
+ * The closing line's account of the task: what it took in tool calls, in
+ * seconds, and in tokens where the agent counted them — a turn nobody
+ * counted says nothing about tokens rather than a zero that would be false.
+ */
 function stopText(
   reason: StopReason,
   toolCount: number,
   seconds: number,
+  tokens: number,
   expandHint: string | undefined,
 ): string {
   const cost = [
     toolCount > 0 ? `${toolCount} tool ${toolCount === 1 ? 'call' : 'calls'}` : undefined,
     seconds > 0 ? `${seconds}s` : undefined,
+    tokens > 0 ? `${shortTokens(tokens)} tokens` : undefined,
     expandHint,
   ].filter(Boolean);
   const suffix = cost.length > 0 ? ` (${cost.join(' · ')})` : '';
@@ -852,7 +898,9 @@ export function describeRecord(record: TranscriptRecord, workspaceDir: string): 
     case 'decision':
       return `  ${record.entry.verdict === 'allow' ? '+' : '-'} ${record.entry.summary}`;
     case 'stop':
-      return `← ${record.agentId} (${record.stopReason})`;
+      return `← ${record.agentId} (${record.stopReason}${
+        record.usage ? `, ${shortTokens(tokensOf(record.usage))} tokens` : ''
+      })`;
     case 'session':
       // A fresh session is the ordinary case and says nothing; a resumed one
       // is worth a line, since the agent remembers things this run did not do.

@@ -1,5 +1,6 @@
 import os from 'node:os';
 import { agentRole, orchestrationModel } from '../config/schema.js';
+import { spendOf } from '../orchestrator/usage.js';
 import { commandSearchPaths } from './files.js';
 import type { Command, CommandHost } from './command.js';
 
@@ -52,7 +53,7 @@ export function builtins(): Command[] {
     {
       kind: 'local',
       name: 'cost',
-      description: 'what this run has spent on planning, and how much of what the agents said reached the planner',
+      description: 'what this run has spent, in tokens, on planning and on each agent',
       source: 'builtin',
       run: (_args, host) => ({ do: 'say', text: 'cost', lines: cost(host) }),
     },
@@ -60,10 +61,12 @@ export function builtins(): Command[] {
 }
 
 /**
- * The run's spend, added up from the usage records. Characters are always
- * there; tokens only where the endpoint counted them. The last line is the
- * one the report contract is judged by: of everything the agents said, how
- * much the planner was made to read.
+ * The run's spend, added up from the record. The planner's characters are
+ * always there; tokens only where the endpoint counted them. Each agent
+ * follows with what its turns took, as its CLI counted them, and how full its
+ * context is where it says. The last lines are the ones the report contract
+ * is judged by: of everything the agents said, how much the planner was made
+ * to read.
  */
 function cost(host: CommandHost): string[] {
   const usage = host.transcript
@@ -85,6 +88,29 @@ function cost(host: CommandHost): string[] {
       `         endpoint counted ${figure(sum(counted, (r) => r.promptTokens))} in + ` +
         `${figure(sum(counted, (r) => r.completionTokens))} out tokens over ${counted.length} of them`,
     );
+  }
+  const spend = spendOf(host.transcript.all());
+  const width = Math.max(...Object.keys(spend.agents).map((id) => id.length), 'planner'.length) + 1;
+  for (const [agentId, agent] of Object.entries(spend.agents)) {
+    const head = `${agentId}:`.padEnd(width + 1);
+    const turns = `${agent.turns} turn${agent.turns === 1 ? '' : 's'}`;
+    if (agent.counted === 0) {
+      lines.push(`${head}${turns}, tokens not counted by the agent`);
+    } else {
+      const parts = [`${figure(agent.inputTokens)} in`, `${figure(agent.outputTokens)} out`];
+      if (agent.cachedTokens > 0) parts.push(`${figure(agent.cachedTokens)} cached`);
+      const uncounted = agent.turns - agent.counted;
+      lines.push(
+        `${head}${turns}, ${figure(agent.tokens)} tokens (${parts.join(' + ')})` +
+          (uncounted > 0 ? `; ${uncounted} not counted` : ''),
+      );
+    }
+    if (agent.context && agent.context.size > 0) {
+      const percent = Math.round((agent.context.used / agent.context.size) * 100);
+      lines.push(
+        `${' '.repeat(width + 1)}context ${figure(agent.context.used)} of ${figure(agent.context.size)} (${percent}%)`,
+      );
+    }
   }
   if (tasks.length > 0) {
     const said = sum(tasks, (r) => r.replyChars);

@@ -23,7 +23,7 @@ async function runTurn(
   workspaceDir = h.workspaceDir;
 
   const session = await h.runtime.pool.session('claude');
-  const stopReason = await session.prompt('go', {
+  const { stopReason } = await session.prompt('go', {
     turnTimeoutMs: 5_000,
     idleTimeoutMs: 5_000,
     cancelGraceMs: 500,
@@ -304,7 +304,7 @@ describe('turn lifecycle', () => {
     open = h;
 
     const session = await h.runtime.pool.session('claude');
-    const stopReason = await session.prompt('go', {
+    const { stopReason } = await session.prompt('go', {
       turnTimeoutMs: 10_000,
       idleTimeoutMs: 150,
       cancelGraceMs: 1_000,
@@ -320,7 +320,7 @@ describe('turn lifecycle', () => {
     const session = await h.runtime.pool.session('claude');
     const controller = new AbortController();
     setTimeout(() => controller.abort(), 50);
-    const stopReason = await session.prompt('go', {
+    const { stopReason } = await session.prompt('go', {
       turnTimeoutMs: 10_000,
       idleTimeoutMs: 10_000,
       cancelGraceMs: 1_000,
@@ -341,7 +341,7 @@ describe('turn lifecycle', () => {
     const controller = new AbortController();
     controller.abort();
     const startedAt = Date.now();
-    const stopReason = await session.prompt('go', {
+    const { stopReason } = await session.prompt('go', {
       turnTimeoutMs: 10_000,
       idleTimeoutMs: 10_000,
       cancelGraceMs: 1_000,
@@ -392,6 +392,60 @@ describe('turn lifecycle', () => {
       .filter((record) => record.type === 'session_update')
       .map((record) => (record.type === 'session_update' ? record.update.sessionUpdate : ''));
     expect(updates).toEqual(['agent_message_chunk', 'tool_call', 'agent_message_chunk']);
+  });
+
+  it('reads what the turn cost off the prompt response, as claude and codex send it', async () => {
+    const agent = fakeAgent({
+      script: () => [
+        { do: 'say', text: 'ok' },
+        {
+          do: 'stop',
+          reason: 'end_turn',
+          usage: { inputTokens: 1_000, outputTokens: 200, cachedReadTokens: 3_000, totalTokens: 4_200 },
+        },
+      ],
+    });
+    const h = harness({ agents: { claude: agent } });
+    open = h;
+
+    const session = await h.runtime.pool.session('claude');
+    const end = await session.prompt('go', { turnTimeoutMs: 5_000, idleTimeoutMs: 5_000, cancelGraceMs: 500 });
+    expect(end).toEqual({
+      stopReason: 'end_turn',
+      usage: { inputTokens: 1_000, outputTokens: 200, cachedReadTokens: 3_000, totalTokens: 4_200 },
+    });
+  });
+
+  it('reads the count gemini keeps under _meta.quota instead', async () => {
+    const agent = fakeAgent({
+      script: () => [
+        { do: 'say', text: 'ok' },
+        {
+          do: 'stop',
+          reason: 'end_turn',
+          meta: { quota: { token_count: { input_tokens: 800, output_tokens: 50 }, model_usage: [] } },
+        },
+      ],
+    });
+    const h = harness({ agents: { gemini: agent } });
+    open = h;
+
+    const session = await h.runtime.pool.session('gemini');
+    const end = await session.prompt('go', { turnTimeoutMs: 5_000, idleTimeoutMs: 5_000, cancelGraceMs: 500 });
+    expect(end).toEqual({
+      stopReason: 'end_turn',
+      usage: { inputTokens: 800, outputTokens: 50, totalTokens: 850 },
+    });
+  });
+
+  it('says nothing about tokens for an agent that counted none', async () => {
+    const agent = fakeAgent({ script: () => [{ do: 'say', text: 'ok' }] });
+    const h = harness({ agents: { claude: agent } });
+    open = h;
+
+    const session = await h.runtime.pool.session('claude');
+    const end = await session.prompt('go', { turnTimeoutMs: 5_000, idleTimeoutMs: 5_000, cancelGraceMs: 500 });
+    expect(end).toEqual({ stopReason: 'end_turn' });
   });
 });
 

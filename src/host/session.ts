@@ -85,6 +85,58 @@ function flatten(options: SessionConfigSelectOptions): ModelChoice[] {
   return choices;
 }
 
+/**
+ * What one turn cost, as the agent counted it. `inputTokens` is what was read
+ * fresh; a cached read or write is counted apart, the way the agents report
+ * it, and `totalTokens` is the agent's own sum where it gave one.
+ */
+export interface TurnUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens?: number;
+  cachedReadTokens?: number;
+  cachedWriteTokens?: number;
+  thoughtTokens?: number;
+}
+
+/** How a turn ended, and what it cost where the agent said. */
+export interface TurnEnd {
+  stopReason: StopReason;
+  usage?: TurnUsage;
+}
+
+/** The token count gemini sends in place of the spec'd `usage` field. */
+interface QuotaMeta {
+  quota?: { token_count?: { input_tokens?: number; output_tokens?: number } | null } | null;
+}
+
+/**
+ * The turn's token count, read off the prompt response in whichever spelling
+ * the agent used. The spec's `usage` field is still marked unstable, and
+ * claude-agent-acp and codex-acp fill it; gemini-cli does not, and puts the
+ * same two figures under `_meta.quota.token_count` instead. An agent that
+ * sent neither cost something too, but nobody here knows how much.
+ */
+export function usageOf(response: PromptResponse): TurnUsage | undefined {
+  const usage = response.usage;
+  if (usage) {
+    return {
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      totalTokens: usage.totalTokens,
+      ...(usage.cachedReadTokens == null ? {} : { cachedReadTokens: usage.cachedReadTokens }),
+      ...(usage.cachedWriteTokens == null ? {} : { cachedWriteTokens: usage.cachedWriteTokens }),
+      ...(usage.thoughtTokens == null ? {} : { thoughtTokens: usage.thoughtTokens }),
+    };
+  }
+  const count = (response._meta as QuotaMeta | null | undefined)?.quota?.token_count;
+  if (!count) return undefined;
+  const inputTokens = count.input_tokens ?? 0;
+  const outputTokens = count.output_tokens ?? 0;
+  if (inputTokens === 0 && outputTokens === 0) return undefined;
+  return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens };
+}
+
 export interface PromptOptions {
   /** Wall clock for the whole turn. */
   turnTimeoutMs: number;
@@ -226,7 +278,7 @@ export class HostSession {
   async prompt(
     prompt: string | ContentBlock[],
     options: PromptOptions,
-  ): Promise<StopReason> {
+  ): Promise<TurnEnd> {
     if (this.busy) throw new Error(`session ${this.sessionId} is already running a turn`);
     this.busy = true;
 
@@ -236,12 +288,13 @@ export class HostSession {
     this.turn = turn;
     this.lastUpdateAt = Date.now();
 
-    const stopReason = async () => {
+    const ended = async (): Promise<TurnEnd> => {
       const response = await this.transport.prompt(
         { sessionId: this.sessionId, prompt: blocks },
         turn.signal,
       );
-      return response.stopReason;
+      const usage = usageOf(response);
+      return usage ? { stopReason: response.stopReason, usage } : { stopReason: response.stopReason };
     };
 
     // A signal that fired before we got here — Esc pressed while the process
@@ -278,12 +331,12 @@ export class HostSession {
     );
 
     try {
-      const pending = stopReason();
+      const pending = ended();
       const raced = await Promise.race([
-        pending.then((reason) => ({ done: true as const, reason })),
-        onAbort(turn.signal).then(() => ({ done: false as const, reason: undefined })),
+        pending.then((end) => ({ done: true as const, end })),
+        onAbort(turn.signal).then(() => ({ done: false as const, end: undefined })),
       ]);
-      if (raced.done) return raced.reason;
+      if (raced.done) return raced.end;
 
       // Cancellation is cooperative: tell the agent to stop, then give it a
       // bounded moment to close the turn properly. A turn that will not close is
@@ -294,7 +347,7 @@ export class HostSession {
       // looks hung.
       let grace: NodeJS.Timeout | undefined;
       const settled = await Promise.race([
-        pending.then((reason) => reason).catch(() => 'cancelled' as StopReason),
+        pending.catch((): TurnEnd => ({ stopReason: 'cancelled' })),
         new Promise<undefined>((resolve) => {
           grace = setTimeout(() => resolve(undefined), options.cancelGraceMs);
         }),

@@ -51,7 +51,7 @@ async function runTurn(
   workspaceDir = h.workspaceDir;
 
   const session = await h.runtime.pool.session('claude');
-  const stopReason = await session.prompt('go', {
+  const { stopReason } = await session.prompt('go', {
     turnTimeoutMs: h.runtime.config.limits.turnTimeoutMs,
     idleTimeoutMs: h.runtime.config.limits.idleTimeoutMs,
     cancelGraceMs: h.runtime.config.limits.cancelGraceMs,

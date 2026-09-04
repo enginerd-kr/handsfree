@@ -25,8 +25,9 @@ export interface ChatOptions {
   /**
    * Called once with the endpoint's own token count for the exchange, where it
    * gives one. Not every endpoint does — an agent driven over ACP reports
-   * nothing — so a caller that needs a number it can always have measures the
-   * prompt itself and treats this as the better figure when it arrives.
+   * one only where its CLI counts — so a caller that needs a number it can
+   * always have measures the prompt itself and treats this as the better
+   * figure when it arrives.
    */
   onUsage?: (usage: Usage) => void;
   /**

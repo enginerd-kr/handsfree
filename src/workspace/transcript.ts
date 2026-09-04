@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { EventEmitter } from 'node:events';
 import type { SessionUpdate, StopReason, ToolCallStatus, ToolKind } from '@agentclientprotocol/sdk';
 import type { AuditEntry } from '../policy/types.js';
+import type { TurnUsage } from '../host/session.js';
 
 export type TranscriptBody =
   | { type: 'user'; text: string }
@@ -58,7 +59,22 @@ export type TranscriptBody =
       model?: string;
     }
   | { type: 'session_update'; agentId: string; sessionId: string; update: SessionUpdate }
-  | { type: 'stop'; taskId: number; agentId: string; sessionId: string; stopReason: StopReason }
+  /**
+   * `usage` is what the turn cost as the agent counted it, where the agent
+   * counted at all: claude and codex do, in the prompt response; gemini in a
+   * corner of its own. Absent, the turn still cost something, and the record
+   * says only that nobody said how much.
+   */
+  | {
+      type: 'stop';
+      taskId: number;
+      agentId: string;
+      sessionId: string;
+      stopReason: StopReason;
+      usage?: TurnUsage;
+      /** The model the session was on when the turn ended, where the agent said. */
+      model?: string;
+    }
   | { type: 'decision'; agentId: string; entry: AuditEntry }
   /**
    * What one exchange cost. For the orchestration model (`plan`, `narrate`)
@@ -67,11 +83,15 @@ export type TranscriptBody =
    * the prompt is the brief the agent was sent, the reply is everything it said,
    * and `relayedChars` is how much of that the planner was then handed — the
    * gap between the last two is what the report contract saves. `/cost` adds
-   * these up; the file is where to read them one by one.
+   * these up; the file is where to read them one by one. `model` is the
+   * planner as the roll call spells it at the time of the call — the model
+   * behind it moves mid-run, and the spend has to stay with the one that
+   * spent it.
    */
   | {
       type: 'usage';
       purpose: 'plan' | 'narrate' | 'task';
+      model?: string;
       promptChars: number;
       replyChars: number;
       promptTokens?: number;

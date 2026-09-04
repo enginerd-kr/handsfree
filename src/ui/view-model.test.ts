@@ -296,6 +296,29 @@ describe('buildView', () => {
   });
 
   // Handsfree's own answer is the answer; there is nothing to unfold it from.
+  it('closes handsfree\'s own reply on what the orchestrator\'s calls cost', () => {
+    const t = transcript();
+    t.append({ type: 'user', text: 'make notes.txt' });
+    t.append({ type: 'usage', purpose: 'plan', promptChars: 4_000, replyChars: 100, promptTokens: 9_000, completionTokens: 40 });
+    t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'Create notes.txt' });
+    t.append({ type: 'stop', taskId: 1, agentId: 'claude', sessionId: 's', stopReason: 'end_turn' });
+    t.append({ type: 'usage', purpose: 'task', taskId: 1, promptChars: 900, replyChars: 0, relayedChars: 80 });
+    t.append({ type: 'usage', purpose: 'plan', promptChars: 5_000, replyChars: 200, promptTokens: 11_000, completionTokens: 60 });
+    t.append({ type: 'assistant', text: 'Created notes.txt for you.' });
+    t.append({ type: 'user', text: 'thanks' });
+    t.append({ type: 'usage', purpose: 'plan', promptChars: 4_000, replyChars: 40 });
+    t.append({ type: 'assistant', text: 'Any time.' });
+
+    const view = buildView(t.all(), WORKSPACE);
+    const replies = view.filter((item) => item.role === 'handsfree');
+    // Both calls of the first turn, and none of the task's own record; the
+    // second turn's endpoint counted nothing, so its figure is an estimate.
+    expect(replies.map((item) => [item.text, item.lines])).toEqual([
+      ['Created notes.txt for you.', [{ text: '20k tokens', tone: 'muted' }]],
+      ['Any time.', [{ text: '≈1k tokens', tone: 'muted' }]],
+    ]);
+  });
+
   it('never caps handsfree\'s own reply', () => {
     const t = transcript();
     const long = Array.from({ length: 30 }, (_, line) => `line ${line + 1}`).join('\n');
@@ -316,6 +339,30 @@ describe('buildView', () => {
 
     const view = buildView(t.all(), WORKSPACE);
     expect(view.map((item) => item.text)).toEqual(['context cleared']);
+  });
+
+  it('closes a task on what it cost in tokens, where the agent counted them', () => {
+    const t = transcript();
+    t.append({ type: 'user', text: '@claude say hi' });
+    t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'say hi' });
+    t.append({
+      type: 'session_update',
+      agentId: 'claude',
+      sessionId: 's',
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hi' } },
+    });
+    t.append({
+      type: 'stop',
+      taskId: 1,
+      agentId: 'claude',
+      sessionId: 's',
+      stopReason: 'end_turn',
+      usage: { inputTokens: 3_000, outputTokens: 100, cachedReadTokens: 1_050 },
+    });
+
+    const view = buildView(t.all(), WORKSPACE);
+    // The parts add up where the agent gave no total of its own.
+    expect(view.at(-1)?.text).toBe('Done (1s · 4.2k tokens)');
   });
 
   // Clearing is a thing done to the screen, not to the work: a task in flight

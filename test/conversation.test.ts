@@ -103,6 +103,48 @@ describe('Conversation', () => {
     expect(kinds).toContain('stop');
   });
 
+  it('writes what the task cost on its stop, as the agent counted it', async () => {
+    const agent = fakeAgent({
+      script: () => [
+        { do: 'say', text: 'Created notes.txt.' },
+        { do: 'stop', reason: 'end_turn', usage: { inputTokens: 900, outputTokens: 100, totalTokens: 1_000 } },
+      ],
+    });
+    const llm = scriptedModel([delegate('Create notes.txt'), answer('Done.')]);
+    const h = harness({ agents: { claude: agent }, llm });
+    open = h;
+
+    await h.runtime.conversation.send('make notes.txt');
+
+    const stop = h.runtime.transcript.all().find((record) => record.type === 'stop');
+    expect(stop).toMatchObject({
+      type: 'stop',
+      agentId: 'claude',
+      stopReason: 'end_turn',
+      usage: { inputTokens: 900, outputTokens: 100, totalTokens: 1_000 },
+    });
+    // The planner's calls are written down under the planner's own name.
+    const plans = h.runtime.transcript.all().filter((record) => record.type === 'usage' && record.purpose === 'plan');
+    expect(plans.length).toBeGreaterThan(0);
+    for (const plan of plans) expect(plan).toMatchObject({ model: 'google/gemma-3-12b' });
+    // The run's own output says so too, beside the stop reason.
+    expect(describeRecord(stop!, h.workspaceDir)).toBe('← claude (end_turn, 1k tokens)');
+  });
+
+  it('writes the model a task ran on at its stop, so the spend can follow the model', async () => {
+    const agent = fakeAgent({ models: ['opus', 'haiku'], script: () => [{ do: 'say', text: 'ok' }] });
+    const llm = scriptedModel([delegate('one'), answer('one done')]);
+    const h = harness({ agents: { claude: agent }, llm });
+    open = h;
+
+    await h.runtime.conversation.send('do one');
+    // A mention moves the session to haiku, and the stop says so.
+    await h.runtime.conversation.send('@claude:haiku do two');
+
+    const stops = h.runtime.transcript.all().filter((record) => record.type === 'stop');
+    expect(stops.map((stop) => (stop.type === 'stop' ? stop.model : undefined))).toEqual(['opus', 'haiku']);
+  });
+
   it('asks an agent a question without asking it to build anything', async () => {
     const agent = fakeAgent({ script: () => [{ do: 'say', text: '안녕하세요!' }] });
     const llm = scriptedModel([

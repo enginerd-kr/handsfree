@@ -9,9 +9,11 @@ import {
   type CreateElicitationResponse,
   type ElicitationSchema,
   type PermissionOption,
+  type PromptResponse,
   type RequestPermissionResponse,
   type StopReason,
   type ToolKind,
+  type Usage,
 } from '@agentclientprotocol/sdk';
 import type { ClientApp, ClientConnection } from '@agentclientprotocol/sdk';
 import type { ConnectionTarget } from '../src/host/connection.js';
@@ -63,7 +65,11 @@ export type Act =
    * learns whether the prompt was read before the process went.
    */
   | { do: 'fail'; message: string }
-  | { do: 'stop'; reason: StopReason };
+  /**
+   * `usage` is the count the spec'd (unstable) field carries, as claude and
+   * codex send it; `meta` is the raw `_meta`, for gemini's spelling of it.
+   */
+  | { do: 'stop'; reason: StopReason; usage?: Usage; meta?: Record<string, unknown> };
 
 export interface FakeAgentOptions {
   name?: string;
@@ -210,7 +216,7 @@ export function fakeAgent(options: FakeAgentOptions): FakeAgent {
         .join('');
       prompts.push(text);
       const acts = options.script(ctx.params.prompt, turn++);
-      return { stopReason: await perform(ctx.client, ctx.params.sessionId, acts, ctx.signal) };
+      return perform(ctx.client, ctx.params.sessionId, acts, ctx.signal);
     })
     .onNotification(methods.agent.session.cancel, () => {
       // The stall act watches the request signal, which the SDK aborts for us.
@@ -236,9 +242,9 @@ async function perform(
   sessionId: string,
   acts: Act[],
   signal: AbortSignal,
-): Promise<StopReason> {
+): Promise<PromptResponse> {
   for (const act of acts) {
-    if (signal.aborted) return 'cancelled';
+    if (signal.aborted) return { stopReason: 'cancelled' };
 
     switch (act.do) {
       case 'say':
@@ -380,8 +386,12 @@ async function perform(
         throw new Error(act.message);
 
       case 'stop':
-        return act.reason;
+        return {
+          stopReason: act.reason,
+          ...(act.usage ? { usage: act.usage } : {}),
+          ...(act.meta ? { _meta: act.meta } : {}),
+        };
     }
   }
-  return signal.aborted ? 'cancelled' : 'end_turn';
+  return { stopReason: signal.aborted ? 'cancelled' : 'end_turn' };
 }
