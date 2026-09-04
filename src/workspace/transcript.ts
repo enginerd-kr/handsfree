@@ -179,6 +179,8 @@ export class Transcript extends EventEmitter<TranscriptEvents> {
   }
 }
 
+/** How a ledger reply opens: the head `renderOutcomeHead` writes for a task. */
+const LEGACY_LEDGER = /^Task \d+ \(\S+\): /;
 /** What a resumed session was written down as before it had a record of its own. */
 const LEGACY_RESUMED = /^resumed (\S+) session (\S+)$/;
 
@@ -190,6 +192,10 @@ const LEGACY_RESUMED = /^resumed (\S+) session (\S+)$/;
  * was, it goes where the header can say it.
  */
 function upgraded(record: TranscriptRecord): TranscriptRecord {
+  // A ledger reply from before ledgers were marked: it opens on a task head.
+  if (record.type === 'assistant' && record.ledger === undefined && LEGACY_LEDGER.test(record.text)) {
+    return { ...record, ledger: true };
+  }
   if (record.type !== 'note' || record.level !== 'info' || record.lines) return record;
   const legacy = LEGACY_RESUMED.exec(record.text);
   if (!legacy) return record;

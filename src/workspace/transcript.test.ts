@@ -107,9 +107,17 @@ describe('Transcript replay', () => {
       `${JSON.stringify({ type: 'note', level: 'info', text: 'resumed claude session c1', seq: 1, at: 1 })}\n` +
         `${JSON.stringify({ type: 'note', level: 'info', text: 'wrote notes.txt', seq: 2, at: 2 })}\n`,
     );
+    fs.appendFileSync(
+      file,
+      `${JSON.stringify({ type: 'assistant', text: 'Task 1 (claude): done — after 2s\nsummary: Did it.', seq: 3, at: 3 })}\n` +
+        `${JSON.stringify({ type: 'assistant', text: 'Task done, as claude said.', seq: 4, at: 4 })}\n`,
+    );
     const replayed = new Transcript(file);
     expect(replayed.all()[0]).toMatchObject({ type: 'session', agentId: 'claude', sessionId: 'c1', how: 'resumed', seq: 1 });
     expect(replayed.all()[1]).toMatchObject({ type: 'note', text: 'wrote notes.txt' });
+    // A reply that is a ledger is read back as one; prose that merely mentions a task is not.
+    expect(replayed.all()[2]).toMatchObject({ type: 'assistant', ledger: true });
+    expect(replayed.all()[3]).not.toHaveProperty('ledger');
     await replayed.close();
     fs.rmSync(dir, { recursive: true, force: true });
   });
