@@ -8,6 +8,7 @@ import type {
   ToolCallContent,
   ToolCallStatus,
 } from '@agentclientprotocol/sdk';
+import { stripReport } from '../orchestrator/report.js';
 import type { TranscriptRecord } from '../workspace/transcript.js';
 
 export type Tone = 'normal' | 'muted' | 'good' | 'bad' | 'warn' | 'accent' | 'brand';
@@ -101,6 +102,13 @@ export interface ViewOptions {
  * one thing the report cannot make up for. While it runs, each of its blocks
  * is capped at its head: what an agent hands back is often a whole file, and
  * one of those is the whole screen. Unfolding a task lifts both.
+ *
+ * A task that is the person's own line — an @mention, or a brief the planner
+ * passed on as typed — is drawn as the conversation it is: no routing row,
+ * since it would only say the line again, the agent's rows at the margin
+ * wearing its name, and what the agent last said kept whole when the task
+ * folds, because that is the answer. What it said for the planner's benefit,
+ * the REPORT block at the end of its turn, is never drawn.
  */
 export function buildView(
   records: readonly TranscriptRecord[],
@@ -136,15 +144,31 @@ export function buildView(
   // Where the current task's rows begin, and which of them survive folding.
   let taskStart = -1;
   const loud = new Set<string>();
+  // The line the person last typed, for telling a brief that repeats it.
+  let lastUser = '';
+  // Whether the current task is the person's own line, drawn at the margin.
+  let bare = false;
+  const bareTasks = new Set<number>();
+  // The latest block of each task's own words: what the agent has answered so
+  // far, and what stands as the answer once the task ends.
+  const answers = new Map<number, string>();
+  // The tasks whose answer is on screen, so the ledger has nothing to add.
+  const answered = new Set<string>();
 
   /** Whether a task's rows are shown in full: nothing folded, nothing capped. */
   const unfolded = (taskId: number): boolean =>
     options.expanded === true || options.expandedTasks?.has(taskId) === true;
 
   const add = (item: ViewItem): ViewItem => {
-    if (depth === 1) {
+    if (currentTask !== undefined) {
       item.taskId = currentTask;
       item.agentId ??= currentAgent;
+      if (bare) {
+        // With no routing row above them, the agent's own rows say whose
+        // they are — and the first stands off the person's line.
+        if (item.role === 'agent' && item.marker === 'bullet') item.label ??= currentAgent;
+        if (items.length === taskStart) item.gap = true;
+      }
     }
     items.push(item);
     byKey.set(item.key, item);
@@ -171,6 +195,7 @@ export function buildView(
       case 'user':
         closeBlocks();
         closeTool();
+        lastUser = record.text;
         add(row(`u${record.seq}`, 'user', 0, 'prompt', 'muted', record.text, 'normal', true));
         break;
 
@@ -200,6 +225,8 @@ export function buildView(
           // head and the agent's own summary, so the row wears the agent's
           // colour, and its name once, in the label rather than in every head.
           for (const entry of ledgerEntries(record.text)) {
+            // The answer is on screen already; a head over it says less.
+            if (answered.has(entry.taskId)) continue;
             const item = add(
               proseRow(`a${record.seq}-${entry.taskId}`, 'handsfree', 0, 'bullet', 'brand', entry.text, 'normal', true),
             );
@@ -233,19 +260,25 @@ export function buildView(
       case 'delegation': {
         closeBlocks();
         closeTool();
-        // The routing and the brief on one line, the way the person's own
-        // line reads: the agent where the @ was, and the task after it.
-        const item = add(
-          row(`d${record.seq}`, 'system', 0, 'bullet', 'brand', record.task, 'normal', true),
-        );
-        // The label spells the routing the way it was asked for: the agent,
-        // and the model when the task chose one — by the id it was switched
-        // by, which is the id the mention typed and the id that went on the
-        // wire.
-        item.label = modelled(record.agentId, record);
-        item.agentId = record.agentId;
-        item.taskId = record.taskId;
-        depth = 1;
+        // A brief that is the person's own line gets no row of its own: the
+        // agent's rows follow the line directly, at the margin, in its name.
+        bare = asked(lastUser, record.task);
+        if (bare) bareTasks.add(record.taskId);
+        else {
+          // The routing and the brief on one line, the way the person's own
+          // line reads: the agent where the @ was, and the task after it.
+          const item = add(
+            row(`d${record.seq}`, 'system', 0, 'bullet', 'brand', record.task, 'normal', true),
+          );
+          // The label spells the routing the way it was asked for: the
+          // agent, and the model when the task chose one — by the id it was
+          // switched by, which is the id the mention typed and the id that
+          // went on the wire.
+          item.label = modelled(record.agentId, record);
+          item.agentId = record.agentId;
+          item.taskId = record.taskId;
+        }
+        depth = bare ? 0 : 1;
         currentTask = record.taskId;
         currentAgent = record.agentId;
         taskStartedAt = record.at;
@@ -306,6 +339,15 @@ export function buildView(
         closeBlocks();
         closeTool();
         const took = taskStartedAt > 0 ? Math.max(1, Math.round((record.at - taskStartedAt) / 1000)) : 0;
+        // What the agent last said in a task that was the person's own line
+        // is the answer, and stays when the rest folds. A task that did not
+        // finish keeps the ledger's account instead: the words it got out
+        // are not the whole story, and the head says what became of it.
+        const answer = answers.get(record.taskId);
+        if (bare && record.stopReason === 'end_turn' && answer !== undefined && byKey.has(answer)) {
+          loud.add(answer);
+          answered.add(String(record.taskId));
+        }
         const hidden = unfolded(record.taskId) ? 0 : foldTask(items, byKey, loud, taskStart);
         // The closing line belongs to the task, so it keeps the task's indent
         // and its id; whatever comes next is handsfree talking again.
@@ -322,6 +364,7 @@ export function buildView(
           ),
         );
         depth = 0;
+        bare = false;
         currentTask = undefined;
         currentAgent = undefined;
         taskStart = -1;
@@ -341,7 +384,7 @@ export function buildView(
         loud.clear();
         closeBlocks();
         closeTool();
-        taskStart = depth === 1 ? 0 : -1;
+        taskStart = currentTask !== undefined ? 0 : -1;
         break;
 
       // Where each agent's session came from is the header's to say, not a
@@ -364,6 +407,7 @@ export function buildView(
               openText = add(
                 proseRow(`m${record.seq}`, 'agent', depth, 'bullet', 'brand', update.content.text, 'normal', true),
               );
+              if (currentTask !== undefined) answers.set(currentTask, openText.key);
             }
             break;
           }
@@ -469,15 +513,28 @@ export function buildView(
   // streamed block is only whole once the last record has been read — and
   // because one place deciding how much of a block is shown is easier to
   // trust than two. Only a task's own rows are capped: they are the ones a
-  // click can unfold, and handsfree's own answer is the answer.
+  // click can unfold, and handsfree's own answer is the answer — as is the
+  // latest thing an agent has said in a task that was the person's own line.
   for (const item of items) {
+    if (item.role === 'agent' && item.prose === true) item.text = stripReport(item.text);
     item.text = item.text.trim();
     if (item.taskId === undefined || unfolded(item.taskId)) continue;
+    if (bareTasks.has(item.taskId) && answers.get(item.taskId) === item.key) continue;
     const tool = tools.get(item.key);
     if (tool) item.lines = toolLines(tool, workspaceDir, MAX_BLOCK_LINES, options.expandHint);
     else if (item.prose === true) capText(item, options.expandHint);
   }
-  return items;
+  // A block that was nothing but its REPORT has nothing left to draw.
+  return items.filter((item) => !(item.role === 'agent' && item.prose === true && item.text === ''));
+}
+
+/**
+ * Whether a brief is the person's own line said again: an @mention passes the
+ * words after the name on as typed, and a planner sometimes does the same.
+ */
+function asked(user: string, task: string): boolean {
+  const said = user.replace(/^\s*@\S+/, '').replace(/\s+/g, ' ').trim();
+  return said !== '' && said === task.replace(/\s+/g, ' ').trim();
 }
 
 /** A row carrying an agent's own words, which the renderer draws as markdown. */

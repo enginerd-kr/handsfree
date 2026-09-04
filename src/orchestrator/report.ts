@@ -104,6 +104,23 @@ export function parseReport(message: string, limits: ReportLimits = DEFAULT_REPO
   };
 }
 
+/**
+ * What the agent said with its REPORT block taken off the end — the words
+ * meant for the person, without the account meant for the planner. The block
+ * is found the way `parseReport` finds it, so what is stripped from the screen
+ * is exactly what was read from the record.
+ */
+export function stripReport(message: string): string {
+  const lines = message.split(/\r?\n/);
+  for (let at = lines.length - 1; at >= 0; at--) {
+    if (!HEADING.test(lines[at]!)) continue;
+    // A fence opened just above the heading closes below it; it goes too.
+    const from = at > 0 && FENCE.test(lines[at - 1]!) ? at - 1 : at;
+    return lines.slice(0, from).join('\n').trimEnd();
+  }
+  return message;
+}
+
 function fallback(message: string, limits: ReportLimits): Report {
   const flat = message.replace(/\s+/g, ' ').trim();
   // The end of what was said, since a closing account ends on what became of

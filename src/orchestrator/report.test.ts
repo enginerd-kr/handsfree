@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseReport, REPORT_FORMAT } from './report.js';
+import { parseReport, REPORT_FORMAT, stripReport } from './report.js';
 
 const PLAIN = `I rewrote the parser and ran the tests.
 
@@ -97,5 +97,24 @@ open: - the third test needs a fixture
     expect(parseReport('REPORT\noutcome: blocked — needs a token').outcome).toBe('blocked');
     expect(parseReport('REPORT\noutcome: incomplete').outcome).toBe('partial');
     expect(parseReport('REPORT\noutcome: whatever').outcome).toBeUndefined();
+  });
+});
+
+describe('stripReport', () => {
+  it('takes the block off the end, and the fence it came in', () => {
+    const text = 'All done.\n\n```\n**REPORT**\n**outcome:** done\n**summary:** Added parse().\n```';
+    expect(stripReport(text)).toBe('All done.');
+  });
+
+  it('takes the bare block as it was asked for', () => {
+    expect(stripReport('Here it is.\n\nREPORT\noutcome: done\nsummary: said it\nchanged: none')).toBe('Here it is.');
+  });
+
+  it('leaves a message with no block as it was', () => {
+    expect(stripReport('Nothing to report about.')).toBe('Nothing to report about.');
+  });
+
+  it('is empty for a message that was only its block', () => {
+    expect(stripReport('REPORT\noutcome: done')).toBe('');
   });
 });

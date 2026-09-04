@@ -626,12 +626,39 @@ describe('turnPhase', () => {
 });
 
 describe('a delegation row', () => {
-  it('reads like the line that asked: the agent where the @ was, the task after it', () => {
+  it('is drawn when the brief is the planner\'s own words', () => {
     const t = transcript();
-    t.append({ type: 'user', text: '@claude run the tests' });
+    t.append({ type: 'user', text: 'make it pass' });
     t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'run the tests' });
     const view = buildView(t.all(), WORKSPACE);
     expect(view[1]).toMatchObject({ label: 'claude', text: 'run the tests', depth: 0, agentId: 'claude', lines: [] });
+  });
+
+  it('is not drawn when it would only say the line again', () => {
+    const t = transcript();
+    t.append({ type: 'user', text: '@claude   run the tests' });
+    t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'run the tests' });
+    t.append({
+      type: 'session_update',
+      agentId: 'claude',
+      sessionId: 's',
+      update: { sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Run vitest', kind: 'execute', status: 'completed' },
+    });
+    t.append({
+      type: 'session_update',
+      agentId: 'claude',
+      sessionId: 's',
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'All 9 pass.' } },
+    });
+    // The agent's rows follow the line directly, at the margin, in its name —
+    // the way a reply reads — and the first stands a line off the prompt.
+    const view = buildView(t.all(), WORKSPACE);
+    expect(view.map((item) => [item.depth, item.label, item.text, item.taskId])).toEqual([
+      [0, undefined, '@claude   run the tests', undefined],
+      [0, 'claude', 'Run vitest', 1],
+      [0, 'claude', 'All 9 pass.', 1],
+    ]);
+    expect(view[1]?.gap).toBe(true);
   });
 
   it('keeps the brief in view when the task folds', () => {
@@ -648,6 +675,97 @@ describe('a delegation row', () => {
     const texts = buildView(t.all(), WORKSPACE).map((item) => item.text);
     expect(texts).toContain('Fix the failing test');
     expect(texts).not.toContain('Read a.ts');
+  });
+});
+
+describe('a task that was the person\'s own line', () => {
+  const asked = (text: string) => {
+    const t = transcript();
+    t.append({ type: 'user', text: '@claude what is a monad' });
+    t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'what is a monad' });
+    t.append({
+      type: 'session_update',
+      agentId: 'claude',
+      sessionId: 's',
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Let me look.' } },
+    });
+    t.append({
+      type: 'session_update',
+      agentId: 'claude',
+      sessionId: 's',
+      update: { sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Read notes.md', kind: 'read', status: 'completed' },
+    });
+    t.append({
+      type: 'session_update',
+      agentId: 'claude',
+      sessionId: 's',
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } },
+    });
+    return t;
+  };
+
+  it('keeps what the agent last said when the task folds, whole', () => {
+    const answer = Array.from({ length: 30 }, (_, line) => `line ${line + 1}`).join('\n');
+    const t = asked(answer);
+    // Streaming, the answer so far is already uncapped: it is the reply.
+    const running = buildView(t.all(), WORKSPACE, { expandHint: 'ctrl+o to expand' });
+    expect(running.at(-1)?.text).toBe(answer);
+    expect(running.at(-1)?.lines).toEqual([]);
+
+    t.append({ type: 'stop', taskId: 1, agentId: 'claude', sessionId: 's', stopReason: 'end_turn' });
+    const view = buildView(t.all(), WORKSPACE, { expandHint: 'ctrl+o to expand' });
+    expect(view.map((item) => [item.depth, item.label, item.text.split('\n')[0]])).toEqual([
+      [0, undefined, '@claude what is a monad'],
+      [0, 'claude', 'line 1'],
+      [0, undefined, 'Done (1 tool call · 1s · ctrl+o to expand)'],
+    ]);
+    expect(view[1]?.text).toBe(answer);
+    expect(view[1]?.lines).toEqual([]);
+  });
+
+  it('never draws the REPORT block, and drops a block that was nothing else', () => {
+    const t = asked('A monad is a monoid in the category of endofunctors.\n\nREPORT\noutcome: done\nsummary: explained\nchanged: none');
+    t.append({
+      type: 'session_update',
+      agentId: 'claude',
+      sessionId: 's',
+      update: { sessionUpdate: 'tool_call', toolCallId: 't2', title: 'Read more.md', kind: 'read', status: 'completed' },
+    });
+    t.append({
+      type: 'session_update',
+      agentId: 'claude',
+      sessionId: 's',
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '**REPORT**\noutcome: done' } },
+    });
+    const view = buildView(t.all(), WORKSPACE, { expandedTasks: new Set([1]) });
+    const texts = view.map((item) => item.text);
+    expect(texts).toContain('A monad is a monoid in the category of endofunctors.');
+    expect(JSON.stringify(view)).not.toContain('REPORT');
+    expect(texts.at(-1)).toBe('Read more.md');
+  });
+
+  it('leaves the ledger nothing to say of a task whose answer is on screen', () => {
+    const t = asked('A monad is a monoid.');
+    t.append({ type: 'stop', taskId: 1, agentId: 'claude', sessionId: 's', stopReason: 'end_turn' });
+    t.append({
+      type: 'assistant',
+      ledger: true,
+      text: 'Task 1 (claude): done — after 3s — read notes.md\nsummary: explained monads\n\nStopped at the limit of 1 task per message.',
+    });
+    const texts = buildView(t.all(), WORKSPACE).map((item) => item.text);
+    expect(texts).toContain('A monad is a monoid.');
+    expect(texts).not.toContain('task 1: done — after 3s — read notes.md\nsummary: explained monads');
+    expect(texts).toContain('Stopped at the limit of 1 task per message.');
+  });
+
+  it('keeps the ledger\'s account of a task that did not finish', () => {
+    const t = asked('I got this far.');
+    t.append({ type: 'stop', taskId: 1, agentId: 'claude', sessionId: 's', stopReason: 'cancelled' });
+    t.append({ type: 'assistant', ledger: true, text: 'Task 1 (claude): cancelled — after 3s' });
+    const view = buildView(t.all(), WORKSPACE);
+    const texts = view.map((item) => item.text);
+    expect(texts).not.toContain('I got this far.');
+    expect(view.at(-1)).toMatchObject({ label: 'claude', text: 'task 1: cancelled — after 3s' });
   });
 });
 

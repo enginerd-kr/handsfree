@@ -246,6 +246,35 @@ describe('terminal UI', () => {
     }
   });
 
+  it('reads an @mentioned turn as a conversation: no routing row, the answer kept, no REPORT', async () => {
+    const h = harness({
+      agents: {
+        claude: fakeAgent({
+          script: () => [{ do: 'say', text: 'I am claude.\n\nREPORT\noutcome: done\nsummary: said who' }],
+        }),
+      },
+      // The planner is never asked: a reply scripted here would run dry.
+      llm: scriptedModel([]),
+    });
+    open = h;
+
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      await h.runtime.conversation.send('@claude who are you');
+      const frame = await waitFor(() => app.lastFrame(), 'Done');
+      // The line typed is on screen once, and the agent's own words follow it
+      // in the agent's name — no row saying the line again, no ledger over
+      // the answer, and nothing of the block meant for the planner.
+      expect(frame.split('who are you')).toHaveLength(2);
+      expect(frame).toContain('claude  I am claude.');
+      expect(frame).not.toContain('REPORT');
+      expect(frame).not.toContain('task 1');
+    } finally {
+      app.unmount();
+    }
+  });
+
   it('opens the task a click lands on, and leaves the prompt alone', async () => {
     const h = harness({
       agents: {
