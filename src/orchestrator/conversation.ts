@@ -107,12 +107,13 @@ class AssistantStream implements AnswerStream {
     this.transcript.append({ type: 'assistant', stream: this.id, text: '' });
   }
 
-  end(text: string): void {
+  end(text: string, ledger = false): void {
+    const flag = ledger ? { ledger: true } : {};
     if (this.open) {
       this.open = false;
-      this.transcript.append({ type: 'assistant', stream: this.id, text });
+      this.transcript.append({ type: 'assistant', stream: this.id, text, ...flag });
     } else {
-      this.transcript.append({ type: 'assistant', text });
+      this.transcript.append({ type: 'assistant', text, ...flag });
     }
   }
 }
@@ -379,12 +380,12 @@ export class Conversation {
                 turn.signal,
                 (piece) => stream.delta(piece),
               )
-            : 'Nothing to do.';
+            : { text: 'Nothing to do.', ledger: false };
         // Kept in the shape of every other reply of the planner's, so the
         // history it reads back is JSON all the way down: a prose turn among
         // JSON ones is the example a small model imitates next.
-        closing = JSON.stringify({ action: 'answer', message: summary });
-        stream.end(summary);
+        closing = JSON.stringify({ action: 'answer', message: summary.text });
+        stream.end(summary.text, summary.ledger);
       }
       if (sent && opening) this.settle(epoch, history, sent, opening, closing);
       this.turn = undefined;

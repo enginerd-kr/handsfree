@@ -198,6 +198,21 @@ export function buildView(
         }
         // A retraction whose block is already gone has nothing left to say.
         if (record.stream !== undefined && record.text === '') break;
+        if (record.ledger) {
+          // Not handsfree's words but the agents': the ledger is each task's
+          // head and the agent's own summary, so the row wears the agent's
+          // colour, and its name once, in the label rather than in every head.
+          for (const entry of ledgerEntries(record.text)) {
+            const item = add(
+              proseRow(`a${record.seq}-${entry.taskId}`, 'handsfree', 0, 'bullet', 'brand', entry.text, 'normal', true),
+            );
+            if (entry.agentId) {
+              item.agentId = entry.agentId;
+              item.label = entry.agentId;
+            }
+          }
+          break;
+        }
         add(proseRow(`a${record.seq}`, 'handsfree', 0, 'bullet', 'brand', record.text, 'normal', true));
         break;
       }
@@ -811,6 +826,33 @@ export function describeRecord(
     default:
       return undefined;
   }
+}
+
+/** The head of a task in a ledger, as `renderOutcomeHead` writes it. */
+const LEDGER_HEAD = /^Task (\d+) \((\S+)\): (.*)$/;
+
+/**
+ * A ledger reply split into the tasks it lists: each head and the lines under
+ * it, with the agent's name lifted out of the head — it goes in the label —
+ * and anything that is not a task (a note about the turn) on its own.
+ */
+export function ledgerEntries(text: string): { taskId: string; agentId?: string; text: string }[] {
+  const entries: { taskId: string; agentId?: string; text: string }[] = [];
+  let unnumbered = 0;
+  for (const block of text.split(/\n\n+/)) {
+    const lines = block.split('\n');
+    const head = LEDGER_HEAD.exec(lines[0] ?? '');
+    if (head) {
+      entries.push({
+        taskId: head[1]!,
+        agentId: head[2]!,
+        text: [`task ${head[1]}: ${head[3]}`, ...lines.slice(1)].join('\n'),
+      });
+    } else if (block.trim() !== '') {
+      entries.push({ taskId: `n${++unnumbered}`, text: block });
+    }
+  }
+  return entries;
 }
 
 /**

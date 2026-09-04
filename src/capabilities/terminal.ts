@@ -139,7 +139,10 @@ export class TerminalRegistry {
       status: undefined,
       timer: undefined,
       exit: new Promise((resolve) => {
-        child.once('exit', (code, signal) => resolve({ exitCode: code, signal: signal ?? null }));
+        // `close`, not `exit`: the process can be gone while its last bytes
+        // are still in the pipe, and a caller that waited for the exit and
+        // then asked for the output would sometimes be handed nothing.
+        child.once('close', (code, signal) => resolve({ exitCode: code, signal: signal ?? null }));
         child.once('error', () => resolve({ exitCode: null, signal: 'ENOENT' }));
       }),
     };

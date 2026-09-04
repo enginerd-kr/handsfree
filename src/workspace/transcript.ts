@@ -10,7 +10,17 @@ export type TranscriptBody =
    * it: the text here is the reply's final form, and an empty text retracts the
    * streamed block entirely — the deltas turned out not to be an answer.
    */
-  | { type: 'assistant'; text: string; stream?: number }
+  | {
+      type: 'assistant';
+      text: string;
+      stream?: number;
+      /**
+       * The reply is the ledger of the turn's tasks rather than handsfree's
+       * own prose — the planner could not be reached, or did not report the
+       * work. Each line of it is about one agent's task, and the view says so.
+       */
+      ledger?: boolean;
+    }
   /** A piece of handsfree's own reply, shown while the model is still writing. */
   | { type: 'assistant_delta'; stream: number; text: string }
   /**

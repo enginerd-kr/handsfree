@@ -25,14 +25,20 @@ export interface NarrateInput {
  * ledger built from the recorded outcomes stands in when it cannot — so a dead
  * endpoint or a cancelled turn can never be the reason the user hears nothing.
  */
+export interface Narration {
+  text: string;
+  /** True when the text is the ledger, not prose: the model was unreachable or unusable. */
+  ledger: boolean;
+}
+
 export async function narrate(
   llm: ChatClient | undefined,
   input: NarrateInput,
   signal?: AbortSignal,
   onDelta?: (text: string) => void,
-): Promise<string> {
+): Promise<Narration> {
   const ledger = renderLedger(input);
-  if (!llm || signal?.aborted) return ledger;
+  if (!llm || signal?.aborted) return { text: ledger, ledger: true };
 
   try {
     const reply = await llm.chat(
@@ -46,9 +52,9 @@ export async function narrate(
       { signal, onDelta: onDelta ? proseGate(onDelta) : undefined },
     );
     const prose = asProse(reply);
-    return grounded(prose, input) ? prose : ledger;
+    return grounded(prose, input) ? { text: prose, ledger: false } : { text: ledger, ledger: true };
   } catch {
-    return ledger;
+    return { text: ledger, ledger: true };
   }
 }
 
@@ -92,8 +98,28 @@ function grounded(prose: string, input: NarrateInput): boolean {
   return input.outcomes.some((outcome) => {
     if (text.includes(outcome.agentId.toLowerCase())) return true;
     if (text.includes(outcome.status)) return true;
-    return outcome.files.some((file) => text.includes(basename(file).toLowerCase()));
+    if (outcome.files.some((file) => text.includes(basename(file).toLowerCase()))) return true;
+    // A summary that names none of those may still be about the work: "the
+    // tests were run and all nine passed" says nothing of claude, of "done"
+    // or of a file, and is a true account of a task that ran a command. It
+    // is kept when it shares the task's own words — two of the longer ones,
+    // from the brief or the agent's summary, so that "Great! What's next?"
+    // still shares none.
+    const shared = new Set<string>();
+    for (const word of contentWords(`${outcome.task} ${outcome.report.summary}`)) {
+      if (text.includes(word)) shared.add(word);
+    }
+    return shared.size >= 2;
   });
+}
+
+/** The words of a text worth matching on: five letters or more, lowercased, once each. */
+function contentWords(text: string): Set<string> {
+  const words = new Set<string>();
+  for (const word of text.toLowerCase().split(/[^a-z0-9가-힣]+/)) {
+    if (word.length >= 5) words.add(word);
+  }
+  return words;
 }
 
 function basename(file: string): string {

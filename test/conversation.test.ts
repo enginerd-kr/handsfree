@@ -253,6 +253,37 @@ describe('Conversation', () => {
     expect(reply).toContain('Task 1 (claude): done');
   });
 
+  it('keeps a summary that tells the work in its own words, naming nobody', async () => {
+    // The task ran a command and touched no file; the narrator said what
+    // happened without naming claude, "done" or a path. That is a report.
+    const agent = fakeAgent({
+      script: () => [{ do: 'say', text: 'REPORT\noutcome: done\nsummary: Ran the tokenize tests; all nine passed.' }],
+    });
+    const llm = scriptedModel([
+      delegate('Run the tokenize tests and report the count'),
+      'The tokenize tests were executed and all nine passed. Nothing was changed.',
+    ]);
+    const h = harness({ agents: { claude: agent }, llm, config: { limits: { maxPlanSteps: 1 } } });
+    open = h;
+
+    await h.runtime.conversation.send('run the tests');
+
+    expect(assistantText(h).at(-1)).toBe('The tokenize tests were executed and all nine passed. Nothing was changed.');
+  });
+
+  it('marks a reply that is the ledger, so the view can hang it on the agent', async () => {
+    const agent = fakeAgent({ script: () => [{ do: 'say', text: 'ok' }] });
+    const llm = scriptedModel([delegate('Create notes.txt'), "Great! What's next?"]);
+    const h = harness({ agents: { claude: agent }, llm, config: { limits: { maxPlanSteps: 1 } } });
+    open = h;
+
+    await h.runtime.conversation.send('make notes.txt');
+
+    const reply = h.runtime.transcript.all().filter((record) => record.type === 'assistant').at(-1);
+    expect(reply).toMatchObject({ ledger: true });
+    expect(reply && reply.type === 'assistant' ? reply.text : '').toContain('Task 1 (claude): done');
+  });
+
   it('keeps a summary that does report the work', async () => {
     const agent = fakeAgent({ script: () => [{ do: 'say', text: 'ok' }] });
     const llm = scriptedModel([delegate('Create notes.txt'), 'claude created the file.']);

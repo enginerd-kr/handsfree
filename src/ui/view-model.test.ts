@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Transcript } from '../workspace/transcript.js';
-import { buildView, describeRecord, sessionsOf, turnPhase, workingAgents } from './view-model.js';
+import { buildView, describeRecord, ledgerEntries, sessionsOf, turnPhase, workingAgents } from './view-model.js';
 
 const WORKSPACE = '/ws';
 
@@ -666,5 +666,33 @@ describe('a session record', () => {
     const fresh = t.append({ type: 'session', agentId: 'gemini', sessionId: 'g1', how: 'new' });
     expect(describeRecord(resumed, WORKSPACE)).toBe('  resumed claude session c1');
     expect(describeRecord(fresh, WORKSPACE)).toBeUndefined();
+  });
+});
+
+describe('a ledger reply', () => {
+  it('is shown as one row per task, in the agent\'s colour, with the agent as the label', () => {
+    const t = transcript();
+    t.append({ type: 'user', text: 'do two things' });
+    t.append({
+      type: 'assistant',
+      ledger: true,
+      text:
+        'Task 1 (claude): done — after 7s\nsummary: Ran the tests; all 9 pass.\n\n' +
+        'Task 2 (gemini): refused — after 1s — refused: git push\n\n' +
+        'Stopped at the limit of 2 tasks per message.',
+    });
+    const view = buildView(t.all(), WORKSPACE);
+    expect(view.slice(1).map((item) => [item.agentId, item.label, item.text.split('\n')[0]])).toEqual([
+      ['claude', 'claude', 'task 1: done — after 7s'],
+      ['gemini', 'gemini', 'task 2: refused — after 1s — refused: git push'],
+      [undefined, undefined, 'Stopped at the limit of 2 tasks per message.'],
+    ]);
+    expect(view[1]?.text).toContain('summary: Ran the tests; all 9 pass.');
+  });
+
+  it('splits a ledger into its tasks', () => {
+    expect(ledgerEntries('Task 3 (codex): error — after 0s\nsummary: You have hit your usage limit.')).toEqual([
+      { taskId: '3', agentId: 'codex', text: 'task 3: error — after 0s\nsummary: You have hit your usage limit.' },
+    ]);
   });
 });
