@@ -4,7 +4,7 @@ import wrapAnsi from 'wrap-ansi';
 import type { ViewItem } from '../view-model.js';
 import { heightOf } from './layout.js';
 import { renderMarkdown, resetMarkdownCache } from './markdown.js';
-import { INK } from './theme.js';
+import { CODE_WASH, INK } from './theme.js';
 
 /**
  * Nothing under vitest is a terminal, so chalk emits no colour by default and
@@ -105,7 +105,7 @@ describe('markdown', () => {
   describe('code blocks', () => {
     it('renders a fenced block without its fences', () => {
       const out = plain(md('```ts\nconst a = 1;\n```'));
-      expect(out).toBe('const a = 1;');
+      expect(out.trimEnd()).toBe('const a = 1;');
       expect(out).not.toContain('```');
     });
 
@@ -114,6 +114,28 @@ describe('markdown', () => {
       const out = plain(md('```ts\nconst a = 1;'));
       expect(out).toContain('const a = 1;');
       expect(out).not.toContain('```');
+    });
+
+    it('sets every line of a block on one wash, padded out to a rectangle', () => {
+      const out = md('```js\nconst a = 1;\n\nconst longer = a + 1;\n```');
+      const washOn = chalk.bgHex(CODE_WASH)('').split('\u001B[49m')[0] ?? '';
+      const lines = out.split('\n');
+      expect(lines).toHaveLength(3);
+      for (const line of lines) {
+        expect(line.startsWith(washOn)).toBe(true);
+        expect(line.endsWith('\u001B[49m')).toBe(true);
+      }
+      // Each line runs to the widest one plus a cell, blank ones included.
+      const widths = lines.map((line) => plain(line).length);
+      expect(widths).toEqual([22, 22, 22]);
+      expect(plain(lines[0]!)).toBe('const a = 1;          ');
+    });
+
+    it('measures the rectangle in columns, so a wide glyph is not padded twice', () => {
+      const out = md('```\n한글\nabcd\n```');
+      const [first, second] = out.split('\n').map(plain);
+      // 한글 is four columns wide, the same as abcd; both get the one spare cell.
+      expect([first, second]).toEqual(['한글 ', 'abcd ']);
     });
 
     it('keeps a long block whole', () => {

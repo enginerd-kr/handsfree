@@ -101,6 +101,17 @@ export const GLYPH: Record<Marker, string> = {
 export const BAND = '#3a3a3a';
 
 /**
+ * The wash behind a fenced code block: the one lift in the transcript that is
+ * not about the pointer or a task, and the lightest of them. A reply that is
+ * mostly code has no other edge to read — the blank line around a block is
+ * all a plain rendering leaves — and a rectangle of this under the code says
+ * where it starts and stops without a border character that a copy would
+ * carry along. It sits a step under the task's band, so a block inside an
+ * open task reads as set into the band rather than lost in it.
+ */
+export const CODE_WASH = '#333333';
+
+/**
  * The wash under the pointer. It used to be the terminal's own `gray`, bright
  * enough that quiet text laid on it had to be recoloured to survive; this is
  * the open task's band lifted just far enough to read as a different row, so

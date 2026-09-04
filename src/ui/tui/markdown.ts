@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import { marked, type Token, type Tokens } from 'marked';
 import stringWidth from 'string-width';
-import { COLOUR, INK, INK_FAINT } from './theme.js';
+import { CODE_WASH, COLOUR, INK, INK_FAINT } from './theme.js';
 
 /**
  * Markdown, rendered the way Claude Code renders its own: not into a tree of
@@ -200,8 +200,16 @@ function formatToken(
 
 /**
  * A fenced block, highlighted when `cli-highlight` is up and left alone when it
- * is not. No border, no background, no indent: the blank lines around it are
- * what separate it from the prose, the way Claude Code leaves it.
+ * is not. No border and no indent — a border is a character a copy would
+ * carry, and an indent moves code out of the column its lines were written
+ * in — but a wash behind it: every line padded out to the block's widest and
+ * set on `CODE_WASH`, so the block stands as one rectangle. Prose and code
+ * share a column and a weight, and a long reply that is mostly code has no
+ * other edge to read by.
+ *
+ * The rectangle is sized to the block, not the window, which keeps this a
+ * pure function of the text and `heightOf` exact. A line wider than the
+ * window wraps like any other, and the wash follows the text.
  */
 function codeBlock(token: Tokens.Code, context: Context): string {
   // Nothing is held back: the transcript scrolls by rows, so a long block costs
@@ -220,7 +228,21 @@ function codeBlock(token: Tokens.Code, context: Context): string {
     }
   }
 
-  return out + EOL;
+  return wash(out) + EOL;
+}
+
+/**
+ * The block's lines on their wash. Each is padded to the widest line, plus one
+ * column, so the rectangle's right edge stands a cell clear of the longest
+ * line rather than hugging it. Highlighting only ever resets the foreground,
+ * so the background it is set on holds to the end of the line.
+ */
+function wash(text: string): string {
+  const lines = text.split(EOL);
+  const widths = lines.map((line) => stringWidth(stripAnsi(line)));
+  const widest = Math.max(...widths) + 1;
+  const paint = chalk.bgHex(CODE_WASH);
+  return lines.map((line, i) => paint(line + ' '.repeat(widest - widths[i]!))).join(EOL);
 }
 
 /**
