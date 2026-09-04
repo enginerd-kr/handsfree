@@ -690,6 +690,19 @@ describe('a ledger reply', () => {
     expect(view[1]?.text).toContain('summary: Ran the tests; all 9 pass.');
   });
 
+  it('replaces what the narrator streamed when the ledger stands in for it', () => {
+    const t = transcript();
+    t.append({ type: 'user', text: 'run the tests' });
+    t.append({ type: 'assistant_delta', stream: 1, text: 'Great! What' });
+    t.append({ type: 'assistant_delta', stream: 1, text: "'s next?" });
+    t.append({ type: 'assistant', stream: 1, ledger: true, text: 'Task 1 (claude): done — after 7s\nsummary: All 9 pass.' });
+    const view = buildView(t.all(), WORKSPACE);
+    expect(view).toHaveLength(2);
+    expect(view[1]).toMatchObject({ agentId: 'claude', label: 'claude' });
+    expect(view[1]?.text).toBe('task 1: done — after 7s\nsummary: All 9 pass.');
+    expect(JSON.stringify(view)).not.toContain('Great!');
+  });
+
   it('splits a ledger into its tasks', () => {
     expect(ledgerEntries('Task 3 (codex): error — after 0s\nsummary: You have hit your usage limit.')).toEqual([
       { taskId: '3', agentId: 'codex', text: 'task 3: error — after 0s\nsummary: You have hit your usage limit.' },

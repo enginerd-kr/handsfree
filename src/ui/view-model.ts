@@ -185,15 +185,16 @@ export function buildView(
             ? openAssistant.item
             : undefined;
         closeBlocks();
-        if (streamed) {
-          if (record.text === '') {
-            // Retracted: what streamed was not an answer, so the block goes.
-            const at = items.indexOf(streamed);
-            if (at !== -1) items.splice(at, 1);
-            byKey.delete(streamed.key);
-          } else {
-            streamed.text = record.text;
-          }
+        if (streamed && (record.text === '' || record.ledger)) {
+          // Retracted, or replaced by the ledger: what streamed was not the
+          // answer after all, so the block goes — and the ledger, if that is
+          // what stands in, is drawn below the way an unstreamed one is.
+          const at = items.indexOf(streamed);
+          if (at !== -1) items.splice(at, 1);
+          byKey.delete(streamed.key);
+          if (!record.ledger) break;
+        } else if (streamed) {
+          streamed.text = record.text;
           break;
         }
         // A retraction whose block is already gone has nothing left to say.
