@@ -698,7 +698,43 @@ describe('Conversation', () => {
     expect(second.slice(1).map((message) => message.role)).toEqual(['user', 'assistant', 'user']);
     expect(second[1]?.content).toBe('add parse()');
     expect(second.some((message) => message.content.startsWith('TASK RESULT'))).toBe(false);
-    expect(JSON.stringify(second)).not.toContain('A long account');
+    // What the agent said survives in one place only: as the task's "said"
+    // line in the run state, not as a message of its own.
+    expect(JSON.stringify(second.slice(0, -1))).not.toContain('A long account');
+    expect(last).toContain('  said: A long account of everything that was done, at length.');
+  });
+
+  it('keeps what an agent said in the run state once the turn that asked has folded', async () => {
+    const claude = fakeAgent({
+      script: () => [
+        {
+          do: 'say',
+          text:
+            'TypeScript는 JavaScript의 상위 집합으로, 정적 타이핑을 더한 언어입니다. (at length)\n\n' +
+            'REPORT\noutcome: done\nsummary: TS는 정적 타입을 더한 JS의 상위 집합.',
+        },
+      ],
+    });
+    const llm = scriptedModel([
+      delegate('TS와 JS의 차이점을 설명해 줘'),
+      answer('claude가 차이점을 정리했습니다. 더 알고 싶으신가요?'),
+      answer('네, 이어서 설명하겠습니다.'),
+    ]);
+    const h = harness({ agents: { claude }, llm });
+    open = h;
+
+    await h.runtime.conversation.send('차이점이 뭐야?');
+    await h.runtime.conversation.send('응');
+
+    const last = llm.seen.at(-1) ?? [];
+    // The turn folded to the line and the closing sentence: the result is gone...
+    expect(last.some((message) => message.content.startsWith('TASK RESULT'))).toBe(false);
+    expect(JSON.stringify(last)).not.toContain('at length');
+    // ...but what the agent said it said is ahead of the new line, so a "yes"
+    // has something to be a yes to.
+    const line = last.at(-1)?.content ?? '';
+    expect(line).toContain('  task: TS와 JS의 차이점을 설명해 줘\n  said: TS는 정적 타입을 더한 JS의 상위 집합.');
+    expect(line.endsWith('\n---\n응')).toBe(true);
   });
 
   it('hands the planner a report, not the reply, and says the user has seen the rest', async () => {

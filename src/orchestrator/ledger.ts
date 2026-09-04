@@ -13,7 +13,7 @@ export interface LedgerTask {
 
 /** How many tasks the run state spells out before older ones become a count. */
 export const LEDGER_TASKS = 24;
-/** How much of an agent's summary the next agent is handed. */
+/** How much of an agent's summary the next agent, and the run state, carry. */
 const HANDOFF_SUMMARY_CHARS = 200;
 /** How many files a roster line names before the rest become a count. */
 const SESSION_FILES = 6;
@@ -119,6 +119,12 @@ export function renderRunState(
     if (report.outcome && report.outcome !== 'done' && outcome.status === 'done') {
       lines.push(`  agent says: ${report.outcome}`);
     }
+    // What the agent said, in its own summary: the one thing the planner
+    // would otherwise keep nothing of. The turn that ran the task folds to
+    // the user's line and the planner's closing sentence once it is over, so
+    // without this a "yes" to "want to hear more?" lands on a planner that
+    // no longer knows what there was more of.
+    if (report.summary) lines.push(`  said: ${oneLine(report.summary, HANDOFF_SUMMARY_CHARS)}`);
   }
   const changed = new Set<string>();
   for (const { outcome } of tasks) {

@@ -415,4 +415,22 @@ describe('renderRunState with reports', () => {
     expect(state).toContain('Task 1 (gemini): done');
     expect(state).toContain('agent says: blocked');
   });
+
+  it("carries what each agent said, so the planner keeps it once the turn has folded", () => {
+    const transcript = new Transcript();
+    task(transcript, {
+      taskId: 1,
+      agentId: 'gemini',
+      task: 'TS와 JS의 차이점을 설명해 줘',
+      said:
+        'A long answer, at length, that the user has already read.\n\n' +
+        'REPORT\noutcome: done\nsummary: TS는 정적 타입을 더한 JS의 상위 집합.\n  컴파일 단계에서 타입 오류를 잡는다.',
+    });
+    task(transcript, { taskId: 2, agentId: 'gemini', task: 'nothing to say', said: '' });
+    const state = renderRunState(tasksSince(transcript.all(), 0), '/ws');
+    expect(state).toContain('  task: TS와 JS의 차이점을 설명해 줘\n  said: TS는 정적 타입을 더한 JS의 상위 집합. 컴파일 단계에서 타입 오류를 잡는다.');
+    expect(state).not.toContain('at length');
+    // A task that said nothing gets no empty line for it.
+    expect(state.endsWith('  task: nothing to say')).toBe(true);
+  });
 });
