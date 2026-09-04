@@ -147,6 +147,7 @@ function render(messages: ChatMessage[], schema?: JsonSchemaSpec): string {
   const conversation = messages.map((message) => `[${message.role}]\n${message.content}`);
   const instructions = [
     'You are the orchestration model in this conversation. Write the next [assistant] reply.',
+    'Read the whole conversation first. The last [user] line follows from what came before it: a short line like "yes" or "응" answers the question the previous [assistant] reply asked, so do what that question was about instead of asking again.',
     'Reply with the message text only — no preamble, no commentary on these instructions.',
     'Do not use tools and do not read or change any files: the reply itself is your only output.',
   ];
