@@ -124,7 +124,7 @@ export class Transcript extends EventEmitter<TranscriptEvents> {
         continue;
       }
       if (!isRecord(record)) continue;
-      this.records.push(record);
+      this.records.push(upgraded(record));
       if (record.seq > this.seq) this.seq = record.seq;
     }
   }
@@ -167,6 +167,30 @@ export class Transcript extends EventEmitter<TranscriptEvents> {
     this.closed = true;
     await new Promise<void>((resolve) => stream.end(resolve));
   }
+}
+
+/** What a resumed session was written down as before it had a record of its own. */
+const LEGACY_RESUMED = /^resumed (\S+) session (\S+)$/;
+
+/**
+ * A record read back in the shape it was written, or in the shape it would
+ * be written today. A run recorded before sessions had a record of their own
+ * said "resumed claude session …" as a note, and read back as a note it sits
+ * in the conversation like something claude was asked; read back as what it
+ * was, it goes where the header can say it.
+ */
+function upgraded(record: TranscriptRecord): TranscriptRecord {
+  if (record.type !== 'note' || record.level !== 'info' || record.lines) return record;
+  const legacy = LEGACY_RESUMED.exec(record.text);
+  if (!legacy) return record;
+  return {
+    type: 'session',
+    agentId: legacy[1]!,
+    sessionId: legacy[2]!,
+    how: 'resumed',
+    seq: record.seq,
+    at: record.at,
+  };
 }
 
 function isRecord(value: unknown): value is TranscriptRecord {

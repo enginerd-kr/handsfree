@@ -96,6 +96,24 @@ describe('Transcript replay', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it('reads a resumed-session note from an older run back as the session record it was', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'handsfree-transcript-'));
+    const file = path.join(dir, 'transcript.jsonl');
+    fs.writeFileSync(
+      file,
+      `${JSON.stringify({ type: 'note', level: 'info', text: 'resumed claude session c1', seq: 1, at: 1 })}\n` +
+        `${JSON.stringify({ type: 'note', level: 'info', text: 'wrote notes.txt', seq: 2, at: 2 })}\n`,
+    );
+    const replayed = new Transcript(file);
+    expect(replayed.all()[0]).toMatchObject({ type: 'session', agentId: 'claude', sessionId: 'c1', how: 'resumed', seq: 1 });
+    expect(replayed.all()[1]).toMatchObject({ type: 'note', text: 'wrote notes.txt' });
+    await replayed.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it('starts empty where there is no file yet', () => {
     expect(new Transcript().all()).toEqual([]);
   });
