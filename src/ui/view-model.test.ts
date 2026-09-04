@@ -625,28 +625,38 @@ describe('turnPhase', () => {
   });
 });
 
-describe('a delegation row under the line that named its agent', () => {
-  it('shows the routing alone when the task is the line as typed', () => {
+describe('a delegation row', () => {
+  it('is the routing on one line and the brief under it, set like the agent\'s own rows', () => {
     const t = transcript();
     t.append({ type: 'user', text: '@claude run the tests' });
     t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'run the tests' });
+    t.append({
+      type: 'session_update',
+      agentId: 'claude',
+      sessionId: 's',
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'On it.' } },
+    });
     const view = buildView(t.all(), WORKSPACE);
-    expect(view[1]).toMatchObject({ label: 'claude', text: '' });
+    expect(view[1]).toMatchObject({ label: 'claude', text: '', depth: 0, agentId: 'claude' });
+    expect(view[1]?.lines).toEqual([{ text: 'run the tests', tone: 'muted', kind: 'brief' }]);
+    // The agent's reply sits one level in, where the brief is drawn.
+    expect(view[2]).toMatchObject({ text: 'On it.', depth: 1, marker: 'bullet' });
   });
 
-  it('shows the task when the planner wrote it', () => {
+  it('keeps the brief in view when the task folds', () => {
     const t = transcript();
-    t.append({ type: 'user', text: 'make the tests pass' });
-    t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'Fix the failing test in a.test.ts' });
+    t.append({ type: 'user', text: 'make it' });
+    t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'Fix the failing test' });
+    t.append({
+      type: 'session_update',
+      agentId: 'claude',
+      sessionId: 's',
+      update: { sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Read a.ts', kind: 'read', status: 'completed' },
+    });
+    t.append({ type: 'stop', taskId: 1, agentId: 'claude', sessionId: 's', stopReason: 'end_turn' });
     const view = buildView(t.all(), WORKSPACE);
-    expect(view[1]).toMatchObject({ label: 'claude', text: 'Fix the failing test in a.test.ts' });
-  });
-
-  it('shows the task when a mention named a different agent than the one that ran it', () => {
-    const t = transcript();
-    t.append({ type: 'user', text: '@gemini run the tests' });
-    t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'run the tests' });
-    expect(buildView(t.all(), WORKSPACE)[1]?.text).toBe('run the tests');
+    expect(view[1]?.lines.map((line) => line.text)).toEqual(['Fix the failing test']);
+    expect(view.map((item) => item.text)).not.toContain('Read a.ts');
   });
 });
 

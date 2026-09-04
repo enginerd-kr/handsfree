@@ -1224,10 +1224,12 @@ describe('terminal UI', () => {
       const row = lines.findIndex((line) => line.includes('⎿'));
       expect(row).toBeGreaterThan(0);
 
-      // The terminal answers as if the frame began three rows down the screen:
+      // The terminal answers as if the frame began four rows down the screen:
       // the cursor rests on the line under the frame, so its row is the frame
-      // top plus the frame's height.
-      app.stdin.write(`[${lines.length + 3 + 1};1R`);
+      // top plus the frame's height. Four, because the task block
+      // runs four rows from its gap to its result line, and a click aimed by
+      // the old anchor has to fall clear of it — on the user's own line.
+      app.stdin.write(`[${lines.length + 4 + 1};1R`);
       await new Promise((resolve) => setTimeout(resolve, 0));
 
       // A click aimed by the old anchor now lands on nothing.
@@ -1235,8 +1237,8 @@ describe('terminal UI', () => {
       await new Promise((resolve) => setTimeout(resolve, 60));
       expect(app.lastFrame()).not.toContain('the long agent answer');
 
-      // Aimed three rows lower, it opens the task again.
-      app.stdin.write(`[<0;3;${row + 3 + 1}m`);
+      // Aimed four rows lower, it opens the task again.
+      app.stdin.write(`[<0;3;${row + 4 + 1}m`);
       const frame = await waitFor(() => app.lastFrame(), 'the long agent answer');
       expect(frame).not.toContain(';1R');
     } finally {

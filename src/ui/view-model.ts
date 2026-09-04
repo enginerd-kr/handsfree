@@ -8,7 +8,6 @@ import type {
   ToolCallContent,
   ToolCallStatus,
 } from '@agentclientprotocol/sdk';
-import { parseMention } from '../mention/mention.js';
 import type { TranscriptRecord } from '../workspace/transcript.js';
 
 export type Tone = 'normal' | 'muted' | 'good' | 'bad' | 'warn' | 'accent' | 'brand';
@@ -20,6 +19,11 @@ export type Marker = 'none' | 'prompt' | 'bullet' | 'thought' | 'result' | 'allo
 export interface ViewLine {
   text: string;
   tone: Tone;
+  /**
+   * `brief` is the task under a delegation row: set like the agent's own rows
+   * under it — one level in, with a bullet — rather than like a result.
+   */
+  kind?: 'brief';
 }
 
 export interface ViewItem {
@@ -110,8 +114,6 @@ export function buildView(
 ): ViewItem[] {
   const items: ViewItem[] = [];
   const byKey = new Map<string, ViewItem>();
-  /** The line the person typed last, for a delegation row not to repeat it. */
-  let lastUserText = '';
   const tools = new Map<string, ToolState>();
 
   // Streamed chunks arrive as many records but read as one block, so the block
@@ -174,7 +176,6 @@ export function buildView(
       case 'user':
         closeBlocks();
         closeTool();
-        lastUserText = record.text;
         add(row(`u${record.seq}`, 'user', 0, 'prompt', 'muted', record.text, 'normal', true));
         break;
 
@@ -237,18 +238,12 @@ export function buildView(
       case 'delegation': {
         closeBlocks();
         closeTool();
-        const item = add(
-          row(
-            `d${record.seq}`,
-            'system',
-            0,
-            'bullet',
-            'brand',
-            taskAsShown(record.task, record.agentId, lastUserText),
-            'normal',
-            true,
-          ),
-        );
+        // The routing on its own line, and the brief under it, set the way
+        // the agent's own rows are set — one level in, behind a bullet — so
+        // the words handsfree sent and the words the agent said back wrap
+        // alike, and neither trails off the end of a label.
+        const item = add(row(`d${record.seq}`, 'system', 0, 'bullet', 'brand', '', 'normal', true));
+        item.lines = [{ text: record.task, tone: 'muted', kind: 'brief' }];
         // The label spells the routing the way it was asked for: the agent,
         // and the model when the task chose one — by the id it was switched
         // by, which is the id the mention typed and the id that went on the
@@ -789,21 +784,15 @@ function modelled(agentId: string, record: { model?: string }): string {
 }
 
 /** One-line rendering for non-interactive output. Returns nothing for noise. */
-export function describeRecord(
-  record: TranscriptRecord,
-  workspaceDir: string,
-  options: { lastUserText?: string } = {},
-): string | undefined {
+export function describeRecord(record: TranscriptRecord, workspaceDir: string): string | undefined {
   switch (record.type) {
     case 'user':
       return `> ${record.text}`;
     case 'assistant':
       // An empty text retracts a streamed block; there is nothing to print.
       return record.text === '' ? undefined : `\n${record.text}\n`;
-    case 'delegation': {
-      const task = taskAsShown(record.task, record.agentId, options.lastUserText ?? '');
-      return `→ ${modelled(record.agentId, record)}${task ? `: ${task}` : ''}`;
-    }
+    case 'delegation':
+      return `→ ${modelled(record.agentId, record)}: ${record.task}`;
     case 'note':
       return [record.text, ...(record.lines ?? [])].map((line) => `  ${line}`).join('\n');
     case 'decision':
@@ -866,18 +855,6 @@ export function sessionsOf(records: readonly TranscriptRecord[]): Record<string,
     if (record.type === 'session') out[record.agentId] = record.how;
   }
   return out;
-}
-
-/**
- * The task a delegation row shows. A line that named its agent — `@claude
- * run the tests` — is its own brief, word for word, and the row under it
- * that said the same words again was a line about nothing; it shows the
- * routing alone. A task the planner wrote is shown, since the planner's
- * words are not the person's.
- */
-function taskAsShown(task: string, agentId: string, lastUserText: string): string {
-  const typed = parseMention(lastUserText, [agentId]);
-  return typed && typed.task === task ? '' : task;
 }
 
 function relative(file: string, root: string): string {
