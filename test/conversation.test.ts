@@ -353,8 +353,8 @@ describe('Conversation', () => {
   it('routes a leading @mention straight to its agent, planner unconsulted', async () => {
     const claude = fakeAgent({ script: () => [] });
     const gemini = fakeAgent({ script: () => [{ do: 'say', text: 'made it.' }] });
-    // One reply only — the summary. A consulted planner would run the script dry.
-    const llm = scriptedModel([answer('gemini made notes.txt.')]);
+    // No reply scripted: a planner asked anything would run the script dry.
+    const llm = scriptedModel([]);
     const h = harness({ agents: { claude, gemini }, llm });
     open = h;
 
@@ -363,8 +363,12 @@ describe('Conversation', () => {
     expect(gemini.prompts[0]).toContain('make notes.txt');
     expect(gemini.prompts[0]).not.toContain('@gemini');
     expect(claude.prompts).toEqual([]);
-    expect(llm.seen).toHaveLength(1);
-    expect(assistantText(h)).toEqual(['gemini made notes.txt.']);
+    // Not for the summary either: the user watched the one task they routed,
+    // so the turn closes on the ledger the moment the agent stops.
+    expect(llm.seen).toHaveLength(0);
+    const reply = h.runtime.transcript.all().filter((record) => record.type === 'assistant').at(-1);
+    expect(reply).toMatchObject({ ledger: true });
+    expect(assistantText(h).at(-1)).toContain('Task 1 (gemini): done');
 
     const kinds = h.runtime.transcript.all().map((record) => record.type);
     expect(kinds).toContain('delegation');

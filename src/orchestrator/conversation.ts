@@ -8,7 +8,7 @@ import {
   type ChatMessage,
 } from '../brain/client.js';
 import type { OrchestrationChoice } from '../brain/planner.js';
-import { narrate } from '../brain/narrate.js';
+import { narrate, renderLedger } from '../brain/narrate.js';
 import {
   composeUserMessage,
   nextStep,
@@ -252,6 +252,13 @@ export class Conversation {
     const outcomes: TaskOutcome[] = [];
     const notes: string[] = [];
     let answered = false;
+    /**
+     * Whether the turn closes on the ledger as it stands, with no narrator.
+     * A line that named its agent ran one task the user watched to the end;
+     * a summary of that would only say what the ledger already says, and
+     * costs a planner round trip after the agent has already finished.
+     */
+    let ledgerOnly = false;
     let delegations = 0;
     /**
      * The turn as the planner will remember it: the line the user typed and
@@ -298,6 +305,7 @@ export class Conversation {
       // same conversation whichever way the task was routed.
       const mention = invoked ? undefined : parseMention(prompt, agents);
       if (mention) {
+        ledgerOnly = true;
         delegations++;
         history.push({
           role: 'assistant',
@@ -370,10 +378,20 @@ export class Conversation {
       // stop records already say what ran, and the user asked for a stop, not
       // a report about stopping. Skipping the summary is also what lets /exit
       // end the process instead of waiting on one nobody would read.
+      //
+      // A turn routed by its own @mention closes on the ledger instead: the
+      // user chose the agent and watched its one task run, so the record —
+      // status, files, refusals, the agent's own summary — is the report,
+      // and it is on screen the moment the agent stops rather than a
+      // planner call later.
       if (!answered && !turn.signal.aborted) {
         const stream = this.newStream();
-        const summary =
-          outcomes.length > 0 || notes.length > 0
+        const summary = ledgerOnly
+          ? {
+              text: renderLedger({ userMessage: prompt, outcomes, notes, workspaceDir: workspace.dir }),
+              ledger: true,
+            }
+          : outcomes.length > 0 || notes.length > 0
             ? await narrate(
                 this.deps.llm && metered(this.deps.llm, 'narrate', transcript),
                 { userMessage: prompt, outcomes, notes, workspaceDir: workspace.dir },
