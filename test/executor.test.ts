@@ -6,6 +6,8 @@ import { fakeAgent } from './fake-agent.js';
 import { tasksSince } from '../src/orchestrator/ledger.js';
 import { sessionMemory, durableFacts } from '../src/orchestrator/memory.js';
 import { TaskRequestSchema } from '../src/orchestrator/contract.js';
+import { summarise } from '../src/orchestrator/outcome.js';
+import { ResultTool } from '../src/tools/result.js';
 
 const open: Harness[] = [];
 afterEach(async () => { for (const h of open.splice(0).reverse()) await h.dispose(); });
@@ -67,6 +69,37 @@ describe('structured executor', () => {
     while (offset !== undefined) { const next = h.runtime.executor.readResult(result.taskId, offset, 200); text += next.text; offset = next.nextOffset; }
     expect(JSON.parse(text).message).toContain(detail);
     expect(result.usage?.estimated).toBe(true);
+  });
+
+  it('suggests the taskId for a mistaken record number but keeps existing task ids authoritative', async () => {
+    const a = fakeAgent({ script: () => [{ do: 'say', text: 'Original task detail.' }] });
+    const h = setup({ agents: { a } });
+    const result = await h.runtime.executor.execute({ task: 'Inspect', agent: 'a' });
+    const record = h.runtime.transcript.all().find((r) => r.type === 'task_result')!;
+    expect(record.seq).not.toBe(result.taskId);
+    expect(() => h.runtime.executor.readResult(record.seq, 100)).toThrow(`task_result {"taskId":${result.taskId},"offset":100}`);
+    expect(() => h.runtime.executor.readResult(999999)).toThrow('Use a taskId from RESULT SOURCES');
+
+    const other = summarise(record.seq, 'a', 'A different task', 'end_turn', [], 0);
+    other.message = 'Different task detail.';
+    h.runtime.executor.store(other);
+    expect(JSON.parse(h.runtime.executor.readResult(record.seq).text).message).toBe('Different task detail.');
+    expect(JSON.parse(h.runtime.executor.readResult(result.taskId).text).message).toBe('Original task detail.');
+  });
+
+  it.each(['missing', 'corrupt'])('returns a recoverable tool error for a %s result without claiming completion', async (failure) => {
+    const a = fakeAgent({ script: () => [{ do: 'say', text: 'Completed work.' }] });
+    const h = setup({ agents: { a } });
+    const result = await h.runtime.executor.execute({ task: 'Inspect', agent: 'a' });
+    const file = path.join(h.runtime.workspace.runDir, 'results', `${result.taskId}.json`);
+    if (failure === 'missing') fs.unlinkSync(file);
+    else fs.writeFileSync(file, '{invalid json');
+
+    const reply = await new ResultTool(h.runtime.executor, 256).run({ taskId: result.taskId, offset: 0 });
+    expect(reply.completedWork).toBe(false);
+    expect(reply.text).toMatch(/^Task result error:/);
+    expect(reply.text.length).toBeLessThanOrEqual(256);
+    expect(a.prompts).toHaveLength(1);
   });
 
   it('deduplicates concurrent requests and rejects reuse with different requirements', async () => {

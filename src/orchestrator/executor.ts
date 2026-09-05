@@ -138,7 +138,20 @@ export class Executor {
   readResult(taskId: number, offset = 0, maxChars = 8000): { text: string; nextOffset?: number } {
     if (!Number.isSafeInteger(taskId) || taskId < 1 || !Number.isSafeInteger(offset) || offset < 0) throw new Error('Invalid result address');
     if (!Number.isSafeInteger(maxChars) || maxChars < 1 || maxChars > 32_000) throw new Error('maxChars must be between 1 and 32000');
-    const saved = JSON.parse(fs.readFileSync(path.join(this.deps.workspace.runDir, 'results', `${taskId}.json`), 'utf8')) as { outcome: TaskOutcome };
+    let contents: string;
+    try {
+      contents = fs.readFileSync(path.join(this.deps.workspace.runDir, 'results', `${taskId}.json`), 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      // Record numbers and task ids are separate namespaces. Explain a likely
+      // mix-up, but never silently substitute another task's result.
+      const record = this.deps.transcript.all().find((r) => r.seq === taskId && r.type === 'task_result');
+      const hint = record?.type === 'task_result'
+        ? ` Context record ${taskId} refers to taskId ${record.taskId}; use task_result ${JSON.stringify({ taskId: record.taskId, offset })}.`
+        : ' Use a taskId from RESULT SOURCES, not a context record number.';
+      throw new Error(`No saved result for taskId ${taskId}.${hint}`);
+    }
+    const saved = JSON.parse(contents) as { outcome: TaskOutcome };
     // Put evidence before the potentially long worker brief, so the first
     // page answers common follow-ups while later pages retain the full record.
     const { taskId: id, agentId, status, message, report, ...rest } = saved.outcome;

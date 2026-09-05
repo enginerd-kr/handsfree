@@ -217,8 +217,8 @@ export class RunContext {
 
   sources(): string {
     this.sync();
-    const sources = [...this.taskSources].slice(-24).map(([task, seq]) => `task ${task}: record ${seq}`);
-    return sources.length ? `RESULT SOURCES: ${sources.join('; ')}` : '';
+    const sources = [...this.taskSources].slice(-24).map(([task, seq]) => `task_result {"taskId":${task}}; context record ${seq}`);
+    return sources.length ? `RESULT SOURCES (task_result input; record = context citation):\n${sources.join('\n')}` : '';
   }
 
   findings(maxChars = 1200): string {

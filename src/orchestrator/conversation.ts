@@ -381,7 +381,7 @@ export class Conversation {
           continue;
         }
         const result = await call.run({ signal: turn.signal, remainingCalls: config.limits.maxDelegationsPerTurn - calls, turnId });
-        if (call.name === 'task_result' || call.name === 'context' && !result.completedWork) this.context.retainEvidence(turnId, call.json, result.text);
+        if (call.name === 'task_result' && result.completedWork || call.name === 'context' && !result.completedWork) this.context.retainEvidence(turnId, call.json, result.text);
         calls += result.callsUsed ?? 0;
         if (result.outcome) outcomes.push(result.outcome);
         if (result.outcomes) outcomes.push(...result.outcomes);

@@ -102,6 +102,47 @@ describe('analyze, execute, review loop', () => {
     expect(replies(h).at(-1)).toContain('extra review was not run');
   });
 
+  it('recovers when the planner confuses a result record number with its taskId without rerunning the worker', async () => {
+    const detail = 'README detail: project configuration overrides the global configuration.';
+    const worker = fakeAgent({ script: () => [{ do: 'say', text: `${detail}\nREPORT\noutcome: done\nsummary: README summarized.\nchanged: none\nopen:` }] });
+    const review: LoopReview = { objective: 'Summarize README', constraints: [], completed: [], remaining: ['Read README', 'Retrieve summary'], next: 0, blocker: '' };
+    const checked = (state: typeof review, action: string) => JSON.stringify({ review: state, ...JSON.parse(action) });
+    const retrieval = { ...review, completed: ['Read README'], remaining: ['Retrieve summary'] };
+    const seen: ChatMessage[][] = [];
+    let recordId = 0;
+    const llm: ChatClient = { async chat(messages) {
+      seen.push([...messages]);
+      switch (seen.length) {
+        case 1: return checked(review, delegate('claude', 'Read README.'));
+        case 2: {
+          recordId = h.runtime.transcript.all().find((r) => r.type === 'task_result')!.seq;
+          return checked(retrieval, call('task_result', { taskId: recordId }));
+        }
+        case 3: return checked(retrieval, call('task_result', { taskId: 1 }));
+        default: return answer(detail);
+      }
+    } };
+    const h = harness({ agents: { claude: worker }, llm, config: { limits: { maxDelegationsPerTurn: 1 } } });
+    opened.push(h);
+    await h.runtime.conversation.send('Summarize README.');
+
+    expect(recordId).toBeGreaterThan(1);
+    expect(seen).toHaveLength(4);
+    expect(seen[1]?.find((m) => m.pinned)?.content).toContain(`task_result {"taskId":1}; context record ${recordId}`);
+    expect(seen[2]?.at(-1)?.content).toContain(`Context record ${recordId} refers to taskId 1`);
+    expect(seen[2]?.at(-1)?.content).toContain('task_result {"taskId":1,"offset":0}');
+    expect(seen[2]?.find((m) => m.pinned)?.content).toContain('"remaining":["Retrieve summary"]');
+    expect(seen[3]?.at(-1)?.content).toContain(detail);
+    expect(worker.prompts).toHaveLength(1);
+    expect(replies(h).at(-1)).toBe(detail);
+    const entries = h.runtime.transcript.all().filter((r) => r.type === 'context').map((r) => r.entry);
+    expect(entries.filter((e) => e.event === 'complete')).toHaveLength(2);
+    const evidence = entries.filter((e) => e.event === 'evidence');
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]?.text).toContain(detail);
+    expect(entries.at(-1)).toMatchObject({ event: 'finish', status: 'reported' });
+  });
+
   it.each(['note', 'review'])('restores constraints from a %s and conversation from disk after restart', async (mode) => {
     let calls = 0;
     const first = harness({ agents: {}, llm: { async chat(messages) {
