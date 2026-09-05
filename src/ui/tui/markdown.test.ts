@@ -1,6 +1,7 @@
 import chalk from 'chalk';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import wrapAnsi from 'wrap-ansi';
+import stringWidth from 'string-width';
 import type { ViewItem } from '../view-model.js';
 import { heightOf } from './layout.js';
 import { renderMarkdown, resetMarkdownCache } from './markdown.js';
@@ -96,6 +97,44 @@ describe('markdown', () => {
     expect(md(prose)).toBe(prose);
   });
 
+  it('separates headings, prose, and lists even without blank source lines', () => {
+    expect(plain(md('## Findings\nThe result.\n- first\n- second\n## Next\nContinue.')))
+      .toBe('Findings\n\nThe result.\n\n- first\n- second\n\nNext\n\nContinue.');
+  });
+
+  it('recognizes markdown after a long plain introduction', () => {
+    const out = plain(md('Introduction. '.repeat(50) + '\n\n## Findings\n**done**'));
+    expect(out).toContain('Findings\n\ndone');
+    expect(out).not.toContain('##');
+  });
+
+  it('keeps loose list markers, nested items, and checkbox states', () => {
+    const out = plain(md('- **one**\n\n  second paragraph\n  - nested\n- [x] done\n- [ ] pending'));
+    expect(out).toContain('- one\n  \n  second paragraph\n  - nested');
+    expect(out).toContain('- [x] done');
+    expect(out).toContain('- [ ] pending');
+    expect(out).not.toContain('**');
+  });
+
+  it('hangs wrapped Korean list text under the body, including nested items', () => {
+    const out = plain(renderMarkdown('list', '- 한국어 설명을 여러 줄로 표시합니다\n  - 중첩 항목도 정렬합니다', { width: 20 }));
+    const lines = out.split('\n');
+    expect(lines.length).toBeGreaterThan(3);
+    expect(lines.every((line) => stringWidth(line) <= 20)).toBe(true);
+    expect(lines.slice(1).every((line) => line.startsWith('  '))).toBe(true);
+    expect(lines).toContain('  - 중첩 항목도');
+  });
+
+  it('keeps table values associated with headers after a resize', () => {
+    const source = '| Agent | Result |\n| --- | --- |\n| claude | A long result that needs room |\n| codex | Tests passed |';
+    expect(plain(renderMarkdown('table', source, { width: 80 }))).toContain('| Agent');
+    const narrow = plain(renderMarkdown('table', source, { width: 24 }));
+    expect(narrow).toContain('Agent: claude\nResult:');
+    expect(narrow).toContain('Agent: codex\nResult: Tests passed');
+    expect(narrow.split('\n').every((line) => stringWidth(line) <= 24)).toBe(true);
+    expect(plain(renderMarkdown('table', source, { width: 80 }))).toContain('| Agent');
+  });
+
   it('quiets a thought without painting over its styling', () => {
     const out = renderMarkdown('t', '**loud** thought', { dim: true });
     expect(out).toContain(QUIET);
@@ -103,6 +142,23 @@ describe('markdown', () => {
   });
 
   describe('code blocks', () => {
+    it('wraps long code before padding short lines to the screen width', () => {
+      const out = plain(renderMarkdown('code', '```\n' + 'x'.repeat(55) + '\nshort\n```', { width: 20 }));
+      const lines = out.split('\n');
+      expect(lines).toHaveLength(4);
+      expect(lines.every((line) => stringWidth(line) === 20)).toBe(true);
+      expect(lines[3]?.trimEnd()).toBe('short');
+    });
+
+    it('preserves leading code indentation with colors disabled', () => {
+      const level = chalk.level;
+      try {
+        chalk.level = 0;
+        expect(md('```\n    indented\n```').trimEnd()).toBe('    indented');
+      } finally {
+        chalk.level = level;
+      }
+    });
     it('renders a fenced block without its fences', () => {
       const out = plain(md('```ts\nconst a = 1;\n```'));
       expect(out.trimEnd()).toBe('const a = 1;');
@@ -147,6 +203,14 @@ describe('markdown', () => {
   });
 
   describe('streaming', () => {
+    it('keeps spacing and wrapping stable while lists and tables stream', () => {
+      const source = '## 결과\n- 한국어로 긴 결과를 설명합니다\n  - **중첩** 항목입니다\n\n| Agent | Result |\n| --- | --- |\n| codex | All tests passed |\n\nDone.';
+      const expected = renderMarkdown('whole-width', source, { width: 24 });
+      for (let end = 1; end <= source.length; end++) {
+        renderMarkdown('stream-width', source.slice(0, end), { width: 24 });
+      }
+      expect(renderMarkdown('stream-width', source, { width: 24 })).toBe(expected);
+    });
     it('lands on the same text whether it arrives at once or a token at a time', () => {
       const answer = [
         '## What I found',

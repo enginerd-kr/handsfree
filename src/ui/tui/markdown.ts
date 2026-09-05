@@ -1,6 +1,7 @@
 import chalk from 'chalk';
 import { marked, type Token, type Tokens } from 'marked';
 import stringWidth from 'string-width';
+import wrapAnsi from 'wrap-ansi';
 import { CODE_WASH, COLOUR, INK, INK_FAINT } from './theme.js';
 
 /**
@@ -35,6 +36,8 @@ export interface Highlighter {
 }
 
 export interface RenderOptions {
+  /** Available text columns, after the transcript gutter and indent. */
+  width?: number;
   /** Null until `cli-highlight` has loaded, or for good if it never does. */
   highlight?: Highlighter | null;
   /** Thoughts read as a quieter register: their styling carries the quiet ink. */
@@ -42,6 +45,7 @@ export interface RenderOptions {
 }
 
 interface Context {
+  width?: number;
   highlight: Highlighter | null;
   dim: boolean;
 }
@@ -61,12 +65,12 @@ function configureMarked(): void {
 
 /**
  * Whether the text carries anything worth lexing. Most replies are a plain
- * sentence, and this spares them the parse entirely. Markdown announces itself
- * early — a heading, a fence, a list — so a long tail of prose is not read.
+ * sentence, and this spares them the parse entirely. Check the whole message:
+ * an answer can introduce a list or code after a long opening paragraph.
  */
 const MD_SYNTAX = /[#*`|[>\-_~]|\n\n|^\d+\. |\n\d+\. /;
 function hasMarkdown(text: string): boolean {
-  return MD_SYNTAX.test(text.length > 500 ? text.slice(0, 500) : text);
+  return MD_SYNTAX.test(text);
 }
 
 /**
@@ -79,7 +83,14 @@ function code(text: string): string {
 }
 
 function render(tokens: readonly Token[], context: Context): string {
-  return tokens.map((token) => formatToken(token, 0, null, null, context)).join('');
+  // Block spacing belongs to the display, even when the source has no blank
+  // line after a heading or list. Each settled block owns its separator so
+  // streaming and whole-message rendering produce the same layout.
+  return tokens.map((token) => {
+    if (token.type === 'space') return '';
+    const block = formatToken(token, 0, null, null, context).replace(/\n+$/, '');
+    return block ? block + EOL + EOL : '';
+  }).join('');
 }
 
 function children(
@@ -103,7 +114,10 @@ function formatToken(
 ): string {
   switch (token.type) {
     case 'blockquote': {
-      const inner = render(token.tokens ?? [], context);
+      const inner = render(token.tokens ?? [], {
+        ...context,
+        width: context.width === undefined ? undefined : Math.max(1, context.width - 2),
+      }).trimEnd();
       const bar = chalk.hex(INK_FAINT)(QUOTE_BAR);
       return inner
         .split(EOL)
@@ -128,8 +142,7 @@ function formatToken(
       // Only the top heading earns more than weight; past h2 the depth stops
       // being worth a distinct look in a transcript this narrow.
       const styled = token.depth === 1 ? chalk.bold.italic.underline(text) : chalk.bold(text);
-      // One newline, like a paragraph: `marked` emits its own `space` token
-      // between blocks, and it is that token which opens the blank line.
+      // The block renderer adds the separation from the following paragraph.
       return styled + EOL;
     }
 
@@ -154,13 +167,24 @@ function formatToken(
         )
         .join('');
 
-    case 'list_item':
-      return (token.tokens ?? [])
-        .map(
-          (child) =>
-            `${'  '.repeat(listDepth)}${formatToken(child, listDepth + 1, orderedListNumber, token, context)}`,
-        )
-        .join('');
+    case 'list_item': {
+      const marker = orderedListNumber === null ? '-' : `${listNumber(listDepth + 1, orderedListNumber)}.`;
+      const indent = ' '.repeat(marker.length + 1);
+      const innerContext = {
+        ...context,
+        width: context.width === undefined ? undefined : Math.max(1, context.width - indent.length),
+      };
+      const body = (token.tokens ?? []).map((child) => {
+        let content = formatToken(child, listDepth + 1, null, token, innerContext);
+        if (innerContext.width !== undefined && (child.type === 'text' || child.type === 'paragraph')) {
+          content = wrapAnsi(content, innerContext.width, { hard: true, trim: true });
+        }
+        return child.type === 'text' ? content + EOL : content;
+      }).join('').replace(/\n+$/, '');
+      return body.split(EOL).map((line, index) =>
+        `${index === 0 ? marker + ' ' : indent}${line}`,
+      ).join(EOL) + EOL;
+    }
 
     case 'paragraph':
       return children(token, 0, null, null, context) + EOL;
@@ -170,18 +194,11 @@ function formatToken(
       return EOL;
 
     case 'text': {
-      if (parent?.type === 'list_item') {
-        const marker =
-          orderedListNumber === null ? '-' : `${listNumber(listDepth, orderedListNumber)}.`;
-        const body = token.tokens
-          ? token.tokens
-              .map((child) => formatToken(child, listDepth, orderedListNumber, token, context))
-              .join('')
-          : token.text;
-        return `${marker} ${body}${EOL}`;
-      }
-      return token.text;
+      return token.tokens ? children(token, listDepth, orderedListNumber, parent, context) : token.text;
     }
+
+    case 'checkbox':
+      return token.checked ? '[x] ' : '[ ] ';
 
     case 'table':
       return table(token as Tokens.Table, context);
@@ -207,9 +224,8 @@ function formatToken(
  * share a column and a weight, and a long reply that is mostly code has no
  * other edge to read by.
  *
- * The rectangle is sized to the block, not the window, which keeps this a
- * pure function of the text and `heightOf` exact. A line wider than the
- * window wraps like any other, and the wash follows the text.
+ * Wrap before padding so a long source line cannot make every short line
+ * spill into another screen row. Layout measures this same rendered string.
  */
 function codeBlock(token: Tokens.Code, context: Context): string {
   // Nothing is held back: the transcript scrolls by rows, so a long block costs
@@ -228,7 +244,10 @@ function codeBlock(token: Tokens.Code, context: Context): string {
     }
   }
 
-  return wash(out) + EOL;
+  if (context.width !== undefined) {
+    out = wrapAnsi(out, context.width, { hard: true, trim: false });
+  }
+  return wash(out, context.width) + EOL;
 }
 
 /**
@@ -237,12 +256,12 @@ function codeBlock(token: Tokens.Code, context: Context): string {
  * line rather than hugging it. Highlighting only ever resets the foreground,
  * so the background it is set on holds to the end of the line.
  */
-function wash(text: string): string {
+function wash(text: string, width?: number): string {
   const lines = text.split(EOL);
   const widths = lines.map((line) => stringWidth(stripAnsi(line)));
-  const widest = Math.max(...widths) + 1;
+  const widest = Math.min(Math.max(...widths) + 1, width ?? Infinity);
   const paint = chalk.bgHex(CODE_WASH);
-  return lines.map((line, i) => paint(line + ' '.repeat(widest - widths[i]!))).join(EOL);
+  return lines.map((line, i) => paint(line + ' '.repeat(Math.max(0, widest - widths[i]!)))).join(EOL);
 }
 
 /**
@@ -292,10 +311,8 @@ function roman(n: number): string {
 }
 
 /**
- * A pipe table, sized to its own content rather than to the terminal. Keeping
- * it width-independent is what lets this whole pass stay a pure function of the
- * text, which is what keeps `heightOf` exact. A table wider than the window
- * wraps like any other long line.
+ * A pipe table when its columns fit; labeled values when the pane is narrow.
+ * Layout measures the resulting string, including any explicit line breaks.
  */
 function table(token: Tokens.Table, context: Context): string {
   const cell = (cellTokens: Token[] | undefined): string =>
@@ -309,6 +326,16 @@ function table(token: Tokens.Table, context: Context): string {
     return Math.max(width, 3);
   });
 
+  // When columns cannot fit, keep each value with its header. Wrapping a
+  // whole pipe row would separate values from the columns they belong to.
+  if (context.width !== undefined && widths.reduce((sum, width) => sum + width + 3, 1) > context.width) {
+    return token.rows.map((row) => token.header.map((header, index) => {
+      const label = chalk.bold(cell(header.tokens));
+      const value = cell(row[index]?.tokens);
+      return wrapAnsi(`${label}: ${value}`, context.width!, { hard: true, trim: false });
+    }).join(EOL)).join(EOL + EOL) + EOL;
+  }
+
   const line = (cells: readonly { tokens?: Token[] }[]): string => {
     const parts = cells.map((source, index) => {
       const content = cell(source.tokens);
@@ -318,7 +345,7 @@ function table(token: Tokens.Table, context: Context): string {
   };
 
   const rule = `|${widths.map((width) => '-'.repeat(width + 2)).join('|')}|${EOL}`;
-  return line(token.header) + rule + token.rows.map(line).join('') + EOL;
+  return chalk.bold(line(token.header)) + chalk.hex(INK_FAINT)(rule) + token.rows.map(line).join('') + EOL;
 }
 
 function pad(
@@ -384,8 +411,12 @@ export function resetMarkdownCache(): void {
  * rather than confusing the boundary.
  */
 export function renderMarkdown(key: string, text: string, options: RenderOptions = {}): string {
-  const context: Context = { highlight: options.highlight ?? null, dim: options.dim === true };
-  const signature = `${context.dim ? 'd' : ''}|${context.highlight ? 'h' : ''}`;
+  const context: Context = {
+    highlight: options.highlight ?? null,
+    dim: options.dim === true,
+    width: options.width === undefined ? undefined : Math.max(1, Math.floor(options.width)),
+  };
+  const signature = `${context.dim ? 'd' : ''}|${context.highlight ? 'h' : ''}|${context.width ?? ''}`;
 
   if (!hasMarkdown(text)) return context.dim ? chalk.hex(INK)(text) : text;
   configureMarked();
@@ -417,7 +448,7 @@ export function renderMarkdown(key: string, text: string, options: RenderOptions
 
   // Trimmed before it is dimmed: chalk closes the run after the last newline,
   // which would put that newline beyond trim's reach.
-  const body = (prefixAnsi + render(tokens.slice(settled.length), context)).trim();
+  const body = (prefixAnsi + render(tokens.slice(settled.length), context)).replace(/^\n+|\n+$/g, '');
   const result = context.dim ? chalk.hex(INK)(body) : body;
 
   remember(key, { signature, prefix, prefixAnsi, text, result });

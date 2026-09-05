@@ -692,6 +692,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
         return {
           ...placed,
           text: renderMarkdown(placed.key, placed.text, {
+            width: Math.max(1, columns - placed.depth * 2 - GUTTER),
             highlight: highlighter,
             // A thought stays the quieter register, so the quiet ink is baked
             // into the styling rather than painted over it.
@@ -702,7 +703,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
           tone: 'normal' as Tone,
         };
       }),
-    [items, highlighter],
+    [items, highlighter, columns],
   );
 
   // The rows the transcript gets: everything the header and the prompt leave,
@@ -1638,7 +1639,7 @@ function Entry({
           )}
         >
           {item.label ? (
-            <Text {...paint(accent ? 'brand' : 'muted', accent)}>{`${item.label}${labelGap(item)}`}</Text>
+            <Text bold={item.prose === true} {...paint(accent ? 'brand' : 'muted', accent)}>{`${item.label}${labelGap(item)}`}</Text>
           ) : null}
           {item.marker === 'prompt' ? (
             <Mentioned text={item.text} tone={item.tone} agents={agents} />
