@@ -78,7 +78,7 @@ const CLIENT_INFO: Implementation = {
  * tools, where we would see the permission request but not the operation.
  */
 export class AgentConnection {
-  private closed = false;
+  private closing: Promise<void> | undefined;
 
   private constructor(
     readonly agentId: string,
@@ -257,9 +257,11 @@ export class AgentConnection {
     }
   }
 
-  async close(): Promise<void> {
-    if (this.closed) return;
-    this.closed = true;
+  close(): Promise<void> {
+    return this.closing ??= this.closeConnection();
+  }
+
+  private async closeConnection(): Promise<void> {
     this.terminals?.disposeAll();
     try {
       this.connection.close();

@@ -42,6 +42,10 @@ export interface AcpModelOptions {
  */
 export class AcpModel implements ChatClient {
   private connecting: Promise<AgentConnection> | undefined;
+  private openingTarget: ConnectionTarget | undefined;
+  private readonly discarding = new Set<Promise<void>>();
+  private closed = false;
+  private closing: Promise<void> | undefined;
 
   constructor(private readonly options: AcpModelOptions) {}
 
@@ -107,14 +111,25 @@ export class AcpModel implements ChatClient {
     return reply;
   }
 
-  async close(): Promise<void> {
+  close(): Promise<void> {
+    this.closed = true;
+    return this.closing ??= this.closeConnection();
+  }
+
+  private async closeConnection(): Promise<void> {
     const pending = this.connecting;
+    const results = await Promise.allSettled([
+      this.openingTarget?.close(),
+      pending?.then((connection) => connection.close(), () => {}),
+      ...this.discarding,
+    ]);
     this.connecting = undefined;
-    const connection = await pending?.catch(() => undefined);
-    await connection?.close();
+    const failure = results.find((result) => result.status === 'rejected');
+    if (failure?.status === 'rejected') throw failure.reason;
   }
 
   private connect(): Promise<AgentConnection> {
+    this.assertOpen();
     if (this.connecting) return this.connecting;
     const attempt = this.open().catch((err) => {
       // A failed launch must not poison every later turn.
@@ -133,6 +148,7 @@ export class AcpModel implements ChatClient {
 
     let lastError: Error | undefined;
     for (const args of attempts) {
+      this.assertOpen();
       const profileForAttempt = { ...profile, args };
       const target = this.options.createTarget
         ? this.options.createTarget(this.options.agentId, profileForAttempt)
@@ -142,11 +158,19 @@ export class AcpModel implements ChatClient {
             onStderr: (text) =>
               host.transcript.append({ type: 'agent_stderr', agentId: host.agentId, text }),
           });
+      this.openingTarget = target;
       try {
-        return await AgentConnection.open({ agentId: host.agentId, host, target });
+        const connection = await AgentConnection.open({ agentId: host.agentId, host, target });
+        if (this.closed) {
+          await connection.close();
+          this.assertOpen();
+        }
+        return connection;
       } catch (err) {
         lastError = err as Error;
         await target.close();
+      } finally {
+        if (this.openingTarget === target) this.openingTarget = undefined;
       }
     }
     throw lastError ?? new Error(`Could not start ${this.options.agentId} for orchestration.`);
@@ -154,7 +178,13 @@ export class AcpModel implements ChatClient {
 
   private async discard(connection: AgentConnection): Promise<void> {
     this.connecting = undefined;
-    await connection.close().catch(() => {});
+    const closing = connection.close().catch(() => {});
+    this.discarding.add(closing);
+    try { await closing; } finally { this.discarding.delete(closing); }
+  }
+
+  private assertOpen(): void {
+    if (this.closed) throw new Error('ACP model is closed.');
   }
 }
 

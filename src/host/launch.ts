@@ -85,14 +85,19 @@ export function spawnTarget(profile: AgentProfile, options: SpawnOptions): Conne
   });
 
   let settled = false;
+  let closing: Promise<void> | undefined;
+  let resolveExited: () => void;
+  const exited = new Promise<void>((resolve) => { resolveExited = resolve; });
   const broken = new Promise<Error>((resolve) => {
     child.once('error', (err) => {
       settled = true;
+      resolveExited();
       debug('spawn', `${profile.command} failed to start: ${err.message}`);
       resolve(new Error(`could not start ${profile.command}: ${err.message}`));
     });
     child.once('exit', (code, signal) => {
       settled = true;
+      resolveExited();
       debug('spawn', `${profile.command} exited (${signal ? `signal ${signal}` : `code ${code}`})`);
       resolve(
         new Error(
@@ -100,6 +105,10 @@ export function spawnTarget(profile: AgentProfile, options: SpawnOptions): Conne
             `(${signal ? `signal ${signal}` : `code ${code}`})`,
         ),
       );
+      // Sweep promptly if the wrapper dies mid-run, before its group ID
+      // could be reused. A later close() joins this same cleanup.
+      closing ??= close();
+      void closing.catch((error: unknown) => debug('spawn', `cleanup failed: ${String(error)}`));
     });
   });
 
@@ -114,20 +123,20 @@ export function spawnTarget(profile: AgentProfile, options: SpawnOptions): Conne
       );
       return app.connect(stream);
     },
-    async close(): Promise<void> {
-      // Whatever the tree below does, our ends of the stdio pipes close: a
-      // grandchild that outlives the child would otherwise keep them — and the
-      // event loop, and so the whole process — open for as long as it liked.
-      const releasePipes = () => {
-        child.stdin?.destroy();
-        child.stdout?.destroy();
-        child.stderr?.destroy();
-      };
-      if (settled || child.pid === undefined) {
-        releasePipes();
-        return;
-      }
-      const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+    close(): Promise<void> {
+      return closing ??= close();
+    },
+  };
+
+  async function close(): Promise<void> {
+    // Descendants can keep inherited pipes open after the wrapper exits.
+    const releasePipes = () => {
+      child.stdin?.destroy();
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+    };
+    try {
+      if (child.pid === undefined) return;
       // The end of stdin is how an adapter is told the host has gone, and
       // the one it can act on: it cancels its sessions and lets its own
       // children — a Claude Code process, say — leave in good order. A
@@ -136,27 +145,44 @@ export function spawnTarget(profile: AgentProfile, options: SpawnOptions): Conne
       // session's teardown failed because the process it was tearing down
       // had already been killed. So EOF first, a moment to act on it, and
       // the signals only for an adapter that did not.
-      child.stdin?.end();
+      if (!settled) child.stdin?.end();
       let grace: NodeJS.Timeout | undefined;
-      const left = await Promise.race([
+      await Promise.race([
         exited.then(() => true),
         new Promise<false>((resolve) => {
           grace = setTimeout(() => resolve(false), EOF_GRACE_MS);
         }),
       ]).finally(() => clearTimeout(grace));
-      if (!left) killGroup(child, 'SIGTERM');
-      const timer = setTimeout(() => killGroup(child, 'SIGKILL'), 2_000);
-      await exited.finally(() => clearTimeout(timer));
-      // The child's exit says nothing about the rest of its group; sweep it
-      // while the group id is still fresh rather than leave orphans behind.
-      killGroup(child, 'SIGKILL');
+      // A wrapper may have exited before close() was called. Its process
+      // group still belongs to us, and its descendants also get a TERM grace.
+      if (groupAlive(child)) {
+        killGroup(child, 'SIGTERM');
+        const deadline = Date.now() + 2_000;
+        while (groupAlive(child) && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        if (groupAlive(child)) killGroup(child, 'SIGKILL');
+      }
+      await exited;
+    } finally {
       releasePipes();
-    },
-  };
+    }
+  }
 }
 
 /** How long an adapter has to leave on its own after its stdin ends, before it is signalled. */
 const EOF_GRACE_MS = 1_000;
+
+function groupAlive(child: ReturnType<typeof spawn>): boolean {
+  if (child.pid === undefined) return false;
+  try {
+    process.kill(-child.pid, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EPERM') return true;
+    return child.exitCode === null && child.signalCode === null;
+  }
+}
 
 /** Signals the whole adapter tree, falling back to the child alone. */
 function killGroup(child: ReturnType<typeof spawn>, signal: NodeJS.Signals): void {

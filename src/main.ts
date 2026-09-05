@@ -8,6 +8,7 @@ import { run } from './commands/run.js';
 import { debug, debugTargetFromEnv, describeProxyEnv, enableDebug, fileSink } from './debug.js';
 import { parsePermissionMode } from './policy/mode.js';
 import { VERSION } from './version.js';
+import { installShutdownHandlers } from './shutdown.js';
 
 const USAGE = `handsfree — an ACP host for frontier coding agents
 
@@ -296,6 +297,7 @@ function isEntrypoint(): boolean {
 }
 
 if (isEntrypoint()) {
+  installShutdownHandlers();
   main()
     .then((code) => {
       process.exitCode = code;

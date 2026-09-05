@@ -54,6 +54,10 @@ export class AgentPool {
   private readonly sessions = new Map<string, HostSession>();
   private readonly opening = new Map<string, Promise<AgentConnection>>();
   private readonly starting = new Map<string, Promise<HostSession>>();
+  private readonly openingTargets = new Set<ConnectionTarget>();
+  private readonly discarding = new Set<Promise<void>>();
+  private closed = false;
+  private closing: Promise<void> | undefined;
 
   constructor(private readonly options: PoolOptions) {}
 
@@ -103,6 +107,7 @@ export class AgentPool {
   }
 
   async connection(agentId: string): Promise<AgentConnection> {
+    this.assertOpen();
     const existing = this.connections.get(agentId);
     if (existing) return existing;
     const pending = this.opening.get(agentId);
@@ -120,6 +125,7 @@ export class AgentPool {
    * quietly replace the first while the first still held the run's context.
    */
   async session(agentId: string): Promise<HostSession> {
+    this.assertOpen();
     const existing = this.sessions.get(agentId);
     if (existing) return existing;
     const pending = this.starting.get(agentId);
@@ -146,6 +152,7 @@ export class AgentPool {
     const saved = this.options.workspace.readSessionIds()[agentId];
     const resumed = saved ? await connection.loadSession(saved) : undefined;
     const session = resumed ?? (await connection.newSession());
+    this.assertOpen();
     this.options.transcript.append({
       type: 'session',
       agentId,
@@ -167,15 +174,36 @@ export class AgentPool {
     this.sessions.delete(agentId);
     const connection = this.connections.get(agentId);
     this.connections.delete(agentId);
-    await connection?.close();
+    if (connection) {
+      const closing = connection.close();
+      this.discarding.add(closing);
+      try { await closing; } finally { this.discarding.delete(closing); }
+    }
   }
 
-  async closeAll(): Promise<void> {
-    const open = [...this.connections.values()];
+  closeAll(): Promise<void> {
+    this.closed = true;
+    return this.closing ??= this.closeConnections();
+  }
+
+  private async closeConnections(): Promise<void> {
+    // Stop transports immediately, including initialize requests still in
+    // flight, then drain the callers before the runtime ends its transcript.
+    const pending = Promise.allSettled([...this.opening.values(), ...this.starting.values()]);
+    const cleanup = await Promise.allSettled([
+      ...[...this.openingTargets].map((target) => target.close()),
+      ...[...this.connections.values()].map((connection) => connection.close()),
+      ...this.discarding,
+    ]);
+    await pending;
     this.connections.clear();
     this.sessions.clear();
-    this.starting.clear();
-    await Promise.all(open.map((connection) => connection.close()));
+    const failure = cleanup.find((result) => result.status === 'rejected');
+    if (failure?.status === 'rejected') throw failure.reason;
+  }
+
+  private assertOpen(): void {
+    if (this.closed) throw new Error('Agent pool is closed.');
   }
 
   private async open(agentId: string): Promise<AgentConnection> {
@@ -198,6 +226,7 @@ export class AgentPool {
 
     let lastError: Error | undefined;
     for (const args of attempts) {
+      this.assertOpen();
       const profileForAttempt = { ...profile, args };
       const target = this.options.createTarget
         ? this.options.createTarget(agentId, profileForAttempt)
@@ -207,13 +236,20 @@ export class AgentPool {
             onStderr: (text) =>
               this.options.transcript.append({ type: 'agent_stderr', agentId, text }),
           });
+      this.openingTargets.add(target);
       try {
         const connection = await AgentConnection.open({ agentId, host, target });
+        if (this.closed) {
+          await connection.close();
+          this.assertOpen();
+        }
         this.connections.set(agentId, connection);
         return connection;
       } catch (err) {
         lastError = err as Error;
         await target.close();
+      } finally {
+        this.openingTargets.delete(target);
       }
     }
     throw lastError ?? new Error(`Could not start ${agentId}.`);

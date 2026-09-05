@@ -100,6 +100,8 @@ Relevant decisions and open items are retrieved independently of the recent-task
 
 ## Validation and benchmarking
 
+Run shutdown closes worker and planner ACP transports, including pending handshakes, before ending the transcript. No new agent launches or fallback attempts are accepted once shutdown starts. The CLI also drains active runtimes on SIGINT, SIGTERM and SIGHUP, including TUI sessions. Adapters first receive stdin EOF; any remaining process group receives SIGTERM and a two-second grace before SIGKILL. A wrapper that exits early still has its descendants cleaned up. SIGKILL of the handsfree host itself cannot run this cleanup.
+
 ```sh
 pnpm typecheck
 pnpm test

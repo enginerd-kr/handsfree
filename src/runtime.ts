@@ -17,6 +17,7 @@ import { pruneOldRuns } from './workspace/prune.js';
 import { Workspace } from './workspace/workspace.js';
 import type { Jail } from './policy/jail.js';
 import { debug } from './debug.js';
+import { registerShutdown } from './shutdown.js';
 import { loadCommands } from './slash/registry.js';
 import type { Command, CommandHost } from './slash/command.js';
 
@@ -225,6 +226,28 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     usage,
   });
 
+  let closing: Promise<void> | undefined;
+  const close = (): Promise<void> => closing ??= shutdown();
+  const unregister = registerShutdown(close);
+
+  async function shutdown(): Promise<void> {
+    clearTimeout(prune);
+    // Close transports while turns wind down, so pending handshakes and
+    // requests reject promptly. Every cleanup runs even if another fails.
+    const results = await Promise.allSettled([
+      conversation.close(), executor.close(), pool.closeAll(), planner?.close(),
+    ]);
+    try {
+      usage.close();
+      scheduling.release();
+      await transcript.close();
+    } finally {
+      unregister();
+    }
+    const failure = results.find((result) => result.status === 'rejected');
+    if (failure?.status === 'rejected') throw failure.reason;
+  }
+
   return {
     config,
     workspace,
@@ -238,20 +261,6 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     commands: registry.commands,
     commandHost,
     setEscalator: (escalator) => policy.setEscalator(escalator),
-    async close() {
-      clearTimeout(prune);
-      // The conversation goes first, and the agents are killed while it winds
-      // down so its pending requests reject instead of running out a grace
-      // period. Only once the turn has settled — nothing left that could
-      // append — is the transcript ended.
-      const conversationDone = conversation.close();
-      const executionDone = executor.close();
-      await Promise.all([pool.closeAll(), planner?.close()]);
-      await conversationDone;
-      await executionDone;
-      usage.close();
-      scheduling.release();
-      await transcript.close();
-    },
+    close,
   };
 }
