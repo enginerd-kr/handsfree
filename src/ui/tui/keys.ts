@@ -8,3 +8,8 @@
 export function isKittyQueryReply(input: string): boolean {
   return /^\[\?\d+u$/.test(input);
 }
+
+/** Terminal responses can arrive at an input editor but are never typed text. */
+export function isTerminalReport(input: string): boolean {
+  return isKittyQueryReply(input) || /^\[\d+;\d+R$/.test(input) || /^\[<\d+;\d+;\d+[Mm]$/.test(input);
+}

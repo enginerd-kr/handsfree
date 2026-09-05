@@ -5,7 +5,7 @@ import { modelDefaults, type ModelDefaults } from '../../config/models.js';
 import type { ModelChoice } from '../../host/models.js';
 import { scoreModel } from '../../host/models.js';
 import { agentColour, BRAND, INK } from './theme.js';
-import { isKittyQueryReply, isMouseReport, parseCursorReport } from './mouse.js';
+import { isTerminalReport } from './keys.js';
 
 interface Props {
   config: Config;
@@ -75,7 +75,7 @@ export function ModelSettings({ config, file, models, rows, columns, onSave, onC
   };
   usePaste(insert);
   useInput((input, key) => {
-    if (isMouseReport(input) || isKittyQueryReply(input) || parseCursorReport(input) !== undefined) return;
+    if (isTerminalReport(input)) return;
     const s = ref.current;
     const editor = s.editor;
     if (key.escape) {

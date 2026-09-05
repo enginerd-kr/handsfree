@@ -45,7 +45,7 @@ import { readClipboardImage } from './clipboard.js';
 import { NOTHING_SENT, recall, remember, settle, type History } from './history.js';
 import { DETAIL_INDENT, GUTTER, entryText, heightOf, textWidth, totalHeight } from './layout.js';
 import { type Highlighter, loadHighlighter, renderMarkdown } from './markdown.js';
-import { isKittyQueryReply } from './keys.js';
+import { isTerminalReport } from './keys.js';
 import {
   agentColour,
   BAND,
@@ -960,14 +960,7 @@ export function App({ runtime, settingsHome }: { runtime: Runtime; settingsHome?
     }
     // The terminal answering Ink's kitty keyboard query, on its way through
     // the input as well as to Ink: not something anyone typed.
-    if (isKittyQueryReply(char)) return;
-    const cursorRow = parseCursorReport(char);
-    if (cursorRow !== undefined) {
-      // The frame fills the window whatever it holds, so the answer minus its
-      // fixed height is the frame's first row — even while an ask is up.
-      frameTop.current = Math.max(0, cursorRow - (rows - 1));
-      return;
-    }
+    if (isTerminalReport(char)) return;
     if (settingsOpen.current && !head.current) return;
     // Shift+Tab moves the permission mode, from anywhere — a question up on
     // screen included, since the mode is the answer to some of them. It sits

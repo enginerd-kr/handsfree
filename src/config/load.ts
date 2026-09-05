@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { ConfigSchema, DEFAULT_AGENTS, type Config } from './schema.js';
+import { ConfigSchema, DEFAULT_AGENTS, RolesSchema, type Config } from './schema.js';
 
 export interface ConfigLocation {
   file: string;
@@ -14,6 +14,11 @@ export function configPath(home = os.homedir()): string {
   return path.join(home, '.handsfree', 'config.json');
 }
 
+/** Optional agent-role overrides shared by all projects. */
+export function agentsConfigPath(home = os.homedir()): string {
+  return path.join(home, '.handsfree', 'agents.json');
+}
+
 export interface LoadedConfig {
   config: Config;
   /** Empty when the file does not exist and built-in defaults were used. */
@@ -22,8 +27,9 @@ export interface LoadedConfig {
 
 export function loadConfig(cwd = process.cwd(), home = os.homedir()): LoadedConfig {
   const file = configPath(home);
-  const sources: ConfigLocation[] = fs.existsSync(file) ? [{ file, scope: 'user' }] : [];
-  const config = validate(composeConfig(readConfigFile(file)), file);
+  const sources: ConfigLocation[] = [agentsConfigPath(home), file]
+    .filter((source) => fs.existsSync(source)).map((file) => ({ file, scope: 'user' }));
+  const config = validateUserConfig(readConfigFile(file), home);
   config.workspaceRoot = config.workspaceRoot
     ? path.resolve(cwd, config.workspaceRoot)
     : path.join(home, '.handsfree');
@@ -45,8 +51,8 @@ export function updateConfig(
 ): string {
   const file = configPath(home);
   const raw = readConfigFile(file);
-  edit(raw, validate(composeConfig(raw), file));
-  validate(composeConfig(raw), file);
+  edit(raw, validateUserConfig(raw, home));
+  validateUserConfig(raw, home);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temporary = path.join(path.dirname(file), `.config-${randomUUID()}.tmp`);
   try {
@@ -125,6 +131,25 @@ function validate(raw: Record<string, unknown>, file: string): Config {
     throw new Error(`Invalid configuration in ${file}:\n${issues}`);
   }
   return parsed.data;
+}
+
+function validateUserConfig(raw: Record<string, unknown>, home: string): Config {
+  const file = configPath(home);
+  const composed = composeConfig(raw);
+  const config = validate(composed, file);
+  const roleFile = agentsConfigPath(home);
+  let text: string;
+  try { text = fs.readFileSync(roleFile, 'utf8'); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return config;
+    throw error;
+  }
+  let roles: unknown;
+  try { roles = JSON.parse(text); }
+  catch (error) { throw new Error(`${roleFile} is not valid JSON: ${(error as Error).message}`); }
+  const parsed = RolesSchema.safeParse(roles);
+  if (!parsed.success) throw new Error(`Invalid agent roles in ${roleFile}: ${parsed.error.message}`);
+  return validate({ ...composed, roles: { ...config.roles, ...parsed.data } }, `${roleFile}, ${file}`);
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

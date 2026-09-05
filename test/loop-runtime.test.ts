@@ -107,9 +107,9 @@ describe('continuous agent loop', () => {
     const b = fakeAgent({ script: () => [{ do: 'stall', ms: 30 }, { do: 'say', text: 'B exact response' }] });
     const llm = scriptedModel([
       step(worker('a', true), worker('b', true)),
-      step(call('agent_job', { operation: 'wait', jobIds: [1, 2] })),
-      step(call('agent_job', { operation: 'followup', jobId: 1, prompt: 'Respond to B.', kind: 'answer', context_from: [2] })),
-      step(call('agent_job', { operation: 'wait', jobIds: [3] })), finish('Debate synthesized'),
+      step(call('agent_job', { operation: 'wait', jobIds: ['job:1', 'job:2'] })),
+      step(call('agent_job', { operation: 'followup', jobId: 'job:1', prompt: 'Respond to B.', kind: 'answer', context_from: ['task:2'] })),
+      step(call('agent_job', { operation: 'wait', jobIds: ['job:3'] })), finish('Debate synthesized'),
     ]);
     open = harness({ agents: { a, b }, llm });
     let active = 0, peak = 0;
@@ -141,8 +141,8 @@ describe('continuous agent loop', () => {
 
   it('wakes a background wait on user steering without cancelling the worker', async () => {
     const a = fakeAgent({ script: () => [{ do: 'stall', ms: 50 }, { do: 'say', text: 'completed before requested conclusion' }] });
-    const llm = scriptedModel([step(worker('a', true)), step(call('agent_job', { operation: 'wait', jobIds: [1] })),
-      step(call('agent_job', { operation: 'wait', jobIds: [1] })), finish('short conclusion')]);
+    const llm = scriptedModel([step(worker('a', true)), step(call('agent_job', { operation: 'wait', jobIds: ['job:1'] })),
+      step(call('agent_job', { operation: 'wait', jobIds: ['job:1'] })), finish('short conclusion')]);
     open = harness({ agents: { a }, llm });
     let update: Promise<void> | undefined;
     open.runtime.transcript.on('record', (record) => {

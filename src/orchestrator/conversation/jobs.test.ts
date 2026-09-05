@@ -16,7 +16,7 @@ describe('agent job lifecycle', () => {
     jobs.cancel(first);
     await jobs.wait([], ctx());
     expect(jobs.get(first).status).toBe('cancelled');
-    expect(jobs.result(first)).toMatchObject({ halt: false, text: 'Job 1: cancelled\npartial evidence' });
+    expect(jobs.result(first)).toMatchObject({ halt: false, text: 'job:1: cancelled\npartial evidence' });
     expect(jobs.get(second).status).toBe('done');
     expect(jobs.notifications()).toHaveLength(1);
     expect(jobs.notifications()).toEqual([]);
@@ -50,5 +50,19 @@ describe('agent job lifecycle', () => {
     expect(resumed.list()).toEqual([]);
     expect(resumed.start(input, ctx(), async () => ({ text: 'new' }))).toBeGreaterThan(id);
     await resumed.close();
+  });
+
+  it('preserves failed execution receipts across restart and repeated observations', async () => {
+    const transcript = new Transcript();
+    const jobs = new AgentJobs(transcript);
+    const receipt = { status: 'error' as const, executed: false, created_tasks: [],
+      error: { code: 'invalid_task_reference', message: 'Source unavailable. No agent was called.', valid_refs: ['task:1'] } };
+    const id = jobs.start(input, ctx(), async () => ({ text: receipt.error.message, receipt }));
+    await jobs.wait([id], ctx());
+    const resumed = new AgentJobs(transcript);
+    for (const registry of [jobs, resumed, resumed]) {
+      expect(registry.result(id).receipt).toEqual({ ...receipt, executed: true,
+        created_tasks: [], observed_tasks: [], job: 'job:1' });
+    }
   });
 });

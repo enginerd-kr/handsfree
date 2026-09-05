@@ -3,6 +3,7 @@ import type { JsonSchemaSpec } from '../../../models/client.js';
 import { extractJsonObject } from '../../../models/json.js';
 import type { TaskOutcome } from '../../results/outcome.js';
 import { ReviewSchema, type LoopReview } from '../../../contracts/review.js';
+import type { ToolReceipt } from '../../../contracts/tool-result.js';
 
 /**
  * A tool is one thing the planner can do besides answer. It is described to
@@ -21,6 +22,7 @@ export interface ToolContext {
 }
 
 export interface ToolResult {
+  receipt?: ToolReceipt;
   /** What the planner is handed back. Replies remain complete unless it requests a page. */
   text: string;
   /** True when the turn should stop here: what the tool did cannot be built on. */
@@ -36,6 +38,17 @@ export interface ToolResult {
   callsUsed?: number;
   /** A line for the closing account, from a tool that has no outcome to give it. */
   note?: string;
+}
+
+/** Preserve prose verbatim, with machine-readable execution facts ahead of it. */
+export function renderToolResult(result: ToolResult): string {
+  const receipt = result.receipt ?? { status: 'ok', executed: true, created_tasks: [] };
+  return `${JSON.stringify(receipt)}\n${result.text}`;
+}
+
+export function toolError(code: string, message: string, executed: boolean | null = false, validRefs?: string[]): ToolResult {
+  return { text: message, receipt: { status: 'error', executed, created_tasks: [],
+    error: { code, message, ...(validRefs ? { valid_refs: validRefs } : {}) } } };
 }
 
 export interface Tool<I = unknown> {

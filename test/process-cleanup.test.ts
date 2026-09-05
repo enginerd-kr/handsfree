@@ -131,11 +131,12 @@ describe.skipIf(process.platform === 'win32')('ACP process cleanup', () => {
     ['SIGINT', 'run', 130], ['SIGINT', 'tui', 130],
   ] as const)('drains the CLI on %s during %s', async (signal, command, code) => {
     const { root, profile, records } = setup('stall');
-    fs.writeFileSync(path.join(root, 'handsfree.config.json'), JSON.stringify({
+    // The CLI fixture resolves os.homedir() to root/home.
+    fs.mkdirSync(path.join(root, 'home', '.handsfree'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'home', '.handsfree', 'config.json'), JSON.stringify({
       workspaceRoot: path.join(root, 'runs'),
-      agents: { fixture: profile },
+      agents: { claude: { enabled: false }, codex: { enabled: false }, gemini: { enabled: false }, fixture: profile },
       orchestration: { provider: 'acp', acp: { agent: 'fixture' } },
-      limits: { handshakeTimeoutMs: 60_000 },
     }));
     const args = command === 'tui' ? [] : [command, 'hello'];
     const host = spawn(process.execPath, ['--import', loader, cli, main, ...args], {

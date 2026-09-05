@@ -79,12 +79,17 @@ export class AgentPool {
   }
 
   async rotate(agentId: string): Promise<HostSession> {
+    // A roster probe may still be restoring the prior session. Let it settle
+    // before replacement so it cannot later overwrite this fresh selection.
+    await this.starting.get(agentId);
+    if (this.sessions.get(agentId)?.invalidated) await this.discard(agentId);
     const previous = this.sessions.get(agentId);
     if (previous?.isBusy) throw new Error(`Cannot rotate active session for ${agentId}`);
     const connection = await this.connection(agentId);
     const model = this.currentModel(agentId);
     const session = await connection.newSession();
-    if (model) await session.selectModel(model);
+    try { if (model) await session.selectModel(model); }
+    catch (error) { connection.releaseSession(session.sessionId); throw error; }
     if (previous) connection.releaseSession(previous.sessionId);
     this.sessions.set(agentId, session);
     this.options.transcript.append({ type: 'session', agentId, sessionId: session.sessionId, how: 'new' });

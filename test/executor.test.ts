@@ -85,8 +85,8 @@ describe('structured executor', () => {
     const result = await h.runtime.executor.execute({ task: 'Inspect', agent: 'a' });
     const record = h.runtime.transcript.all().find((r) => r.type === 'task_result')!;
     expect(record.seq).not.toBe(result.taskId);
-    expect(() => h.runtime.executor.readResult(record.seq, 100)).toThrow(`task_result {"taskId":${result.taskId},"offset":100}`);
-    expect(() => h.runtime.executor.readResult(999999)).toThrow('Use a taskId from RESULT SOURCES');
+    expect(() => h.runtime.executor.readResult(record.seq, 100)).toThrow(`record:${record.seq} refers to task:${result.taskId}`);
+    expect(() => h.runtime.executor.readResult(999999)).toThrow('Use a task reference from RESULT SOURCES');
 
     const other = summarise(record.seq, 'a', 'A different task', 'end_turn', [], 0);
     other.message = 'Different task detail.';
@@ -103,9 +103,9 @@ describe('structured executor', () => {
     if (failure === 'missing') fs.unlinkSync(file);
     else fs.writeFileSync(file, '{invalid json');
 
-    const reply = await new ResultTool(h.runtime.executor).run({ taskId: result.taskId, offset: 0 });
-    expect(reply.completedWork).toBe(false);
-    expect(reply.text).toMatch(/^Task result error:/);
+    const reply = await new ResultTool(h.runtime.executor).run({ taskId: `task:${result.taskId}`, offset: 0 });
+    expect(reply.receipt).toMatchObject({ status: 'error', executed: false, created_tasks: [] });
+    expect(reply.text).toMatch(/^Cannot read task result:/);
     expect(a.prompts).toHaveLength(1);
   });
 
@@ -222,12 +222,10 @@ describe('structured executor', () => {
     expect(a.prompts).toHaveLength(3);
   });
 
-  it('runs inspections with native tools denied concurrently without mixing reports or file records', async () => {
+  it('runs host-mediated inspections concurrently without mixing reports or file records', async () => {
     const a = fakeAgent({ script: () => [{ do: 'stall', ms: 30 }, { do: 'say', text: report('Only A') }] });
     const b = fakeAgent({ script: () => [{ do: 'say', text: report('Only B') }] });
-    const h = setup({ agents: { a, b }, config: { profiles: {
-      a: { nativeTools: 'deny' }, b: { nativeTools: 'deny' },
-    } } });
+    const h = setup({ agents: { a, b } });
     const result = await h.runtime.executor.batch({ tasks: [
       { id: 'a', request: { task: 'a', agent: 'a', kind: 'inspect' } },
       { id: 'b', request: { task: 'b', agent: 'b', kind: 'inspect' } },

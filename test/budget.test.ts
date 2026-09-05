@@ -82,7 +82,7 @@ describe('planner context budget', () => {
     // Later turns retain result addresses and report summaries, while the
     // complete original is still available through task_result.
     expect(JSON.stringify(llm.seen[5])).not.toContain(ACCOUNT);
-    expect(JSON.stringify(llm.seen[5])).toContain('task 1: record');
+    expect(JSON.stringify(llm.seen[5])).toContain('task:1 (transcript record:');
     expect(h.runtime.executor.readOutcome(1).message).toContain(ACCOUNT);
   });
 });

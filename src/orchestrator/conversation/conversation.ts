@@ -14,7 +14,7 @@ import {
 } from './plan.js';
 import type { AgentPool } from '../../host/pool.js';
 import { AgentTool, type AgentCard } from './tools/agent.js';
-import { Toolbox, type Tool, type ToolResult } from './tools/tool.js';
+import { Toolbox, renderToolResult, toolError, type Tool, type ToolResult } from './tools/tool.js';
 import type { Transcript } from '../../workspace/transcript.js';
 import type { Workspace } from '../../workspace/workspace.js';
 import { expandBody } from './commands/expand.js';
@@ -42,6 +42,8 @@ import { PlanTool } from './tools/plan.js';
 import { AgentJobs } from './jobs.js';
 import { JobTool } from './tools/job.js';
 import { recoverWindow } from './window.js';
+import { SharedConversations } from '../context/shared.js';
+import { SharedContextTool } from './tools/shared.js';
 
 export interface ConversationDeps {
   executor?: Executor;
@@ -122,6 +124,7 @@ export class Conversation {
   /** What the planner can call: the agent tool, and whatever else was handed in. */
   private readonly toolbox: Toolbox;
   private readonly context: RunContext;
+  private readonly shared: SharedConversations;
   private readonly workMode: WorkMode;
   /**
    * Which conversation this is. `/clear` does not queue behind a turn — it is
@@ -142,6 +145,7 @@ export class Conversation {
     }
     this.delegator = deps.executor?.delegator ?? new Delegator(deps);
     this.context = new RunContext(deps.transcript);
+    this.shared = new SharedConversations(deps.transcript);
     this.workMode = new WorkMode(deps.transcript, deps.workspace.runDir);
     this.jobs = new AgentJobs(deps.transcript);
     this.messages = this.context.history();
@@ -153,12 +157,15 @@ export class Conversation {
       workspace: deps.workspace,
       onOutcome: (outcome) => deps.executor?.store(outcome),
       readOutcome: deps.executor ? (taskId) => deps.executor!.readOutcome(taskId) : undefined,
+      taskRefs: () => this.context.taskRefs(),
+      shared: deps.executor ? this.shared : undefined,
     });
     this.toolbox = new Toolbox([
       agent,
       new JobTool(this.jobs, agent),
-      ...(deps.executor ? [new ResultTool(deps.executor)] : []),
+      ...(deps.executor ? [new ResultTool(deps.executor, () => this.context.taskRefs())] : []),
       new ContextTool(this.context),
+      ...(deps.executor ? [new SharedContextTool(this.shared)] : []),
       new PlanTool(this.workMode),
       ...(deps.tools ?? []),
     ]);
@@ -289,7 +296,10 @@ export class Conversation {
     let history: ChatMessage[] = this.messages;
     const consumeUpdates = () => {
       for (const update of this.updates.splice(0)) {
-        if (turnId !== undefined) this.context.update(turnId, update);
+        if (turnId !== undefined) {
+          this.context.update(turnId, update);
+          this.shared.update(turnId);
+        }
         history.push({ role: 'user', pinned: true, content: `USER UPDATE:\n${update}` });
         if (opening) opening = { ...opening, content: `${opening.content}\n\nUSER UPDATE:\n${update}` };
       }
@@ -354,8 +364,8 @@ export class Conversation {
         const result = await routed.step.call.run({ signal: turn.signal, turnId, workMode: this.mode });
         if (result.outcome) outcomes.push(result.outcome);
         if (result.note) notes.push(result.note);
-        this.context.retainEvidence(turnId, routed.step.call.json, result.text);
-        history.push({ role: 'user', content: this.relay(routed.step.call.name, result.text),
+        this.context.retainEvidence(turnId, routed.step.call.json, renderToolResult(result));
+        history.push({ role: 'user', content: this.relay(routed.step.call.name, result),
           agents: result.outcome ? [result.outcome.agentId] : [] });
         completion = 'reported';
         if (!this.updates.length) return;
@@ -366,7 +376,7 @@ export class Conversation {
         consumeUpdates();
         for (const result of this.jobs.notifications()) {
           rememberResult(result);
-          history.push({ role: 'user', content: this.relay('agent_job notification', result.text),
+          history.push({ role: 'user', content: this.relay('agent_job notification', result),
             agents: [...(result.outcomes ?? []), ...(result.outcome ? [result.outcome] : [])].map((outcome) => outcome.agentId) });
         }
 
@@ -432,14 +442,14 @@ export class Conversation {
           const skipped: boolean = turn.signal.aborted || halted || this.updates.length > 0;
           let result: ToolResult;
           try {
-            result = skipped ? { text: 'Not executed: cancelled or superseded by a user update. Reassess before calling again.' }
+            result = skipped ? toolError('skipped', 'Not executed: cancelled or superseded by a user update. Reassess before calling again.')
               : await call.run({ signal: turn.signal, turnId, workMode: this.mode, wakeSignal: this.wake.signal });
           } catch (err) {
-            result = { text: `Tool error: ${(err as Error).message}` };
+            result = toolError('tool_exception', `Tool error: ${(err as Error).message}`, null);
           }
-          this.context.retainEvidence(turnId, call.json, result.text);
+          this.context.retainEvidence(turnId, call.json, renderToolResult(result));
           rememberResult(result);
-          history.push({ role: 'user', content: this.relay(call.name, `${calls.length > 1 ? `Call ${index + 1}:\n` : ''}${result.text}`),
+          history.push({ role: 'user', content: this.relay(call.name, result, calls.length > 1 ? index + 1 : undefined),
             agents: [...(result.outcomes ?? []), ...(result.outcome ? [result.outcome] : [])].map((outcome) => outcome.agentId) });
           halted ||= result.halt === true;
         }
@@ -481,8 +491,8 @@ export class Conversation {
    * What the planner is handed when a call ends, under a heading that names
    * the tool. The complete text is retained.
    */
-  private relay(tool: string, text: string): string {
-    return `TOOL RESULT (${tool})\n${text}`;
+  private relay(tool: string, result: ToolResult, call?: number): string {
+    return `TOOL RESULT (${tool})\n${call === undefined ? '' : `Call ${call}:\n`}${renderToolResult(result)}`;
   }
 
   /**
@@ -664,7 +674,7 @@ export class Conversation {
    * too — what each agent has open — because it is the half that changes.
    */
   private requestMessage(agents: string[], prompt: string, turnId: number): ChatMessage {
-    const required = [`CURRENT REQUEST SOURCE: record ${turnId}`, this.workMode.prompt(), this.context.required()].filter(Boolean).join('\n');
+    const required = [`CURRENT REQUEST SOURCE: record:${turnId}`, this.workMode.prompt(), this.context.required()].filter(Boolean).join('\n');
     return { role: 'user', pinned: true,
       content: composeUserMessage([required, this.runState(agents, turnId)].filter(Boolean).join('\n\n'), prompt),
       requiredContent: composeUserMessage(required, prompt) };
@@ -679,6 +689,7 @@ export class Conversation {
       record: renderAgentRecord(worked.get(id), workspace.dir),
     }));
     return [renderState(sessions, renderRunState(tasks, workspace.dir, { repliesBefore: turnId })),
-      this.context.sources(), this.context.findings()].filter(Boolean).join('\n');
+      this.context.sources(), this.context.findings(),
+      ...(this.shared.list().length ? [`SHARED CONVERSATIONS: ${JSON.stringify(this.shared.list())}`] : [])].filter(Boolean).join('\n');
   }
 }

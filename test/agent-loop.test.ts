@@ -10,7 +10,7 @@ const answer = (message: string) => JSON.stringify({ action: 'answer', message }
 const call = (tool: string, input: unknown) => JSON.stringify({ action: 'call', tool, input });
 const delegate = (agent: string, prompt: string) => call('agent', { agent, prompt, kind: 'answer' });
 const replies = (h: Harness) => h.runtime.transcript.all().filter((r) => r.type === 'assistant').map((r) => r.text);
-const source = (messages: ChatMessage[]) => Number(/CURRENT REQUEST SOURCE: record (\d+)/.exec(messages.find((m) => m.pinned)?.content ?? '')?.[1]);
+const source = (messages: ChatMessage[]) => /CURRENT REQUEST SOURCE: (record:\d+)/.exec(messages.find((m) => m.pinned)?.content ?? '')?.[1];
 
 describe('analyze, execute, review loop', () => {
   it('records orchestrator reviews without completing their items after worker execution', async () => {
@@ -90,7 +90,7 @@ describe('analyze, execute, review loop', () => {
     const llm = scriptedModel([
       delegate('claude', 'Review the flag.'),
       delegate('claude', 'Run an extra review.'),
-      call('task_result', { taskId: 1 }),
+      call('task_result', { taskId: 'task:1' }),
       answer('Both reviews say the flag is supported.'),
     ]);
     const h = harness({ agents: { claude: worker }, llm });
@@ -116,9 +116,9 @@ describe('analyze, execute, review loop', () => {
         case 1: return checked(review, delegate('claude', 'Read README.'));
         case 2: {
           recordId = h.runtime.transcript.all().find((r) => r.type === 'task_result')!.seq;
-          return checked(retrieval, call('task_result', { taskId: recordId }));
+          return checked(retrieval, call('task_result', { taskId: `task:${recordId}` }));
         }
-        case 3: return checked(retrieval, call('task_result', { taskId: 1 }));
+        case 3: return checked(retrieval, call('task_result', { taskId: 'task:1' }));
         default: return answer(detail);
       }
     } };
@@ -128,18 +128,17 @@ describe('analyze, execute, review loop', () => {
 
     expect(recordId).toBeGreaterThan(1);
     expect(seen).toHaveLength(4);
-    expect(seen[1]?.find((m) => m.pinned)?.content).toContain(`task_result {"taskId":1}; context record ${recordId}`);
-    expect(seen[2]?.at(-1)?.content).toContain(`Context record ${recordId} refers to taskId 1`);
-    expect(seen[2]?.at(-1)?.content).toContain('task_result {"taskId":1,"offset":0}');
+    expect(seen[1]?.find((m) => m.pinned)?.content).toContain(`task:1 (transcript record:${recordId})`);
+    expect(seen[2]?.at(-1)?.content).toContain(`record:${recordId} refers to task:1`);
+    expect(seen[2]?.at(-1)?.content).toContain('taskId:"task:1"');
     expect(seen[2]?.find((m) => m.pinned)?.content).toContain('"remaining":["Retrieve summary"]');
     expect(seen[3]?.at(-1)?.content).toContain(detail);
     expect(worker.prompts).toHaveLength(1);
     expect(replies(h).at(-1)).toBe(detail);
     const entries = h.runtime.transcript.all().filter((r) => r.type === 'context').map((r) => r.entry);
-    expect(entries.filter((e) => e.event === 'complete')).toHaveLength(2);
     const evidence = entries.filter((e) => e.event === 'evidence');
-    expect(evidence).toHaveLength(1);
-    expect(evidence[0]?.text).toContain(detail);
+    expect(evidence.some((entry) => entry.text.includes('invalid_task_reference'))).toBe(true);
+    expect(evidence.find((entry) => entry.text.includes('"observed_tasks":["task:1"]'))?.text).toContain(detail);
     expect(entries.at(-1)).toMatchObject({ event: 'finish', status: 'reported' });
   });
 

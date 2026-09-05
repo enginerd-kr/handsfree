@@ -16,6 +16,7 @@ import type { Workspace } from '../../workspace/workspace.js';
 import type { LedgerOptions } from '../context/ledger.js';
 import { summarise, type TaskOutcome } from '../results/outcome.js';
 import { buildBrief, type TaskKind } from './prompts.js';
+import type { SharedContextSnapshot } from '../../contracts/shared-context.js';
 
 /**
  * What handsfree remembers about having briefed an agent: which session heard
@@ -45,6 +46,7 @@ export interface Delegation {
   prompt: string;
   /** Explicitly selected source replies, attached only when building the wire prompt. */
   context?: readonly TaskOutcome[];
+  sharedContext?: SharedContextSnapshot;
   /** A few words naming the task, for the screen. */
   title?: string | undefined;
   /** The model the work should run on, as a mention or the planner named it. */
@@ -129,8 +131,10 @@ export class Delegator {
     // the briefing back afterwards would quietly restore a session's claim to
     // have heard rules that were cleared along with everything else.
     const epoch = this.epoch;
+    const sharedContext = delegation.sharedContext
+      ? { conversation: delegation.sharedContext.conversation, through: delegation.sharedContext.through } : undefined;
     const options = { ...this.ledgerOptions(), kind,
-      contextFrom: delegation.context?.map((source) => source.taskId) };
+      contextFrom: delegation.context?.map((source) => source.taskId), sharedContext };
 
     const failed = (err: unknown): TaskOutcome => {
       const outcome = summarise(taskId, agentId, task, 'unresponsive', [], Date.now() - startedAt, options);
@@ -153,7 +157,10 @@ export class Delegator {
       if (signal.aborted) return { ...failed(new Error('Cancelled before starting')), status: 'cancelled' };
       const profile = config.agents[agentId];
       lease = this.deps.usage?.begin(agentId, model ?? pool.currentModel(agentId) ?? agentId, profile?.frontier ?? true);
-      session = await pool.session(agentId);
+      // A shared snapshot defines the public conversation for this invocation.
+      // Reusing private history could leak newer replies or another scope into
+      // an older selected prefix. Reuse the process, but start a fresh session.
+      session = sharedContext ? await pool.rotate(agentId) : await pool.session(agentId);
       if (delegation.sessionId !== undefined && session.sessionId !== delegation.sessionId) throw new Error(`Session ${delegation.sessionId} is no longer active for ${agentId}`);
       if (model !== undefined) chosen = await session.selectModel(model);
       lease?.setModel(session.currentModel() ?? agentId);
@@ -170,6 +177,7 @@ export class Delegator {
       task,
       kind,
       ...(options.contextFrom?.length ? { contextFrom: options.contextFrom } : {}),
+      ...(sharedContext ? { sharedContext } : {}),
       ...(title === undefined ? {} : { title }),
       // The id is what went on the wire, so the id is what is written down.
       ...(chosen === undefined ? {} : { model: chosen.value }),
@@ -189,11 +197,13 @@ export class Delegator {
       known.lastStop === 'unresponsive';
     const stale = sessionMemory(transcript, agentId, session.sessionId).stale;
     const brief = buildBrief({
+      agentId,
       task,
       kind,
       workspaceDir: workspace.dir,
       first,
       context: delegation.context,
+      sharedContext: delegation.sharedContext,
       staleFiles: stale,
     });
 

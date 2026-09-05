@@ -17,7 +17,7 @@ function sourceFiles(directory: string): string[] {
 // Each area may use earlier areas. Peers remain independent; local imports
 // within an area are checked for cycles separately, including type-only edges.
 const areas = [
-  ['contracts/', 'debug.ts', 'version.ts'],
+  ['contracts/', 'debug.ts', 'version.ts', 'shutdown.ts'],
   ['config/'], ['policy/'], ['workspace/'], ['host/'], ['models/'],
   ['orchestrator/usage/', 'orchestrator/results/'],
   ['orchestrator/context/'], ['orchestrator/execution/'], ['orchestrator/conversation/'],

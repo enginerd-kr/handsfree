@@ -1,6 +1,7 @@
 import type { AgentJobInput, AgentJobRecord } from '../../contracts/agent-job.js';
 import type { Transcript } from '../../workspace/transcript.js';
 import type { ToolContext, ToolResult } from './tools/tool.js';
+import { reference } from '../../contracts/reference.js';
 
 interface Job {
   record: AgentJobRecord;
@@ -42,7 +43,7 @@ export class AgentJobs {
       job.result = result;
       const outcomes = [...(result.outcomes ?? []), ...(result.outcome ? [result.outcome] : [])];
       job.record = { ...job.record, status: signal.aborted ? 'cancelled' : 'done', text: result.text,
-        taskIds: outcomes.map((outcome) => outcome.taskId) };
+        taskIds: outcomes.map((outcome) => outcome.taskId), ...(result.receipt ? { receipt: result.receipt } : {}) };
     }, (error: unknown) => {
       job.record = { ...job.record, status: signal.aborted ? 'cancelled' : 'error', text: (error as Error).message };
     }).finally(() => this.record(job));
@@ -62,7 +63,9 @@ export class AgentJobs {
     const record = this.get(jobId);
     const job = this.jobs.get(jobId)!;
     if (record.status !== 'running') job.delivered = true;
-    return { ...job.result, halt: false, text: `Job ${jobId}: ${record.status}\n${record.text}` };
+    return { ...job.result, halt: false, text: `${reference('job', jobId)}: ${record.status}\n${record.text}`,
+      receipt: { ...record.receipt, status: record.status === 'running' ? 'pending' : record.status === 'done' ? record.receipt?.status ?? 'ok' : record.status === 'cancelled' ? 'cancelled' : 'error',
+        executed: true, created_tasks: [], observed_tasks: record.taskIds.map((id) => reference('task', id)), job: reference('job', jobId) } };
   }
 
   notifications(): ToolResult[] {

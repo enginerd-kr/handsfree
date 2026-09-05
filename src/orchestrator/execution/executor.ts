@@ -132,7 +132,13 @@ export class Executor {
     try {
       return (JSON.parse(fs.readFileSync(file, 'utf8')) as { outcome: TaskOutcome }).outcome;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`Task ${taskId} has no saved result in this run.`);
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        const record = this.deps.transcript.all().find((r) => r.seq === taskId && r.type === 'task_result');
+        const hint = record?.type === 'task_result'
+          ? ` Transcript record:${taskId} refers to task:${record.taskId}; use task_result with taskId:"task:${record.taskId}".`
+          : ' Use a task reference from RESULT SOURCES, not a transcript record number.';
+        throw new Error(`Task ${taskId} has no saved result in this run.${hint}`);
+      }
       throw error;
     }
   }

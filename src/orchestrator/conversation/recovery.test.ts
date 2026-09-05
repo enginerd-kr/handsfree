@@ -65,7 +65,7 @@ describe('model recovery', () => {
     const recovered = recoverWindow(messages, 99)!;
     const text = recovered.map((message) => message.content).join('\n');
     expect(text).not.toContain(old);
-    for (const retained of ['Never edit the schema', 'record 99', 'Current request', 'call B', 'latest B rebuttal', 'call A2', 'latest A rebuttal', 'now summarize']) expect(text).toContain(retained);
+    for (const retained of ['Never edit the schema', 'record:99', 'Current request', 'call B', 'latest B rebuttal', 'call A2', 'latest A rebuttal', 'now summarize']) expect(text).toContain(retained);
     expect(messages[3]?.content).toContain(old);
   });
 });

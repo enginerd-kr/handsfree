@@ -979,7 +979,7 @@ describe('Conversation', () => {
     const llm = scriptedModel([
       JSON.stringify({ action: 'call', tool: 'agent', input: { agent: Object.keys(agents), kind: 'answer', prompt: '안녕?' } }),
       answer('세 에이전트 모두 응답했습니다.'),
-      JSON.stringify({ action: 'call', tool: 'task_result', input: { taskId: 1 } }),
+      JSON.stringify({ action: 'call', tool: 'task_result', input: { taskId: 'task:1' } }),
       answer(detail),
       answer('Claude만 수정 중인 파일을 언급했고, 나머지 둘은 인사만 했습니다.'),
     ]);

@@ -8,7 +8,7 @@ const opened: Harness[] = [];
 afterEach(async () => { for (const h of opened.splice(0).reverse()) await h.dispose(); });
 const call = (tool: string, input: unknown) => JSON.stringify({ action: 'call', tool, input });
 const agent = (recipient: string | string[], prompt: string, context_from?: number[]) =>
-  call('agent', { agent: recipient, prompt, kind: 'answer', ...(context_from ? { context_from } : {}) });
+  call('agent', { agent: recipient, prompt, kind: 'answer', ...(context_from ? { context_from: context_from.map((id) => `task:${id}`) } : {}) });
 const answer = (message: string) => JSON.stringify({ action: 'answer', message });
 const report = (message: string, status = 'done') => `${message}\n\nREPORT\noutcome: ${status}\nsummary: Response recorded.\nchanged: none\nopen: none`;
 
@@ -64,7 +64,7 @@ describe('orchestrator-selected result context', () => {
     const codex = fakeAgent({ script: () => [{ do: 'say', text: report('Codex agrees with the summary and proposes loader merging.') }] });
     const llm = scriptedModel([
       agent('claude', 'Explain the persistence problem.'),
-      call('task_result', { taskId: 1 }),
+      call('task_result', { taskId: 'task:1' }),
       agent('codex', `Critique this summary of Claude’s reply.\n${summary}`),
       answer('The summary and critique support merging defaults in the loader.'),
     ]);
@@ -84,7 +84,7 @@ describe('orchestrator-selected result context', () => {
     const llm = scriptedModel([
       agent('claude', 'Give a proposal.'),
       agent('codex', 'Do not run with partial context.', [1, 999]),
-      call('task_result', { taskId: 999 }),
+      call('task_result', { taskId: 'task:999' }),
       agent('codex', 'Review the existing proposal.', [1, 1]),
       answer('Recovered using the existing result.'),
     ]);

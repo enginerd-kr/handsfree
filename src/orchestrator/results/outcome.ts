@@ -4,6 +4,7 @@ import { agentText, changedFiles, touchedFiles, type TranscriptRecord } from '..
 import { parseReport, type Report } from './report.js';
 import type { TokenUsage } from '../../contracts/usage.js';
 import type { TaskStatus } from '../../contracts/task.js';
+import type { SharedContextSelection } from '../../contracts/shared-context.js';
 
 export interface TaskOutcome {
   taskId: number;
@@ -12,6 +13,7 @@ export interface TaskOutcome {
   kind?: 'answer' | 'inspect' | 'change';
   /** References only; the instruction never embeds the source replies. */
   contextFrom?: number[];
+  sharedContext?: SharedContextSelection;
   status: TaskStatus;
   stopReason?: StopReason | 'unresponsive';
   usage?: TokenUsage;
@@ -47,7 +49,7 @@ export function summarise(
   stopReason: StopReason | 'unresponsive',
   records: readonly TranscriptRecord[],
   durationMs: number,
-  options: { workspaceDir?: string; kind?: TaskOutcome['kind']; contextFrom?: number[] } = {},
+  options: { workspaceDir?: string; kind?: TaskOutcome['kind']; contextFrom?: number[]; sharedContext?: SharedContextSelection } = {},
 ): TaskOutcome {
   const denials: string[] = [];
   for (const record of records) {
@@ -73,6 +75,7 @@ export function summarise(
     task,
     ...(options.kind === undefined ? {} : { kind: options.kind }),
     ...(options.contextFrom?.length ? { contextFrom: options.contextFrom } : {}),
+    ...(options.sharedContext ? { sharedContext: options.sharedContext } : {}),
     status: stopReason === 'end_turn' && report.outcome === 'blocked' ? 'blocked'
       : stopReason === 'end_turn' && report.outcome === 'partial' ? 'incomplete' : statusOf(stopReason),
     stopReason,

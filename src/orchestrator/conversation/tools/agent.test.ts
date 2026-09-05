@@ -3,7 +3,7 @@ import type { Delegator, Delegation } from '../../execution/delegate.js';
 import type { TaskOutcome } from '../../results/outcome.js';
 import { Transcript } from '../../../workspace/transcript.js';
 import { AgentTool } from './agent.js';
-import { Toolbox } from './tool.js';
+import { Toolbox, renderToolResult } from './tool.js';
 
 const outcomeOf = (delegation: Delegation): TaskOutcome => ({
   taskId: 1,
@@ -64,6 +64,16 @@ describe('AgentTool', () => {
     expect(result.note).toContain('Not contacted (cancelled): claude, gemini');
   });
 
+  it('does not claim non-execution after an unexpected grouped worker exception', async () => {
+    const agent = new AgentTool({ roster: () => [{ id: 'claude', description: '' }],
+      delegator: { async delegate() { throw new Error('Connection lost after sending'); } } as unknown as Delegator,
+      transcript: new Transcript(), workspace: { dir: '/ws' } as never });
+    const result = await agent.run({ agent: ['claude'], kind: 'answer', prompt: 'Hi' }, ctx);
+    expect(result.receipt).toEqual({ status: 'error', executed: null, created_tasks: [] });
+    expect(result.text).toContain('"code":"tool_exception"');
+    expect(result.text).toContain('Connection lost after sending');
+  });
+
   it('describes the roster and how to call it', () => {
     const { agent } = tool();
     const text = agent.describe();
@@ -93,13 +103,13 @@ describe('AgentTool', () => {
     expect(tool().box.parse('{"action":"call","tool":"agent","input":{"agent":"claude","prompt":""}}').ok).toBe(false);
   });
 
-  it('accepts only positive integer task ids as context references', () => {
+  it('accepts only namespaced task references', () => {
     const { box } = tool();
     const parse = (context_from: unknown) => box.parse(JSON.stringify({
       action: 'call', tool: 'agent', input: { agent: 'claude', prompt: 'Review the earlier reply', context_from },
     }));
-    for (const refs of [[0], [-1], [1.5], ['1'], 1]) expect(parse(refs).ok).toBe(false);
-    for (const refs of [[], [1], [1, 2]]) expect(parse(refs).ok).toBe(true);
+    for (const refs of [[0], [-1], [1.5], [1], ['1'], ['record:1'], ['job:1'], ['task:0'], ['task:1.5'], ['task:9007199254740992'], 1]) expect(parse(refs).ok).toBe(false);
+    for (const refs of [[], ['task:1'], ['task:1', 'task:2']]) expect(parse(refs).ok).toBe(true);
     expect(JSON.stringify(box.jsonSchema().schema)).toContain('context_from');
   });
 
@@ -126,6 +136,6 @@ describe('AgentTool', () => {
     expect(result.text).toContain('summary: Made it so.');
     expect(result.text).toContain(outcomeOf(delegated[0]!).message);
     const usage = transcript.all().find((record) => record.type === 'usage');
-    expect(usage).toMatchObject({ purpose: 'task', taskId: 1, promptChars: 40, relayedChars: result.text.length });
+    expect(usage).toMatchObject({ purpose: 'task', taskId: 1, promptChars: 40, relayedChars: renderToolResult(result).length });
   });
 });

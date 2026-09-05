@@ -24,7 +24,7 @@ describe('usage accounting', () => {
 
   it('separates local usage, unknown prices, cached prices and provider-reported cost', () => {
     const manager = new UsageTracker(ConfigSchema.parse({ prices: { small: { input: 1, output: 4, cachedRead: 0.1, cachedWrite: 2 } } }), new Transcript());
-    const charge = { tokens: 160, inputTokens: 10, cachedReadTokens: 100, cachedWriteTokens: 30, estimated: false };
+    const charge = { tokens: 160, inputTokens: 10, outputTokens: 20, cachedReadTokens: 100, cachedWriteTokens: 30, estimated: false };
     expect(manager.record('a', 'unknown', true, charge).costUsd).toBeUndefined();
     expect(manager.record('a', 'small', true, charge).costUsd).toBeCloseTo(0.00016);
     expect(manager.record('a', 'small', true, { ...charge, costUsd: 2 }).costUsd).toBe(2);

@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import type { SharedContextEntry, SharedContextSelection } from '../contracts/shared-context.js';
 import { EventEmitter } from 'node:events';
 import type { SessionUpdate, StopReason, ToolCallStatus, ToolKind } from '@agentclientprotocol/sdk';
 import type { AuditEntry } from '../policy/types.js';
@@ -8,6 +9,7 @@ import type { ContextEntry } from '../contracts/context.js';
 import type { AgentJobRecord } from '../contracts/agent-job.js';
 
 export type TranscriptBody =
+  | { type: 'shared_context'; entry: SharedContextEntry }
   | { type: 'agent_job'; job: AgentJobRecord }
   | { type: 'context'; entry: ContextEntry }
   | { type: 'budget_usage'; usage: TokenUsage }
@@ -73,6 +75,7 @@ export type TranscriptBody =
       kind?: 'answer' | 'inspect' | 'change';
       /** Explicit source task IDs; source replies live in their own records. */
       contextFrom?: number[];
+      sharedContext?: SharedContextSelection;
       /** A few words naming the task, where the planner gave them. */
       title?: string;
       model?: string;

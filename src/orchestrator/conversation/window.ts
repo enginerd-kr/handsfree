@@ -29,7 +29,7 @@ export function recoverWindow(messages: readonly ChatMessage[], checkpoint: numb
       kept.push(message.requiredContent ? { ...message, content: message.requiredContent } : message);
     }
   });
-  const note: ChatMessage = { role: 'user', content: `HISTORY CHECKPOINT: record ${checkpoint}. Older exchanges were removed from this active window after a context overflow. Their exact text is stored in context.read; use offset and maxChars to retrieve selected pages. Current requests, constraints and the latest worker replies are retained. Retrieve earlier evidence before making claims that depend on it.` };
+  const note: ChatMessage = { role: 'user', content: `HISTORY CHECKPOINT: record:${checkpoint}. Older exchanges were removed from this active window after a context overflow. Their exact text is stored in context.read; use offset and maxChars to retrieve selected pages. Current requests, constraints and the latest worker replies are retained. Retrieve earlier evidence before making claims that depend on it.` };
   kept.splice(kept[0]?.role === 'system' ? 1 : 0, 0, note);
   return kept.reduce((sum, message) => sum + message.content.length, 0) < messages.reduce((sum, message) => sum + message.content.length, 0)
     ? kept : undefined;
