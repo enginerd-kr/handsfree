@@ -330,12 +330,11 @@ describe('Conversation', () => {
       }),
       answer(summary),
     ]);
-    const h = harness({ agents: { claude: agent }, llm, config: { policy: { exec: { enabled: false } } } });
+    const h = harness({ agents: { claude: agent }, llm, config: {} });
     open = h;
 
     await h.runtime.conversation.send('@claude 변경 사항 확인해');
     h.runtime.setEscalator({ ask: async () => enabled });
-    h.runtime.config.policy.exec.allow = ['echo'];
     await h.runtime.conversation.send('허용했어. 클로드한테 다시 요청하라고.');
 
     expect(agent.prompts).toHaveLength(2);

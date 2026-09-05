@@ -21,9 +21,8 @@ const FILE = /(^|\s)(\\?)@([^\s`]+)/g;
  *
  * Three passes, in this order: the arguments go in first so that `@$1` and
  * `` !`git log $1` `` mean what they look like; then the shell references; then
- * the file references. That an argument can therefore reach a shell is not a
- * hole, because what comes out the other side still faces the allowlist — the
- * boundary here is the policy engine, never the order of substitution.
+ * the file references. The resulting command goes through the session approval
+ * flow after substitution, so the user sees the command that will run.
  *
  * Nothing in here decides whether a command may run or a file may be read. It
  * asks, and it writes down what it was told, refusals included: a command whose
@@ -72,11 +71,8 @@ async function expandShell(body: string, host: CommandHost, signal?: AbortSignal
 }
 
 async function shell(script: string, host: CommandHost, signal?: AbortSignal): Promise<string> {
-  // A script with nothing in it a shell would interpret is run as the argv it
-  // already is, with no shell in between — so what the allowlist cleared and
-  // what the audit line names is exactly the process that starts. Anything
-  // else goes over as `sh -c`, whole, and `policy.exec.shellOperators` decides
-  // whether a pipe or a substitution is allowed to be there at all.
+  // Plain commands run directly; scripts with shell syntax keep their complete
+  // text in sh -c. Either form goes through the same session approval flow.
   const scan = scanScript(script);
   const argv =
     scan.ok && !scan.operator && scan.tokens.length > 0 ? scan.tokens : ['sh', '-c', script];
@@ -91,7 +87,7 @@ async function shell(script: string, host: CommandHost, signal?: AbortSignal): P
   });
   if (decision.verdict === 'deny') return refusal(`run ${render(argv)}`, decision.reason);
 
-  const exec = host.config.policy.exec;
+  const exec = host.config.execution.terminal;
   const { output, truncated } = await runOnce(argv, host, signal);
   return truncated ? `${output}\n[handsfree: output cut at ${exec.outputByteLimit} bytes]` : output;
 }
@@ -113,7 +109,7 @@ async function runOnce(
   host: CommandHost,
   signal?: AbortSignal,
 ): Promise<{ output: string; truncated: boolean }> {
-  const exec = host.config.policy.exec;
+  const exec = host.config.execution.terminal;
   const limit = Math.max(exec.outputByteLimit, 1024);
   const child = spawn(argv[0]!, argv.slice(1), {
     cwd: host.workspace.dir,

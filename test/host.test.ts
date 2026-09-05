@@ -119,7 +119,7 @@ describe('permission gate', () => {
     expect(answers).toEqual(['no']);
   });
 
-  it('refuses a command the allowlist does not cover', async () => {
+  it('refuses an adapter command without a user in ask mode', async () => {
     const answers: string[] = [];
     await runTurn(
       () => [
@@ -131,13 +131,13 @@ describe('permission gate', () => {
           onAnswer: (id) => answers.push(id),
         },
       ],
-      { policy: { exec: { enabled: true, allow: ['git status'] } } },
+      {},
     );
 
     expect(answers).toEqual(['no']);
   });
 
-  it('approves a codex command that the allowlist does cover', async () => {
+  it('approves a Codex command when the user accepts it', async () => {
     // codex states the whole argv as one array and labels the call by what it
     // thinks the command means — here a listing. Both are taken as they come:
     // the argv is read, the label is not what decides.
@@ -152,7 +152,7 @@ describe('permission gate', () => {
           onAnswer: (id) => answers.push(id),
         },
       ],
-      { policy: { exec: { enabled: true, allow: ['ls'] } } },
+      {},
     );
 
     expect(answers).toEqual(['once']);
@@ -245,7 +245,7 @@ describe('filesystem gate', () => {
 });
 
 describe('terminal gate', () => {
-  it('runs a user-approved command even when legacy execution is disabled', async () => {
+  it('runs a user-approved command without policy configuration', async () => {
     const results: { ok: boolean; detail: string; output?: string }[] = [];
     await runApprovedTurn(
       () => [
@@ -256,7 +256,7 @@ describe('terminal gate', () => {
           onResult: (result) => results.push(result),
         },
       ],
-      { policy: { exec: { enabled: false, allow: [] } } },
+      {},
     );
 
     expect(results[0]?.ok).toBe(true);
@@ -272,7 +272,7 @@ describe('terminal gate', () => {
     expect(results[0]?.output?.trim()).toBe(fs.realpathSync(path.dirname(h.workspaceDir)));
   });
 
-  it('refuses a command that is not on the allowlist', async () => {
+  it('refuses a host command without a user in ask mode', async () => {
     const results: { ok: boolean; detail: string }[] = [];
     await runTurn(
       () => [
@@ -283,20 +283,20 @@ describe('terminal gate', () => {
           onResult: (result) => results.push(result),
         },
       ],
-      { policy: { exec: { enabled: true, allow: ['echo'] } } },
+      {},
     );
 
     expect(results[0]?.ok).toBe(false);
     expect(results[0]?.detail).toContain('denied');
   });
 
-  it('requires a user even when the old execution setting is off', async () => {
+  it('requires a user for an ordinary command in ask mode', async () => {
     const results: { ok: boolean; detail: string }[] = [];
     await runTurn(
       () => [
         { do: 'exec', command: 'echo', args: ['hi'], onResult: (result) => results.push(result) },
       ],
-      { policy: { exec: { enabled: false } } },
+      {},
     );
 
     expect(results[0]?.ok).toBe(false);
@@ -476,7 +476,7 @@ describe('terminal output ceiling', () => {
           onResult: (result) => results.push(result),
         },
       ],
-      { policy: { exec: { enabled: true, allow: ['node'], outputByteLimit: 1024 } } },
+      { execution: { terminal: { outputByteLimit: 1024 } } },
     );
 
     const output = results[0]?.output ?? '';
@@ -499,7 +499,7 @@ describe('terminal output ceiling', () => {
   it('writes nothing aside when the output fit', async () => {
     const { runtime } = await runApprovedTurn(
       () => [{ do: 'exec', command: 'echo', args: ['short'], onResult: () => {} }],
-      { policy: { exec: { enabled: true, allow: ['echo'] } } },
+      {},
     );
     expect(fs.existsSync(path.join(runtime.workspace.runDir, 'spill'))).toBe(false);
   });

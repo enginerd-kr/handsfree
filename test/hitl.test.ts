@@ -163,7 +163,7 @@ describe('a turn under a permission mode', () => {
     expect(answers).toEqual(['once']);
     expect(decisions(h).at(-1)).toMatchObject({
       verdict: 'allow',
-      rule: 'tool.unknownKind',
+      rule: 'tool.other',
       mode: 'bypass',
     });
   });
@@ -216,7 +216,7 @@ describe('a turn under a permission mode', () => {
       ],
       {
         mode: 'ask',
-        config: { policy: { fs: { write: 'ask' } } },
+        config: {},
         escalator: seat({ allow: true, onAsk: (summary) => asked.push(summary) }),
       },
     );
@@ -224,8 +224,8 @@ describe('a turn under a permission mode', () => {
     expect(answers).toEqual(['once', 'once']);
     expect(asked).toEqual(['Edit notes.txt', 'git commit']);
     expect(decisions(h).map((entry) => [entry.rule, entry.mode, entry.escalated])).toEqual([
-      ['tool.write', undefined, true],
-      ['exec.otherwise', undefined, true],
+      ['tool.edit', undefined, true],
+      ['tool.execute', undefined, true],
     ]);
   });
 });

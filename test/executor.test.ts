@@ -13,9 +13,9 @@ const report = (summary: string, status = 'done', extra = '') => `REPORT\noutcom
 function setup(options: Parameters<typeof harness>[0]) { const h = harness(options); open.push(h); return h; }
 
 describe('structured executor', () => {
-  it('refuses an identified native Codex adapter before creating a task or charging tokens', async () => {
+  it('honors an explicit deny for an identified native Codex adapter before prompting', async () => {
     const a = fakeAgent({ name: '@agentclientprotocol/codex-acp', script: () => [{ do: 'say', text: 'must not run' }] });
-    const h = setup({ agents: { a } });
+    const h = setup({ agents: { a }, config: { profiles: { a: { nativeTools: 'deny' } } } });
     await h.runtime.pool.connection('a');
     await expect(h.runtime.executor.execute({ task: 'Run a command', agent: 'a' })).rejects.toThrow('outside host policy');
     await expect(h.runtime.pool.session('a')).rejects.toThrow('outside host policy');
@@ -23,10 +23,10 @@ describe('structured executor', () => {
     expect(h.runtime.usage.totals().tokens).toBe(0);
   });
 
-  it('allows explicit native opt-in but schedules those tasks exclusively', async () => {
+  it('allows native execution by default but schedules those tasks exclusively', async () => {
     const a = fakeAgent({ name: 'codex-acp', script: () => [{ do: 'stall', ms: 20 }, { do: 'say', text: report('A') }] });
     const b = fakeAgent({ script: () => [{ do: 'say', text: report('B') }] });
-    const h = setup({ agents: { a, b }, config: { profiles: { a: { nativeTools: 'allow' } } } });
+    const h = setup({ agents: { a, b } });
     await h.runtime.executor.batch({ tasks: [
       { id: 'a', request: { task: 'Inspect A', agent: 'a', kind: 'inspect' } },
       { id: 'b', request: { task: 'Inspect B', agent: 'b', kind: 'inspect' } },
@@ -161,10 +161,12 @@ describe('structured executor', () => {
     expect(a.prompts).toHaveLength(3);
   });
 
-  it('runs inspections concurrently without mixing reports or file records', async () => {
+  it('runs inspections with native tools denied concurrently without mixing reports or file records', async () => {
     const a = fakeAgent({ script: () => [{ do: 'stall', ms: 30 }, { do: 'say', text: report('Only A') }] });
     const b = fakeAgent({ script: () => [{ do: 'say', text: report('Only B') }] });
-    const h = setup({ agents: { a, b } });
+    const h = setup({ agents: { a, b }, config: { profiles: {
+      a: { nativeTools: 'deny' }, b: { nativeTools: 'deny' },
+    } } });
     const result = await h.runtime.executor.batch({ tasks: [
       { id: 'a', request: { task: 'a', agent: 'a', kind: 'inspect' } },
       { id: 'b', request: { task: 'b', agent: 'b', kind: 'inspect' } },

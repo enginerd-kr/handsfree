@@ -1926,14 +1926,14 @@ describe('terminal UI', () => {
     }
   });
 
-  it('shows a tool permission request even when legacy command execution is disabled and continues on approval', async () => {
+  it('shows a tool permission request without policy configuration and continues on approval', async () => {
     const answers: string[] = [];
     const agent = fakeAgent({ script: () => [
       { do: 'ask', title: 'Show uncommitted change summary', kind: 'execute',
         rawInput: { command: 'git diff --stat' }, onAnswer: (id) => answers.push(id) },
       { do: 'say', text: 'Inspection continued.' },
     ] });
-    const h = harness({ agents: { claude: agent }, config: { policy: { exec: { enabled: false } } } });
+    const h = harness({ agents: { claude: agent }, config: {} });
     open = h;
     const app = render(<App runtime={h.runtime} />);
     try {
@@ -2001,7 +2001,7 @@ describe('terminal UI', () => {
       app.stdin.write('\u001B[Z');
       expect(await decision).toMatchObject({
         verdict: 'allow',
-        rule: 'exec.otherwise',
+        rule: 'exec',
         escalated: true,
         mode: 'bypass',
       });
@@ -2014,7 +2014,7 @@ describe('terminal UI', () => {
   it('approves every queued permission when the mode moves to bypass', async () => {
     const h = harness({
       agents: { claude: fakeAgent({ script: () => [] }) },
-      config: { policy: { fs: { write: 'ask' } } },
+      config: {},
     });
     open = h;
 

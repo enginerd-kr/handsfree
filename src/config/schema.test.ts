@@ -68,15 +68,20 @@ describe('defaults', () => {
     expect(parsed.success).toBe(false);
   });
 
-  it('arrives able to run a coding task, and says what needs no person', () => {
+  it('provides host resources without a policy configuration', () => {
     const config = ConfigSchema.parse({});
     expect(config.capabilities.terminal).toBe(true);
-    expect(config.policy.exec.enabled).toBe(true);
-    expect(config.policy.exec.allow).toContain('pnpm test');
-    // On the list runs silently; off it is a question; outside the workspace is
-    // neither, whatever the list says.
-    expect(config.policy.exec.otherwise).toBe('ask');
-    expect(config.policy.fs.outside).toBe('deny');
+    expect(config).not.toHaveProperty('policy');
+    expect(config.execution.terminal).toEqual({
+      timeoutMs: 120_000, outputByteLimit: 65536, env: ['PATH', 'HOME', 'LANG', 'TERM', 'TMPDIR'],
+    });
+    expect(config.limits.decisionTimeoutMs).toBe(120_000);
+  });
+
+  it('discards legacy permission rules rather than validating or applying them', () => {
+    const config = ConfigSchema.parse({ policy: { exec: { enabled: false, mode: 'deny' }, fs: { write: 'deny' } } });
+    expect(config).not.toHaveProperty('policy');
+    expect(config.capabilities.terminal).toBe(true);
   });
 
   it('replaces the agent list wholesale when one is given', () => {

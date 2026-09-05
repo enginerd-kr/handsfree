@@ -19,7 +19,7 @@ import type { HostContext } from './context.js';
 /**
  * Environment names that let a caller change what a command *is* rather than
  * what it does. They are dropped whatever the agent asks for, because a command
- * cleared by the allowlist should be the command that actually runs.
+ * approved by the user should be the command that actually runs.
  */
 const UNSAFE_ENV = [
   /^LD_/,
@@ -59,10 +59,8 @@ interface Terminal {
 }
 
 /**
- * Gate C. Declaring the terminal capability means every command an agent runs is
- * a command handsfree started: same allowlist, same working directory, same
- * output ceiling, whichever agent asked. The alternative is not "no commands" —
- * it is commands we cannot see, run by each CLI's own sandbox.
+ * Host terminals share the session approval flow, process lifecycle management,
+ * and resource settings. Adapters may also provide their own native terminals.
  */
 export class TerminalRegistry {
   private readonly terminals = new Map<string, Terminal>();
@@ -112,12 +110,12 @@ export class TerminalRegistry {
 
     const jailed = this.host.jail.check(cwd);
 
-    const execPolicy = this.host.config.policy.exec;
-    const limit = params.outputByteLimit ?? execPolicy.outputByteLimit;
+    const terminalConfig = this.host.config.execution.terminal;
+    const limit = params.outputByteLimit ?? terminalConfig.outputByteLimit;
     const id = `term-${++this.counter}`;
     const child = spawn(params.command, args, {
       cwd: jailed.ok ? jailed.real : path.resolve(cwd),
-      env: buildEnv(execPolicy.env, params.env ?? []),
+      env: buildEnv(terminalConfig.env, params.env ?? []),
       stdio: ['ignore', 'pipe', 'pipe'],
       // Its own process group, so a kill reaches the whole tree rather than
       // leaving orphans behind holding the workspace open.
@@ -155,7 +153,7 @@ export class TerminalRegistry {
     });
     terminal.timer = setTimeout(() => {
       if (!terminal.status) killGroup(terminal, 'SIGKILL');
-    }, execPolicy.timeoutMs);
+    }, terminalConfig.timeoutMs);
 
     this.terminals.set(id, terminal);
     this.host.transcript.append({

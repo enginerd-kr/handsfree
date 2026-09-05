@@ -158,15 +158,12 @@ describe('slash commands', () => {
 });
 
 describe('expansion through the policy engine', () => {
-  const allowingEcho = { exec: { enabled: true, allow: ['echo'] } };
-
   it('runs an allowed command and puts its output in the prompt', async () => {
     const llm = scriptedModel([answer('done')]);
     const h = harness({
       agents: { claude: fakeAgent({ script: () => [] }) },
       llm,
       escalator: { ask: async () => true },
-      config: { policy: allowingEcho },
       cwd: project({ 'facts.md': 'The state is:\n\n!`echo alive`\n' }),
     });
     open = h;
@@ -182,7 +179,6 @@ describe('expansion through the policy engine', () => {
     const h = harness({
       agents: { claude: fakeAgent({ script: () => [] }) },
       llm,
-      config: { policy: allowingEcho },
       cwd: project({ 'push.md': 'Before: !`git push origin main`\n' }),
     });
     open = h;
@@ -190,7 +186,7 @@ describe('expansion through the policy engine', () => {
     await h.runtime.conversation.send('/push');
 
     expect(lastPrompt(llm.seen)).toContain('[handsfree refused to run git push origin main');
-    expect(decisions(h).at(-1)?.entry).toMatchObject({ verdict: 'deny', rule: 'exec.otherwise' });
+    expect(decisions(h).at(-1)?.entry).toMatchObject({ verdict: 'deny', rule: 'exec' });
   });
 
   it('cannot run without a user in ask mode', async () => {
@@ -198,7 +194,7 @@ describe('expansion through the policy engine', () => {
     const h = harness({
       agents: { claude: fakeAgent({ script: () => [] }) },
       llm,
-      config: { policy: { exec: { enabled: false } } },
+      config: {},
       cwd: project({ 'facts.md': '!`echo alive`\n' }),
     });
     open = h;
@@ -206,7 +202,7 @@ describe('expansion through the policy engine', () => {
     await h.runtime.conversation.send('/facts');
 
     expect(lastPrompt(llm.seen)).toContain('handsfree refused to run echo alive');
-    expect(decisions(h).at(-1)?.entry).toMatchObject({ verdict: 'deny', rule: 'exec.disabled' });
+    expect(decisions(h).at(-1)?.entry).toMatchObject({ verdict: 'deny', rule: 'exec' });
   });
 
   it('reads a file inside the workspace, and records the read', async () => {
@@ -248,7 +244,7 @@ describe('expansion through the policy engine', () => {
     const h = harness({
       agents: { claude: fakeAgent({ script: () => [] }) },
       llm,
-      config: { policy: { fs: { outside: 'deny' } } },
+      config: {},
       cwd: project({ 'peek.md': 'Read @../../../etc/hosts please.\n' }),
     });
     open = h;

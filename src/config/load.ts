@@ -16,7 +16,7 @@ export interface ConfigLocation {
  * Where settings are read from, in the order they win — the project directory
  * first, the user's config home second. Both are read: a project file is a
  * layer *over* the user's, not a replacement for it, so a checkout can pin the
- * one thing it cares about (the agent it wants, an allowlist entry) without
+ * one thing it cares about (the agent it wants, a terminal timeout) without
  * having to restate the endpoint, the proxy and the timeouts you set once for
  * every project on the machine.
  *
@@ -53,7 +53,7 @@ export function loadConfig(cwd = process.cwd(), home = os.homedir()): LoadedConf
     if (!isRecord(parsed)) {
       throw new Error(`${location.file} must hold a JSON object.`);
     }
-    raw = mergeLayer(raw, asRecord(migrateLegacyLlm(parsed)));
+    raw = mergeLayer(raw, migrateLegacyPolicy(asRecord(migrateLegacyLlm(parsed))));
     sources.unshift(location);
   }
 
@@ -79,11 +79,10 @@ export function describeSources(sources: readonly ConfigLocation[]): string {
 
 /**
  * One settings layer laid over another. Objects merge key by key, so a project
- * file naming `policy.exec.mode` leaves the rest of `policy` as the user wrote
+ * file naming `execution.terminal.timeoutMs` leaves the other terminal settings as the user wrote
  * it; everything else — a scalar, an array — is replaced outright by the
- * stronger layer. Arrays are deliberately not concatenated: `policy.exec.allow`
- * is a list of what may run, and a layer that could only ever *add* to it is a
- * layer that cannot say "not here, not this".
+ * stronger layer. Arrays such as `execution.terminal.env` replace the lower
+ * layer's list rather than silently adding inherited entries.
  */
 function mergeLayer(
   base: Record<string, unknown>,
@@ -110,6 +109,27 @@ function mergeLayer(
  */
 function isWholeValue(at: string[]): boolean {
   return at.length === 2 && at[0] === 'agents';
+}
+
+/** Preserve resource settings from old files; permission rules are discarded. */
+function migrateLegacyPolicy(raw: Record<string, unknown>): Record<string, unknown> {
+  const { policy, ...rest } = raw;
+  if (!isRecord(policy)) return rest;
+  const migrated: Record<string, unknown> = {};
+  if (isRecord(policy.exec)) {
+    const exec = policy.exec;
+    const terminal = Object.fromEntries(
+      ['timeoutMs', 'outputByteLimit', 'env']
+        .filter((key) => exec[key] !== undefined)
+        .map((key) => [key, exec[key]]),
+    );
+    if (Object.keys(terminal).length) migrated.execution = { terminal };
+  }
+  if (policy.decisionTimeoutMs !== undefined) {
+    migrated.limits = { decisionTimeoutMs: policy.decisionTimeoutMs };
+  }
+  // Current names win within a file, before project/user layers are combined.
+  return mergeLayer(migrated, rest);
 }
 
 /**

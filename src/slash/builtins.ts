@@ -193,13 +193,13 @@ function agents(host: CommandHost): string[] {
 }
 
 function configuration(host: CommandHost): string[] {
-  const { policy } = host.config;
+  const { limits } = host.config;
   return [
     `read from:  ${readFrom(host)}`,
     `workspace:  ${tildify(host.workspace.dir)}`,
     `transcript: ${tildify(host.workspace.transcriptFile)}`,
     '',
-    `approval timeout: ${Math.round(policy.decisionTimeoutMs / 1000)}s`,
+    `approval timeout: ${Math.round(limits.decisionTimeoutMs / 1000)}s`,
     modeLine(host.policy.mode),
     host.config.capabilities.elicitation
       ? 'q&a:  agents may stop and ask you a question of their own'

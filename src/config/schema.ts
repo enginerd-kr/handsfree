@@ -58,8 +58,8 @@ export const AgentProfileSchema = z
     model: z.string().min(1).optional(),
     /** Track local worker usage separately from frontier tokens. */
     frontier: z.boolean().default(true),
-    /** Explicitly accept adapter-native operations outside host policy mediation. */
-    nativeTools: z.enum(['deny', 'allow']).default('deny'),
+    /** Allow adapter-native operations by default; deny opts out of native execution. */
+    nativeTools: z.enum(['deny', 'allow']).default('allow'),
   })
   .superRefine((profile, ctx) => {
     try {
@@ -114,71 +114,6 @@ export const DEFAULT_AGENTS: Record<string, z.input<typeof AgentProfileSchema>> 
 export const EnvSchema = z.record(z.string(), z.string().nullable()).prefault({});
 export type EnvConfig = z.infer<typeof EnvSchema>;
 
-const Rule = z.enum(['allow', 'ask', 'deny']);
-export type RuleOutcome = z.infer<typeof Rule>;
-
-/**
- * What a coding task reaches for before it reaches for anything else: reading
- * the workspace, asking git what it looks like, and the verbs that close the
- * loop on a change — run the tests, build, typecheck. Nothing on this list
- * writes a file of its own or rewrites history, so nothing on it needs a person.
- *
- * Everything else is not refused: it is `exec.otherwise`, and out of the box
- * `otherwise` is a person. Installing, committing, `curl`, a script the agent
- * wrote a moment ago — those are decisions, and they are shown as one.
- *
- * `find` is the deliberate omission. `-delete` and `-exec` make it a mutation
- * tool wearing a reader's name, and entries match on a prefix.
- */
-export const DEV_ALLOWLIST = [
-  // Looking around.
-  'ls',
-  'cat',
-  'head',
-  'tail',
-  'wc',
-  'stat',
-  'file',
-  'pwd',
-  'echo',
-  'which',
-  'tree',
-  'diff',
-  'grep',
-  'rg',
-  // Git, as far as reading it goes.
-  'git status',
-  'git diff',
-  'git log',
-  'git show',
-  'git branch',
-  'git blame',
-  'git remote -v',
-  // Closing the loop on a change. These run the project's own scripts, which is
-  // the point: an agent that cannot run the tests cannot tell you they pass.
-  'pnpm test',
-  'pnpm build',
-  'pnpm typecheck',
-  'pnpm lint',
-  'npm test',
-  'npm run build',
-  'npm run test',
-  'yarn test',
-  'yarn build',
-  'cargo check',
-  'cargo build',
-  'cargo test',
-  'go build',
-  'go test',
-  'go vet',
-  'pytest',
-  'ruff check',
-  'mypy',
-  'make test',
-  'make build',
-];
-
-
 /**
  * What each agent is for, in the words the planner is given. Keyed by agent id.
  *
@@ -196,46 +131,6 @@ export const DEV_ALLOWLIST = [
  */
 export const RolesSchema = z.record(z.string(), z.string().min(1)).prefault({});
 export type Roles = z.infer<typeof RolesSchema>;
-
-export const PolicySchema = z
-  .object({
-    /** Legacy audit settings, retained for existing configuration files. */
-    workspaceOnly: z.boolean().default(true),
-    fs: z
-      .object({
-        read: Rule.default('allow'),
-        write: Rule.default('allow'),
-        outside: Rule.default('deny'),
-        followSymlinks: z.boolean().default(false),
-      })
-      .prefault({}),
-    exec: z
-      .object({
-        /** Legacy audit settings; ask/bypass alone controls permission decisions. */
-        enabled: z.boolean().default(true),
-        mode: z.enum(['allowlist', 'ask', 'deny']).default('allowlist'),
-        allow: z.array(z.string()).default(DEV_ALLOWLIST),
-        otherwise: Rule.default('ask'),
-        shellOperators: Rule.default('ask'),
-        timeoutMs: z.number().int().positive().default(120_000),
-        /**
-         * The most of a command's output an agent is handed back, kept from
-         * the end — that is where a failing test names itself. An agent may ask
-         * for less. What was cut is written whole under the run directory, for
-         * a person; the agent's window is the thing this exists to protect.
-         */
-        outputByteLimit: z.number().int().positive().default(64 * 1024),
-        /** Environment variables forwarded to commands. Everything else is dropped. */
-        env: z.array(z.string()).default(['PATH', 'HOME', 'LANG', 'TERM', 'TMPDIR']),
-      })
-      .prefault({}),
-    /** Legacy setting; ask mode always uses the connected approval interface. */
-    escalation: z.array(z.enum(['user'])).default(['user']),
-    /** How long a human has to answer before the request is denied. */
-    decisionTimeoutMs: z.number().int().positive().default(120_000),
-  })
-  .prefault({});
-export type Policy = z.infer<typeof PolicySchema>;
 
 /**
  * The model that plans and summarises. Both ways of running it are configured
@@ -322,6 +217,13 @@ export const ConfigSchema = z
     /** USD per million tokens, keyed by model id or agent id. No built-in prices. */
     prices: z.record(z.string(), PriceSchema).default({}),
     execution: z.object({
+      /** Host terminal resources; permission decisions use the session mode. */
+      terminal: z.object({
+        timeoutMs: z.number().int().positive().default(120_000),
+        outputByteLimit: z.number().int().positive().default(64 * 1024),
+        /** Parent environment variables forwarded to host commands. */
+        env: z.array(z.string()).default(['PATH', 'HOME', 'LANG', 'TERM', 'TMPDIR']),
+      }).prefault({}),
       /** Cold-start token estimate used only to rank workers. */
       estimatedTaskTokens: z.number().int().positive().default(4_096),
       /** Auto consults local/API selectors; ACP selection is an explicit opt-in. */
@@ -339,20 +241,15 @@ export const ConfigSchema = z
       .object({
         readTextFile: z.boolean().default(true),
         writeTextFile: z.boolean().default(true),
-        /**
-         * Declaring this makes handsfree the owner of every shell command: it
-         * runs in the workspace, with the environment `policy.exec.env` allows
-         * and an output ceiling. Undeclared, an agent that wants a command runs
-         * it in its own shell instead — the one place a policy decision does not
-         * reach — so this follows `policy.exec.enabled` rather than sitting off.
-         */
+        /** Offer host terminals governed by the session permission mode. */
         terminal: z.boolean().default(true),
         elicitation: z.boolean().default(true),
       })
       .prefault({}),
-    policy: PolicySchema,
     limits: z
       .object({
+        /** How long a user has to answer an approval or general question. */
+        decisionTimeoutMs: z.number().int().positive().default(120_000),
         /**
          * How long an adapter has to answer `initialize`. Generous, because an
          * adapter fetched through `npx` downloads itself on first use — but never

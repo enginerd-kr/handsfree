@@ -31,6 +31,20 @@ function layout(files: { project?: unknown; user?: unknown }): { cwd: string; ho
 }
 
 describe('layering', () => {
+  it.each(['user', 'project'] as const)('allows native tools in existing %s profiles that omit the setting', (scope) => {
+    const { cwd, home } = layout({
+      [scope]: { agents: {
+        codex: { command: 'npx', args: ['-y', '@agentclientprotocol/codex-acp'] },
+        custom: { command: 'custom-wrapper' },
+        blocked: { command: 'codex-acp', nativeTools: 'deny' },
+      } },
+    });
+    const { config } = loadConfig(cwd, home);
+    expect(config.agents.codex?.nativeTools).toBe('allow');
+    expect(config.agents.custom?.nativeTools).toBe('allow');
+    expect(config.agents.blocked?.nativeTools).toBe('deny');
+  });
+
   it('reads the user file when there is no project one', () => {
     const { cwd, home } = layout({ user: { orchestration: { local: { model: 'mine' } } } });
     const { config, sources } = loadConfig(cwd, home);
@@ -42,30 +56,30 @@ describe('layering', () => {
     const { cwd, home } = layout({
       user: {
         orchestration: { local: { baseURL: 'http://localhost:9999/v1', model: 'mine' } },
-        policy: { exec: { enabled: true, timeoutMs: 5000 } },
+        execution: { terminal: { outputByteLimit: 2048, timeoutMs: 5000 } },
       },
       project: {
         orchestration: { local: { model: 'theirs' } },
-        policy: { exec: { timeoutMs: 1000 } },
+        execution: { terminal: { timeoutMs: 1000 } },
       },
     });
     const { config, sources } = loadConfig(cwd, home);
     // The project spoke, so it wins the key it named…
     expect(config.orchestration.local.model).toBe('theirs');
-    expect(config.policy.exec.timeoutMs).toBe(1000);
+    expect(config.execution.terminal.timeoutMs).toBe(1000);
     // …and everything it stayed quiet about is still the user's.
     expect(config.orchestration.local.baseURL).toBe('http://localhost:9999/v1');
-    expect(config.policy.exec.enabled).toBe(true);
+    expect(config.execution.terminal.outputByteLimit).toBe(2048);
     expect(sources.map((source) => source.scope)).toEqual(['project', 'user']);
   });
 
   it('replaces an array rather than adding to it', () => {
     const { cwd, home } = layout({
-      user: { policy: { exec: { allow: ['git status', 'rm -rf'] } } },
-      project: { policy: { exec: { allow: ['git status'] } } },
+      user: { execution: { terminal: { env: ['PATH', 'HOME'] } } },
+      project: { execution: { terminal: { env: ['PATH'] } } },
     });
     const { config } = loadConfig(cwd, home);
-    expect(config.policy.exec.allow).toEqual(['git status']);
+    expect(config.execution.terminal.env).toEqual(['PATH']);
   });
 
   it('takes an agent profile whole, and keeps the ones the project did not name', () => {
@@ -127,6 +141,36 @@ describe('layering', () => {
     const { cwd, home } = layout({ project: {} });
     fs.writeFileSync(path.join(cwd, CONFIG_FILENAME), '{ nope');
     expect(() => loadConfig(cwd, home)).toThrow(/handsfree\.config\.json is not valid JSON/);
+  });
+});
+
+describe('legacy policy resources', () => {
+  it('keeps resource settings while discarding permission rules', () => {
+    const { cwd, home } = layout({ project: { policy: {
+      workspaceOnly: true, fs: { write: 'deny', outside: 'deny' }, escalation: [],
+      exec: { enabled: false, mode: 'deny', allow: [], shellOperators: 'deny',
+        timeoutMs: 4321, outputByteLimit: 2048, env: ['PATH'] },
+      decisionTimeoutMs: 1234,
+    } } });
+    const { config } = loadConfig(cwd, home);
+    expect(config).not.toHaveProperty('policy');
+    expect(config.execution.terminal).toEqual({ timeoutMs: 4321, outputByteLimit: 2048, env: ['PATH'] });
+    expect(config.limits.decisionTimeoutMs).toBe(1234);
+    expect(config.capabilities.terminal).toBe(true);
+  });
+
+  it('prefers current names within a file and preserves project precedence across names', () => {
+    const { cwd, home } = layout({
+      user: { execution: { terminal: { timeoutMs: 1000, env: ['HOME'] } }, limits: { decisionTimeoutMs: 1000 } },
+      project: {
+        policy: { exec: { timeoutMs: 2000, env: ['PATH'] }, decisionTimeoutMs: 2000 },
+        execution: { terminal: { timeoutMs: 3000 } },
+      },
+    });
+    const { config } = loadConfig(cwd, home);
+    expect(config.execution.terminal.timeoutMs).toBe(3000);
+    expect(config.execution.terminal.env).toEqual(['PATH']);
+    expect(config.limits.decisionTimeoutMs).toBe(2000);
   });
 });
 

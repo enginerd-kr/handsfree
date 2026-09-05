@@ -19,14 +19,12 @@ const configured = loadConfig().config;
 if (process.argv.includes('--allow-native')) configured.agents.codex!.nativeTools = 'allow';
 const config = ConfigSchema.parse({ ...configured, workspaceRoot: root, cleanupPeriodDays: 0,
   capabilities: { ...configured.capabilities, terminal: true },
-  policy: { ...configured.policy, exec: { ...configured.policy.exec, enabled: true,
-    allow: ['node --test', 'ls', 'cat', 'pwd', 'rg'], otherwise: 'deny' } },
   limits: { ...configured.limits, turnTimeoutMs: 180_000, idleTimeoutMs: 90_000, cancelGraceMs: 5000 },
 });
 const runtime = createRuntime({ config, permissionMode: 'bypass' });
 const workspace = runtime.workspace.dir;
 const report: Record<string, unknown> = { date: new Date().toISOString(), root, workspace, runId: runtime.workspace.id,
-  configurationChanges: ['isolated workspace', 'terminal enabled with restricted command allowlist'],
+  configurationChanges: ['isolated workspace', 'host terminal enabled; bypass permission mode'],
   agents: {}, cases: [], completed: false };
 const cases = report.cases as { name: string; ok: boolean; detail: unknown }[];
 function save() { fs.writeFileSync(path.join(root, 'report.json'), JSON.stringify(report, null, 2)); }

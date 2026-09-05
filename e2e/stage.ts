@@ -31,7 +31,6 @@ export interface StageOptions {
   profiles?: Record<string, { model?: string; note?: string }>;
   /** Which model plans, for what the header and the roll call say about it. */
   orchestration?: Record<string, unknown>;
-  policy?: Record<string, unknown>;
   llm?: ChatClient;
 }
 
@@ -54,7 +53,6 @@ export function stage(options: StageOptions): Stage {
     ),
     capabilities: { terminal: true },
     ...(options.orchestration ? { orchestration: options.orchestration } : {}),
-    policy: options.policy ?? {},
     limits: { turnTimeoutMs: 10_000, idleTimeoutMs: 10_000, cancelGraceMs: 500 },
   });
   config.workspaceRoot = root;

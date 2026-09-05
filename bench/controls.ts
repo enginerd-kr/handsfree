@@ -10,6 +10,8 @@ const config = ConfigSchema.parse({ ...loadConfig().config, workspaceRoot: root,
   orchestration: { ...loadConfig().config.orchestration, provider: 'local' },
   limits: { ...loadConfig().config.limits, turnTimeoutMs: 120_000, idleTimeoutMs: 60_000 },
 });
+// This check exercises the explicit opt-out; native execution defaults to allow.
+config.agents.codex!.nativeTools = 'deny';
 const runtime = createRuntime({ config, permissionMode: 'bypass' });
 const checks: { name: string; ok: boolean; detail: unknown }[] = [];
 function check(name: string, ok: boolean, detail: unknown) { checks.push({ name, ok, detail }); console.log(JSON.stringify(checks.at(-1))); }

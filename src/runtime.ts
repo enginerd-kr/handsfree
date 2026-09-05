@@ -77,10 +77,10 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     ? Workspace.attach(options.attachTo, config.workspaceRoot, options.runId)
     : Workspace.open(config.workspaceRoot, options.runId);
   const transcript = new Transcript(workspace.transcriptFile);
-  const jail = workspace.jail(config.policy);
+  const jail = workspace.jail();
 
   const policy = new PolicyEngine({
-    policy: config.policy,
+    decisionTimeoutMs: config.limits.decisionTimeoutMs,
     jail,
     escalator: options.escalator,
     onDecision: (entry) => {

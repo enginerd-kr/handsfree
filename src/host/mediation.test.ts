@@ -15,9 +15,13 @@ describe('known native adapter mediation', () => {
       { command: 'npx', args: ['-y', '@agentclientprotocol/codex-acp@1.10.0'] },
       { command: '/usr/local/bin/codex-acp' },
       { command: 'npx', args: ['@zed-industries/codex-acp'] },
-    ]) expect(mediationProblem(AgentProfileSchema.parse(launch))).toContain('disabled before prompting');
+    ]) {
+      expect(mediationProblem(AgentProfileSchema.parse(launch))).toBeUndefined();
+      expect(mediationProblem(AgentProfileSchema.parse({ ...launch, nativeTools: 'deny' }))).toContain('disabled before prompting');
+    }
     const wrapper = AgentProfileSchema.parse({ command: 'custom-wrapper' });
-    expect(mediationProblem(wrapper, '@agentclientprotocol/codex-acp')).toContain('disabled');
+    expect(mediationProblem(wrapper, '@agentclientprotocol/codex-acp')).toBeUndefined();
+    expect(mediationProblem({ ...wrapper, nativeTools: 'deny' }, '@agentclientprotocol/codex-acp')).toContain('disabled');
     expect(mediationProblem(AgentProfileSchema.parse({ command: 'codex-acp', nativeTools: 'allow' }))).toBeUndefined();
     expect(mediationProblem(AgentProfileSchema.parse({ command: 'gemini' }))).toBeUndefined();
   });

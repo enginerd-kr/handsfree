@@ -2,8 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { PolicySchema } from '../config/schema.js';
-import { PolicyEngine, commandFromRawInput, pathsFromRawInput } from './engine.js';
+import { PolicyEngine, pathsFromRawInput } from './engine.js';
 import { Jail } from './jail.js';
 import type { AuditEntry, Escalator, PolicyRequest } from './types.js';
 
@@ -15,14 +14,13 @@ beforeAll(() => {
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
 
 function engine(
-  overrides: Record<string, unknown> = {},
+  overrides: { decisionTimeoutMs?: number } = {},
   escalator?: Escalator,
   audit?: AuditEntry[],
 ) {
-  const policy = PolicySchema.parse(overrides);
   return new PolicyEngine({
-    policy,
-    jail: new Jail([root], { followSymlinks: policy.fs.followSymlinks }),
+    decisionTimeoutMs: overrides.decisionTimeoutMs ?? 120_000,
+    jail: new Jail([root]),
     escalator,
     onDecision: audit ? (entry) => audit.push(entry) : undefined,
   });
@@ -34,7 +32,7 @@ const inside = (file: string) => path.join(root, file);
 describe('PolicyEngine', () => {
   it.each([true, false])('forwards every request to the user and applies their answer (%s)', async (allow) => {
     const ask = vi.fn().mockResolvedValue(allow);
-    const policy = engine({ exec: { enabled: false }, escalation: [] }, { ask });
+    const policy = engine({}, { ask });
     const requests: PolicyRequest[] = [
       { kind: 'fs.read', path: inside('a.ts'), ...where },
       { kind: 'fs.write', path: '/etc/hosts', bytes: 3, ...where },
@@ -227,44 +225,6 @@ describe('pathsFromRawInput', () => {
   });
 });
 
-describe('commandFromRawInput', () => {
-  it('reads a command string', () => {
-    expect(commandFromRawInput({ command: 'git status' })).toEqual({
-      command: 'git',
-      args: ['status'],
-    });
-  });
-
-  it('reads a command with an argument array', () => {
-    expect(commandFromRawInput({ command: 'git', args: ['status'] })).toEqual({
-      command: 'git',
-      args: ['status'],
-    });
-  });
-
-  it('keeps a script with operators as a shell invocation so exec policy sees it', () => {
-    expect(commandFromRawInput({ command: 'ls | sh' })).toEqual({
-      command: 'sh',
-      args: ['-c', 'ls | sh'],
-    });
-  });
-
-  it('reads the whole argv from a single array, as codex sends it', () => {
-    expect(commandFromRawInput({ command: ['/bin/zsh', '-lc', 'ls'] })).toEqual({
-      command: '/bin/zsh',
-      args: ['-lc', 'ls'],
-    });
-  });
-
-  it('gives up on input it does not understand', () => {
-    expect(commandFromRawInput({ nothing: true })).toBeUndefined();
-    expect(commandFromRawInput(null)).toBeUndefined();
-    expect(commandFromRawInput({ command: [] })).toBeUndefined();
-    // A half-string argv is not an argv we can vouch for.
-    expect(commandFromRawInput({ command: ['sh', { nested: true }] })).toBeUndefined();
-  });
-});
-
 describe('PolicyEngine under a permission mode', () => {
   const commit: PolicyRequest = {
     kind: 'exec',
@@ -284,21 +244,21 @@ describe('PolicyEngine under a permission mode', () => {
   };
 
   it('approves every request in bypass without an exception for tool kinds', async () => {
-    const policy = engine({ exec: { enabled: false } });
+    const policy = engine();
     policy.setMode('bypass');
 
     expect(await policy.resolve(outside)).toMatchObject({
       verdict: 'allow',
-      rule: 'fs.write.outside',
+      rule: 'fs.write',
       mode: 'bypass',
     });
     expect(await policy.resolve(commit)).toMatchObject({
       verdict: 'allow',
-      rule: 'exec.disabled',
+      rule: 'exec',
       mode: 'bypass',
     });
     const refused = await policy.resolve(switchMode);
-    expect(refused).toMatchObject({ verdict: 'allow', rule: 'tool.switchMode', mode: 'bypass' });
+    expect(refused).toMatchObject({ verdict: 'allow', rule: 'tool.switch_mode', mode: 'bypass' });
   });
 
   it('records bypass on every automatic approval', async () => {
@@ -309,7 +269,7 @@ describe('PolicyEngine under a permission mode', () => {
     await policy.resolve(commit);
     expect(audit.map((entry) => [entry.rule, entry.mode])).toEqual([
       ['fs.read', 'bypass'],
-      ['exec.otherwise', 'bypass'],
+      ['exec', 'bypass'],
     ]);
   });
 
@@ -344,7 +304,7 @@ describe('PolicyEngine under a permission mode', () => {
     policy = engine({}, escalator);
     expect(await policy.resolve(commit)).toMatchObject({
       verdict: 'allow',
-      rule: 'exec.otherwise',
+      rule: 'exec',
       escalated: true,
       mode: 'bypass',
     });

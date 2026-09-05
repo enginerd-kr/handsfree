@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { Jail } from '../policy/jail.js';
-import type { Policy } from '../config/schema.js';
 
 /**
  * A run owns two directories that must not be the same one:
@@ -68,8 +67,8 @@ export class Workspace {
     return path.basename(this.runDir);
   }
 
-  jail(policy: Policy): Jail {
-    return new Jail([this.dir], { followSymlinks: policy.fs.followSymlinks });
+  jail(): Jail {
+    return new Jail([this.dir]);
   }
 
   /** Session ids per agent, so a restart can resume instead of starting over. */

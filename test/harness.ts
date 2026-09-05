@@ -11,7 +11,6 @@ export interface HarnessOptions {
   agents: Record<string, FakeAgent>;
   config?: Partial<{
     capabilities: Partial<Config['capabilities']>;
-    policy: Record<string, unknown>;
     limits: Partial<Config['limits']>;
     /** Per-agent profile fields beyond the command — the optional model override. */
     profiles: Record<string, { model?: string; nativeTools?: 'allow' | 'deny' }>;
@@ -57,7 +56,6 @@ export function harness(options: HarnessOptions): Harness {
     ...(options.config?.orchestration ? { orchestration: options.config.orchestration } : {}),
     ...(options.config?.execution ? { execution: options.config.execution } : {}),
     ...(options.config?.prices ? { prices: options.config.prices } : {}),
-    policy: options.config?.policy ?? {},
     limits: { turnTimeoutMs: 5_000, idleTimeoutMs: 5_000, cancelGraceMs: 500, ...(options.config?.limits ?? {}) },
   });
   config.workspaceRoot = root;

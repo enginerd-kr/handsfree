@@ -42,25 +42,6 @@ const NOTES = {
   gemini: { note: 'fast, good at bulk text and single-file work' },
 };
 
-/**
- * An allowlist worth showing: the tests may run, the push may not. `otherwise`
- * is spelled out because the shipped default for it is a person, and there is
- * nobody at this screen — left to the default the push would sit out the
- * decision timeout and come back as a bare "declined" two minutes later, which
- * is a picture of nobody answering rather than of the list doing its job.
- */
-const ALLOWLIST = {
-  exec: {
-    enabled: true,
-    mode: 'allowlist',
-    allow: ['node test.mjs', 'git status'],
-    otherwise: 'deny',
-  },
-};
-
-/** The other way to run it: nothing is pre-approved, so every command comes to you. */
-const ASK = { exec: { enabled: true, mode: 'ask' } };
-
 /** A small project for the agent to actually touch, so every ✓ row is a real one. */
 function seed(dir: string): void {
   fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
@@ -142,11 +123,10 @@ async function turn(): Promise<void> {
           },
         ]),
         profiles: NOTES,
-        policy: ALLOWLIST,
         llm: scripted([
           delegate('claude', 'untangle the escape handling in src/parser.ts and run the tests'),
           answer(
-            'Done — the escape handling is its own function now and the suite is green. One thing was refused: `git push origin main` is not on the allowlist.',
+            'Done — the escape handling is its own function now and the suite is green. One thing was refused: `git push origin main` was declined by the user.',
           ),
         ]),
       });
@@ -155,6 +135,9 @@ async function turn(): Promise<void> {
       return staged;
     },
     async (session, staged) => {
+      // Script the user's answers: approve reading, writing and tests; decline the push.
+      const answers = [true, true, true, false];
+      staged.runtime.setEscalator({ ask: async () => answers.shift() ?? false });
       await staged.runtime.conversation.send(
         'untangle the escape handling in the tokenizer, then run the tests',
       );
@@ -167,7 +150,7 @@ async function turn(): Promise<void> {
   );
 }
 
-/** Where the policy engine cannot decide on its own, it comes to you. */
+/** Ask mode shows every permission request to the user. */
 async function permission(): Promise<void> {
   let workspace = '';
   await shot(
@@ -190,7 +173,6 @@ async function permission(): Promise<void> {
           { do: 'stall', ms: 30_000 },
         ]),
         profiles: NOTES,
-        policy: ASK,
         llm: scripted([
           delegate('claude', 'untangle the escape handling in src/parser.ts and run the tests'),
         ]),
@@ -226,7 +208,6 @@ async function welcome(): Promise<void> {
       stage({
         agents: roster(() => []),
         profiles: NOTES,
-        policy: ALLOWLIST,
         // Nothing is sent, so nothing plans; a reply left here could only ever
         // be one nobody asked for.
         llm: scripted([]),

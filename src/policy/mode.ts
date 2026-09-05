@@ -1,5 +1,3 @@
-import type { RuleOutcome } from '../config/schema.js';
-
 /** Session permission handling: forward every request, or approve every request. */
 export type PermissionMode = 'ask' | 'bypass';
 export const MODES: readonly PermissionMode[] = ['ask', 'bypass'];
@@ -12,11 +10,7 @@ export function parsePermissionMode(text: string | undefined): PermissionMode | 
   return (MODES as readonly string[]).includes(text ?? '') ? (text as PermissionMode) : undefined;
 }
 
-/** Legacy rule names remain useful audit context; only the session mode decides. */
-export function applyMode<R extends { outcome: RuleOutcome; rule: string }>(mode: PermissionMode, ruling: R): R {
-  return { ...ruling, outcome: mode === 'bypass' ? 'allow' : 'ask' };
-}
-
+/** Shared with the UI when a mode switch releases pending requests. */
 export function modeAllows(mode: PermissionMode, _rule: string): boolean {
   return mode === 'bypass';
 }
