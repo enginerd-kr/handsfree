@@ -88,6 +88,7 @@ export const GLYPH: Record<Marker, string> = {
   // its text starts in the column every other row's does.
   prompt: DOT_IDLE,
   bullet: DOT,
+  tool: '↳',
   thought: '✻',
   result: '⎿',
   allowed: '✓',

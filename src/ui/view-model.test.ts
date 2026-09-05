@@ -8,6 +8,120 @@ function transcript(): Transcript {
   return new Transcript();
 }
 
+describe('tool result folding', () => {
+  const tool = (t: Transcript, id: string, text: string, sessionId = 's') => t.append({
+    type: 'session_update', agentId: 'claude', sessionId,
+    update: {
+      sessionUpdate: 'tool_call', toolCallId: id, title: `Run ${id}`, status: 'in_progress',
+      content: [{ type: 'content', content: { type: 'text', text } }],
+    },
+  });
+
+  it.each(['completed', 'failed'] as const)('folds all output by default when a tool becomes %s', (status) => {
+    const t = transcript();
+    tool(t, 'one', 'streaming output');
+    expect(buildView(t.all(), WORKSPACE)[0]?.lines[0]?.text).toBe('streaming output');
+    t.append({ type: 'session_update', agentId: 'claude', sessionId: 's', update: {
+      sessionUpdate: 'tool_call_update', toolCallId: 'one', status,
+      content: [{ type: 'content', content: { type: 'text', text: 'final output\nlast detail' } }],
+    } });
+    const finished = buildView(t.all(), WORKSPACE)[0]!;
+    expect(finished.fold?.expanded).toBe(false);
+    expect(finished.lines).toEqual([{ text: '… +2 lines', tone: 'muted' }]);
+    const reopened = buildView(t.all(), WORKSPACE, { folds: new Map([[finished.fold!.id, true]]) });
+    expect(reopened[0]?.lines.map((line) => line.text)).toEqual(['final output', 'last detail']);
+  });
+
+  it('folds short results independently while keeping their titles and status', () => {
+    const t = transcript();
+    t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'inspect' });
+    tool(t, 'one', 'first result');
+    tool(t, 'two', 'second result');
+    const before = buildView(t.all(), WORKSPACE);
+    const id = before[1]!.fold!.id;
+    expect(before[1]!.fold!.expanded).toBe(true);
+    const folded = buildView(t.all(), WORKSPACE, { folds: new Map([[id, false]]) });
+    expect(folded[1]).toMatchObject({ text: 'Run one', markerTone: 'warn', lines: [{ text: '… +1 line' }] });
+    expect(folded[2]?.lines[0]?.text).toBe('second result');
+    expect(folded[0]?.text).toBe('inspect');
+    expect(buildView(t.all(), WORKSPACE, { folds: new Map([[id, true]]) })[1]?.lines[0]?.text)
+      .toBe('first result');
+  });
+
+  it('previews long output, expands it whole, and collapses it completely', () => {
+    const t = transcript();
+    const longLine = 'x'.repeat(300) + ' END';
+    tool(t, 'one', [...Array.from({ length: 12 }, (_, n) => `row ${n}`), longLine].join('\n'));
+    const preview = buildView(t.all(), WORKSPACE)[0]!;
+    expect(preview.fold?.expanded).toBe(false);
+    expect(preview.lines.at(-1)?.text).toBe('… +1 line');
+    const opened = buildView(t.all(), WORKSPACE, { expanded: true, collapseHint: 'click to collapse' })[0]!;
+    expect(opened.lines[12]?.text).toBe(longLine);
+    expect(opened.lines.at(-1)?.text).toBe('click to collapse');
+    const closed = buildView(t.all(), WORKSPACE, { expanded: false })[0]!;
+    expect(closed.lines).toEqual([{ text: '… +13 lines', tone: 'muted' }]);
+  });
+
+  it('keeps a result folded through output updates, completion, and reopening its task', () => {
+    const t = transcript();
+    t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'inspect' });
+    tool(t, 'one', 'before');
+    const id = buildView(t.all(), WORKSPACE)[1]!.fold!.id;
+    const folds = new Map([[id, false]]);
+    t.append({ type: 'session_update', agentId: 'claude', sessionId: 's', update: {
+      sessionUpdate: 'tool_call_update', toolCallId: 'one', status: 'failed',
+      content: [{ type: 'content', content: { type: 'text', text: 'after\nerror details' } }],
+    } });
+    expect(buildView(t.all(), WORKSPACE, { folds })[1]).toMatchObject({
+      markerTone: 'bad', fold: { id, expanded: false }, lines: [{ text: '… +2 lines' }],
+    });
+    t.append({ type: 'stop', taskId: 1, agentId: 'claude', sessionId: 's', stopReason: 'end_turn' });
+    expect(buildView(t.all(), WORKSPACE, { folds }).some((item) => item.key === id)).toBe(false);
+    const listed = buildView(t.all(), WORKSPACE, { expandedTasks: new Set([1]) });
+    expect(listed.find((item) => item.key === id)?.lines[0]?.text).toBe('… +2 lines');
+    const reopened = buildView(t.all(), WORKSPACE, { expanded: true, folds });
+    expect(reopened.find((item) => item.key === id)?.lines[0]?.text).toBe('… +2 lines');
+  });
+
+  it('does not reuse output or fold state across tasks or sessions with the same tool id', () => {
+    const t = transcript();
+    for (const taskId of [1, 2]) {
+      t.append({ type: 'delegation', taskId, agentId: 'claude', sessionId: 's', task: 'inspect' });
+      tool(t, 'same', `task ${taskId}`);
+      t.append({ type: 'stop', taskId, agentId: 'claude', sessionId: 's', stopReason: 'end_turn' });
+    }
+    tool(t, 'same', 'session one', 'one');
+    tool(t, 'same', 'session two', 'two');
+    const results = buildView(t.all(), WORKSPACE, { expanded: true }).filter((item) => item.text === 'Run same');
+    expect(new Set(results.map((item) => item.fold?.id)).size).toBe(4);
+    expect(results.map((item) => item.lines[0]?.text)).toEqual(['task 1', 'task 2', 'session one', 'session two']);
+  });
+
+  it('folds notes-only results and diffs, but gives empty results no click target', () => {
+    const t = transcript();
+    tool(t, 'empty', '');
+    expect(buildView(t.all(), WORKSPACE)[0]?.fold).toBeUndefined();
+    t.append({ type: 'note', level: 'info', text: 'command approved' });
+    expect(buildView(t.all(), WORKSPACE, { expanded: false })[0]?.lines[0]?.text).toBe('… +1 line');
+    const long = 'value'.repeat(60);
+    t.append({ type: 'session_update', agentId: 'claude', sessionId: 's', update: {
+      sessionUpdate: 'tool_call', toolCallId: 'diff', title: 'Edit file', status: 'completed',
+      content: [{ type: 'diff', path: '/ws/a', oldText: 'old', newText: long }],
+    } });
+    expect(buildView(t.all(), WORKSPACE, { expanded: true })[1]?.lines.at(-1)?.text).toBe(`+ ${long}`);
+    expect(buildView(t.all(), WORKSPACE, { expanded: false })[1]?.lines[0]?.text).toBe('… +3 lines');
+  });
+
+  it('does not make short running prose clickable when there is nothing to fold', () => {
+    const t = transcript();
+    t.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'inspect' });
+    t.append({ type: 'session_update', agentId: 'claude', sessionId: 's', update: {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Looking now.' },
+    } });
+    expect(buildView(t.all(), WORKSPACE).every((item) => item.fold === undefined)).toBe(true);
+  });
+});
+
 describe('buildView', () => {
   it('joins streamed message chunks into one block', () => {
     const t = transcript();
@@ -91,7 +205,8 @@ describe('buildView', () => {
       },
     });
 
-    const view = buildView(t.all(), WORKSPACE);
+    expect(buildView(t.all(), WORKSPACE)[0]?.lines.map((line) => line.text)).toEqual(['… +2 lines']);
+    const view = buildView(t.all(), WORKSPACE, { expanded: true });
     expect(view[0]?.lines.map((line) => line.text)).toEqual(['3 passed', '0 failed']);
   });
 
@@ -118,7 +233,7 @@ describe('buildView', () => {
       },
     });
 
-    const view = buildView(t.all(), WORKSPACE);
+    const view = buildView(t.all(), WORKSPACE, { expanded: true });
     expect(view[0]?.lines).toEqual([
       { text: 'Updated notes.txt (+1 −1)', tone: 'muted' },
       { text: '- two', tone: 'bad' },
@@ -269,7 +384,7 @@ describe('buildView', () => {
     expect(open[1]?.lines).toEqual([]);
   });
 
-  it('caps a tool call by its own output, keeping the approvals under it', () => {
+  it('caps a running tool call by its own output, keeping the approvals under it', () => {
     const t = transcript();
     t.append({ type: 'delegation', taskId: 1, agentId: 'gemini', sessionId: 's', task: 'read it' });
     t.append({
@@ -281,7 +396,7 @@ describe('buildView', () => {
         toolCallId: 't1',
         title: 'Read README.md',
         kind: 'read',
-        status: 'completed',
+        status: 'in_progress',
         content: [
           {
             type: 'content',
@@ -486,7 +601,7 @@ describe('buildView', () => {
     });
     t.append({ type: 'note', level: 'info', text: 'wrote notes.txt' });
 
-    const view = buildView(t.all(), WORKSPACE);
+    const view = buildView(t.all(), WORKSPACE, { expanded: true });
     expect(view).toHaveLength(1);
     expect(view[0]?.lines.map((line) => line.text)).toEqual([
       '✓ write notes.txt (7 bytes)',
@@ -747,15 +862,16 @@ describe('a delegation row', () => {
       sessionId: 's',
       update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'All 9 pass.' } },
     });
-    // The agent's rows follow the line directly, at the margin, in its name —
-    // the way a reply reads — and the first stands a line off the prompt.
+    // Replies stay at the margin; tool calls are inset and carry their own
+    // marker, so status colour is not the only way to tell them apart.
     const view = buildView(t.all(), WORKSPACE);
     expect(view.map((item) => [item.depth, item.label, item.text, item.taskId])).toEqual([
       [0, undefined, '@claude   run the tests', undefined],
-      [0, 'claude', 'Run vitest', 1],
+      [1, 'claude', 'Run vitest', 1],
       [0, 'claude', 'All 9 pass.', 1],
     ]);
     expect(view[1]?.gap).toBe(true);
+    expect(view[1]).toMatchObject({ marker: 'tool', tone: 'muted' });
   });
 
   it('folds with the work, and comes back when the task is unfolded', () => {
@@ -856,7 +972,7 @@ describe('a task\'s answer', () => {
     expect(view[1]?.agentId).toBe('claude');
   });
 
-  it('labels every block of an answer as prose, so the name stands over it', () => {
+  it('labels every block of an answer as prose, so the name sits beside it', () => {
     const t = asked('```js\nfunction greet(name) {\n  return name;\n}\n```');
     const view = buildView(t.all(), WORKSPACE);
     expect(view.at(-1)).toMatchObject({ label: 'claude', prose: true });

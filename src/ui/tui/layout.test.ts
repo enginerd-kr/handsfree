@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { heightOf, itemAt, itemRows, placeItems, totalHeight, visualRows, windowAt } from './layout.js';
+import { entryText, heightOf, itemAt, itemRows, placeItems, totalHeight, visualRows, windowAt } from './layout.js';
+import { selectedText } from './selection.js';
 import type { ViewItem } from '../view-model.js';
 
 function item(text: string, extra: Partial<ViewItem> = {}): ViewItem {
@@ -29,10 +30,11 @@ describe('totalHeight', () => {
 });
 
 describe('itemRows', () => {
-  it('gives a label its own row over prose, and a shared one over a one-line row', () => {
+  it('starts prose beside its label and aligns later lines with the body', () => {
     const code = item('const a = 1;\nconst b = 2;', { label: 'claude' });
     expect(heightOf(code, 80)).toBe(2);
-    expect(heightOf({ ...code, prose: true }, 80)).toBe(3);
+    expect(heightOf({ ...code, prose: true }, 80)).toBe(2);
+    expect(entryText({ ...code, prose: true }, 80)).toBe('const a = 1;\n        const b = 2;');
   });
 
   it('places the headline past the gap and each detail line under the last', () => {
@@ -52,6 +54,15 @@ describe('itemRows', () => {
 });
 
 describe('visualRows', () => {
+  it('measures CJK speaker labels and copies wrapped prose without alignment spaces', () => {
+    const reply = item('a'.repeat(20) + '\nnext line', { label: '클로드', prose: true });
+    const rows = visualRows([reply], 20);
+    expect(rows.map((row) => [row.left, row.wrapped])).toEqual([[2, false], [10, true], [10, false]]);
+    expect(heightOf(reply, 20)).toBe(rows.length);
+    expect(selectedText(rows, { start: { row: 0, col: 10 }, end: { row: 2, col: 19 } }))
+      .toBe('a'.repeat(20) + '\nnext line');
+  });
+
   it('mirrors heightOf row for row, wrapping and gaps included', () => {
     const tall = item('x'.repeat(150), { gap: true, lines: [{ text: 'done', tone: 'muted' }] });
     const all = [...rows.slice(0, 2), tall];

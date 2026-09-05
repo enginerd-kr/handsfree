@@ -1,4 +1,5 @@
 import wrapAnsi from 'wrap-ansi';
+import stringWidth from 'string-width';
 import type { ViewItem } from '../view-model.js';
 
 /** Width of the gutter column every row reserves for its glyph. */
@@ -47,7 +48,7 @@ export function itemRows(item: ViewItem, columns: number): ItemRows {
   const indent = item.depth * 2;
   let row = item.gap ? 1 : 0;
   const head = row;
-  row += lines(headline(item), width(columns, indent));
+  row += lines(headline(item, columns), width(columns, indent));
   const details: number[] = [];
   const detail = width(columns, indent + DETAIL_INDENT);
   for (const line of item.lines) {
@@ -96,7 +97,22 @@ export function visualRows(items: readonly ViewItem[], columns: number): VisualR
     if (item.gap) rows.push({ text: '', left: 0, wrapped: false });
     // Every headline sits one gutter in.
     const head = indent + GUTTER;
-    wrap(headline(item), width(columns, indent), head);
+    const prefix = labelWidth(item, columns);
+    if (prefix > 0) {
+      let first = true;
+      for (const logical of item.text.split('\n')) {
+        for (const [index, text] of wrapAnsi(logical, textWidth(item, columns), { trim: false, hard: true }).split('\n').entries()) {
+          rows.push({
+            text: first ? `${item.label}  ${text}` : text,
+            left: first ? head : head + prefix,
+            wrapped: index > 0,
+          });
+          first = false;
+        }
+      }
+    } else {
+      wrap(headline(item, columns), width(columns, indent), head);
+    }
     for (const line of item.lines) {
       wrap(line.text, width(columns, indent + DETAIL_INDENT), indent + DETAIL_INDENT + GUTTER);
     }
@@ -105,20 +121,27 @@ export function visualRows(items: readonly ViewItem[], columns: number): VisualR
 }
 
 /** The text of the first row, including the label that wraps along with it. */
-export function headline(item: ViewItem): string {
-  return `${item.label ? `${item.label}${labelGap(item)}` : ''}${item.text}`;
+export function headline(item: ViewItem, columns: number): string {
+  return `${item.label ? `${item.label}  ` : ''}${entryText(item, columns)}`;
 }
 
-/**
- * What parts a label from the text: a pair of spaces on a one-line row — a
- * tool call, a routing — and a line break over a block of prose. An agent's
- * words hang under their name rather than starting beside it: a first line
- * pushed along by the name wrapped back to a different column from the rest,
- * and a fenced block, whose lines have to share a column, could not follow a
- * name at all.
- */
-export function labelGap(item: ViewItem): string {
-  return item.prose === true ? '\n' : '  ';
+/** Reserve a label column for prose, unless the window cannot fit it. */
+function labelWidth(item: ViewItem, columns: number): number {
+  const size = item.prose && item.label ? stringWidth(`${item.label}  `) : 0;
+  return size < width(columns, item.depth * 2) ? size : 0;
+}
+
+/** The width markdown and wrapping get after an inline speaker's name. */
+export function textWidth(item: ViewItem, columns: number): number {
+  return width(columns, item.depth * 2) - labelWidth(item, columns);
+}
+
+/** Align continuation lines and code with the first word beside the name. */
+export function entryText(item: ViewItem, columns: number): string {
+  const prefix = labelWidth(item, columns);
+  if (prefix === 0) return item.text;
+  return wrapAnsi(item.text, textWidth(item, columns), { trim: false, hard: true })
+    .replace(/\n/g, `\n${' '.repeat(prefix)}`);
 }
 
 /**

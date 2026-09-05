@@ -49,6 +49,185 @@ async function waitFor(
 }
 
 describe('terminal UI', () => {
+  const appendTool = (h: Harness, id: string, text: string) => h.runtime.transcript.append({
+    type: 'session_update', agentId: 'claude', sessionId: 's', update: {
+      sessionUpdate: 'tool_call', toolCallId: id, title: `Run ${id}`, status: 'in_progress',
+      content: [{ type: 'content', content: { type: 'text', text } }],
+    },
+  });
+  const clickLine = (app: ReturnType<typeof render>, text: string) => {
+    const row = (app.lastFrame() ?? '').split('\n').findIndex((line) => line.includes(text));
+    expect(row).toBeGreaterThan(0);
+    app.stdin.write(`\x1b[<0;5;${row + 1}M`);
+    app.stdin.write(`\x1b[<0;5;${row + 1}m`);
+  };
+
+  it('opens the conversation from the final answer with tool results folded, even after expand all', async () => {
+    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
+    open = h;
+    h.runtime.transcript.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'inspect tools' });
+    h.runtime.transcript.append({ type: 'session_update', agentId: 'claude', sessionId: 's', update: {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'earlier message' },
+    } });
+    appendTool(h, 'first', 'first output');
+    appendTool(h, 'second', 'second output');
+    h.runtime.transcript.append({ type: 'session_update', agentId: 'claude', sessionId: 's', update: {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'final answer' },
+    } });
+    h.runtime.transcript.append({ type: 'stop', taskId: 1, agentId: 'claude', sessionId: 's', stopReason: 'end_turn' });
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      await waitFor(() => app.lastFrame(), 'final answer');
+      clickLine(app, 'final answer');
+      let frame = await waitFor(() => app.lastFrame(), 'earlier message');
+      expect(frame).toContain('Run first');
+      expect(frame).toContain('Run second');
+      expect(frame).not.toContain('first output');
+      expect(frame).not.toContain('second output');
+      clickLine(app, 'Run first');
+      frame = await waitFor(() => app.lastFrame(), 'first output');
+      expect(frame).not.toContain('second output');
+      app.stdin.write('\x0f');
+      await waitFor(() => app.lastFrame(), 'second output');
+      clickLine(app, 'final answer');
+      frame = await waitFor(() => app.lastFrame(), 'Done (2 tool calls · 1s · click or');
+      expect(frame).not.toContain('earlier message');
+      clickLine(app, 'final answer');
+      frame = await waitFor(() => app.lastFrame(), 'earlier message');
+      expect(frame).toContain('Run first');
+      expect(frame).toContain('Run second');
+      expect(frame).not.toContain('first output');
+      expect(frame).not.toContain('second output');
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('automatically folds completed tool output and lets a click reopen it', async () => {
+    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
+    open = h;
+    appendTool(h, 'finish', 'streaming output');
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      await waitFor(() => app.lastFrame(), 'streaming output');
+      h.runtime.transcript.append({ type: 'session_update', agentId: 'claude', sessionId: 's', update: {
+        sessionUpdate: 'tool_call_update', toolCallId: 'finish', status: 'completed',
+        content: [{ type: 'content', content: { type: 'text', text: 'final output\nlast detail' } }],
+      } });
+      const folded = await waitFor(() => app.lastFrame(), '… +2 lines');
+      expect(folded).not.toContain('final output');
+      expect(folded).not.toContain('streaming output');
+      clickLine(app, 'Run finish');
+      const expanded = await waitFor(() => app.lastFrame(), 'final output');
+      expect(expanded).toContain('last detail');
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('clicks a short tool result independently and keeps it folded as new output arrives', async () => {
+    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
+    open = h;
+    h.runtime.transcript.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'inspect tools' });
+    appendTool(h, 'first', 'first output');
+    appendTool(h, 'second', 'second output');
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      await waitFor(() => app.lastFrame(), 'second output');
+      clickLine(app, 'first output');
+      let frame = await waitFor(() => app.lastFrame(), '… +1 line');
+      expect(frame).not.toContain('first output');
+      expect(frame).toContain('second output');
+      expect(frame).toContain('  ↳ claude  Run first');
+      h.runtime.transcript.append({ type: 'session_update', agentId: 'claude', sessionId: 's', update: {
+        sessionUpdate: 'tool_call_update', toolCallId: 'first',
+        content: [{ type: 'content', content: { type: 'text', text: 'updated output\nnew detail' } }],
+      } });
+      frame = await waitFor(() => app.lastFrame(), '… +2 lines');
+      expect(frame).not.toContain('updated output');
+      clickLine(app, 'Run first');
+      frame = await waitFor(() => app.lastFrame(), 'updated output');
+      expect(frame).toContain('new detail');
+      expect(frame).toContain('second output');
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('expands a preview and then hides every result line on the next click', async () => {
+    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
+    open = h;
+    appendTool(h, 'long', Array.from({ length: 20 }, (_, n) => `output-${n + 1}`).join('\n'));
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      await waitFor(() => app.lastFrame(), '… +8 lines');
+      clickLine(app, '… +8 lines');
+      await waitFor(() => app.lastFrame(), 'output-20');
+      clickLine(app, 'click to collapse');
+      const frame = await waitFor(() => app.lastFrame(), '… +20 lines');
+      expect(frame).not.toContain('output-');
+      expect(frame).toContain('Run long');
+      app.stdin.write('\x0f');
+      await waitFor(() => app.lastFrame(), 'output-20');
+      app.stdin.write('\x0f');
+      await waitFor(() => app.lastFrame(), '… +20 lines');
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('expands and collapses every task, including tasks outside the viewport', async () => {
+    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
+    open = h;
+    for (let taskId = 1; taskId <= 12; taskId++) {
+      h.runtime.transcript.append({ type: 'delegation', taskId, agentId: 'claude', sessionId: 's', task: `brief-${taskId}` });
+      appendTool(h, `command-${taskId}`, `result-${taskId}`);
+      h.runtime.transcript.append({ type: 'stop', taskId, agentId: 'claude', sessionId: 's', stopReason: 'end_turn' });
+    }
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      await waitFor(() => app.lastFrame(), 'Done');
+      app.stdin.write('\x0f');
+      await waitFor(() => app.lastFrame(), 'result-12');
+      for (let n = 0; n < 40; n++) app.stdin.write('\x1b[<64;3;10M');
+      await waitFor(() => app.lastFrame(), 'brief-1');
+      expect(app.lastFrame()).toContain('result-1');
+      app.stdin.write('\x0f');
+      await waitFor(() => app.lastFrame(), 'click or ctrl+o to expand');
+      expect(app.lastFrame()).not.toContain('result-');
+      for (let n = 0; n < 40; n++) app.stdin.write('\x1b[<65;3;10M');
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(app.lastFrame()).not.toContain('result-');
+      expect(app.lastFrame()).not.toContain('brief-');
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('copies a drag inside a tool result without collapsing it', async () => {
+    vi.mocked(copyToClipboard).mockClear();
+    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
+    open = h;
+    appendTool(h, 'copy', 'select this output');
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      const frame = await waitFor(() => app.lastFrame(), 'select this output');
+      const lines = frame.split('\n');
+      const row = lines.findIndex((line) => line.includes('select this output')) + 1;
+      const column = lines[row - 1]!.indexOf('select this output') + 1;
+      app.stdin.write(`\x1b[<0;${column};${row}M`);
+      app.stdin.write(`\x1b[<32;${column + 17};${row}M`);
+      app.stdin.write(`\x1b[<0;${column + 17};${row}m`);
+      await waitFor(() => app.lastFrame(), 'copied');
+      expect(copyToClipboard).toHaveBeenCalledWith('select this output', expect.anything());
+      expect(app.lastFrame()).toContain('select this output');
+      expect(app.lastFrame()).not.toContain('… +1 line');
+    } finally {
+      app.unmount();
+      vi.mocked(copyToClipboard).mockClear();
+    }
+  });
+
   it('says under the prompt where debug lines go, only while debug is on', async () => {
     enableDebug(() => {}, '/tmp/hf-debug.log');
     const h = harness({
@@ -275,8 +454,7 @@ describe('terminal UI', () => {
       // in the agent's name — no row saying the line again, no ledger over
       // the answer, and nothing of the block meant for the planner.
       expect(frame.split('who are you')).toHaveLength(2);
-      // The name stands over the answer, and the answer hangs in the text column.
-      expect(frame).toContain('claude\n  I am claude.');
+      expect(frame).toContain('claude  I am claude.');
       expect(frame).not.toContain('REPORT');
       expect(frame).not.toContain('task 1');
     } finally {
@@ -284,7 +462,7 @@ describe('terminal UI', () => {
     }
   });
 
-  it('starts a code block on the line under the agent\'s name, in one column', async () => {
+  it('starts a code block beside the agent\'s name, keeping its lines aligned', async () => {
     const h = harness({
       agents: {
         claude: fakeAgent({
@@ -301,10 +479,10 @@ describe('terminal UI', () => {
       await h.runtime.conversation.send('@claude show me');
       const frame = await waitFor(() => app.lastFrame(), 'Done');
       const lines = frame.split('\n');
-      const name = lines.findIndex((line) => /claude\s*$/.test(line));
+      const name = lines.findIndex((line) => line.includes('claude  function'));
       expect(name).toBeGreaterThan(-1);
       // The block's lines share a column, the first no further right than the rest.
-      expect(lines[name + 1]?.indexOf('function')).toBe(lines[name + 3]?.indexOf('}'));
+      expect(lines[name]?.indexOf('function')).toBe(lines[name + 2]?.indexOf('}'));
     } finally {
       app.unmount();
     }

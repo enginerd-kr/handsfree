@@ -16,7 +16,7 @@ import type { TranscriptRecord } from '../workspace/transcript.js';
 export type Tone = 'normal' | 'muted' | 'good' | 'bad' | 'warn' | 'accent' | 'brand';
 
 /** The glyph that opens a row. The renderer owns the actual characters. */
-export type Marker = 'none' | 'prompt' | 'bullet' | 'thought' | 'result' | 'allowed' | 'refused';
+export type Marker = 'none' | 'prompt' | 'bullet' | 'tool' | 'thought' | 'result' | 'allowed' | 'refused';
 
 /** A continuation line, rendered under the row's `⎿` gutter. */
 export interface ViewLine {
@@ -28,7 +28,7 @@ export interface ViewItem {
   key: string;
   /** Who is speaking: the user, handsfree itself, an agent, or the machinery. */
   role: 'user' | 'handsfree' | 'agent' | 'system';
-  /** How far in the row sits. Every row of the conversation sits at 0 now. */
+  /** How far in the row sits; tool calls sit one level inside the conversation. */
   depth: number;
   marker: Marker;
   markerTone: Tone;
@@ -54,20 +54,21 @@ export interface ViewItem {
   prose?: boolean;
   /**
    * The delegated task this row belongs to, opening and closing rows included.
-   * Every row of a task carries it, so hovering anywhere in the block lights
-   * all of it and a click anywhere in it folds or unfolds the task.
+   * Kept separately from the click target: a tool result folds independently.
    */
   taskId?: number;
+  /** The block a click toggles, and whether all its content is visible. */
+  fold?: { id: string; expanded: boolean };
 }
 
-/** How much of a tool call's own output is worth putting on screen. */
+/** Maximum length of a compact plan headline. */
 const MAX_LINE_CHARS = 200;
 
 /**
  * How many lines of one block a task gets while it is still on screen. A file
  * read back whole is the ordinary case, and left alone it takes the viewport
  * with it: the answer scrolls off the top before anyone can read it. So the
- * head is kept, the rest is counted, and unfolding the task hands it back.
+ * head is kept, the rest is counted, and unfolding the block hands it back.
  */
 const MAX_BLOCK_LINES = 12;
 
@@ -81,12 +82,15 @@ interface ToolState {
 }
 
 export interface ViewOptions {
-  /** Show every row of every finished task rather than folding them. */
+  /** Expand or collapse all tasks and tool results; omitted previews running tools and folds finished ones. */
   expanded?: boolean;
-  /** Tasks unfolded one at a time, by the id the delegation was given. */
+  /** Reveal a task's conversation with tool results folded by default. */
   expandedTasks?: ReadonlySet<number>;
+  /** Individual choices override the global setting. */
+  folds?: ReadonlyMap<string, boolean>;
   /** How a reader gets the folded rows back, if there is a way. */
   expandHint?: string;
+  collapseHint?: string;
 }
 
 /**
@@ -163,9 +167,10 @@ export function buildView(
     planned = { tokens: 0, estimated: false };
   };
 
-  /** Whether a task's rows are shown in full: nothing folded, nothing capped. */
+  /** Whether a task's conversation is visible; tool results have their own state. */
   const unfolded = (taskId: number): boolean =>
-    options.expanded === true || options.expandedTasks?.has(taskId) === true;
+    options.folds?.get(`task:${taskId}`) ??
+    (options.expanded === true || options.expandedTasks?.has(taskId) === true);
 
   const add = (item: ViewItem): ViewItem => {
     if (currentTask !== undefined) {
@@ -173,7 +178,7 @@ export function buildView(
       item.agentId ??= currentAgent;
       // The agent's own rows say whose they are, and the task's first row
       // stands a line off the person's.
-      if (item.role === 'agent' && item.marker === 'bullet') item.label ??= currentAgent;
+      if (item.role === 'agent' && (item.marker === 'bullet' || item.marker === 'tool')) item.label ??= currentAgent;
       if (items.length === taskStart) item.gap = true;
     }
     items.push(item);
@@ -393,7 +398,7 @@ export function buildView(
               taskTools,
               took,
               record.usage ? tokensOf(record.usage) : 0,
-              hidden > 0 ? options.expandHint : undefined,
+              hidden > 0 ? options.expandHint : foldable > 0 ? options.collapseHint : undefined,
             ),
             record.stopReason === 'end_turn' ? 'muted' : 'warn',
             false,
@@ -404,6 +409,10 @@ export function buildView(
         // click that changes nothing.
         if (foldable === 0) {
           for (const item of items.slice(taskStart)) item.taskId = undefined;
+        } else {
+          for (const item of items.slice(taskStart)) {
+            item.fold = { id: `task:${record.taskId}`, expanded: unfolded(record.taskId) };
+          }
         }
         currentTask = undefined;
         currentAgent = undefined;
@@ -480,7 +489,7 @@ export function buildView(
           case 'tool_call':
           case 'tool_call_update': {
             closeBlocks();
-            const key = `t${record.agentId}:${update.toolCallId}`;
+            const key = `tool:${record.agentId}:${record.sessionId}:${currentTask ?? ''}:${update.toolCallId}`;
             const state = tools.get(key) ?? {
               title: update.toolCallId,
               locations: [],
@@ -498,10 +507,10 @@ export function buildView(
 
             const existing = byKey.get(key);
             const target =
-              existing ?? add(row(key, 'agent', 0, 'bullet', 'muted', '', 'normal', false));
+              existing ?? add(row(key, 'agent', 1, 'tool', 'muted', '', 'muted', false));
             if (!existing) taskTools++;
             target.text = headline(state, workspaceDir);
-            target.tone = state.status === 'failed' ? 'bad' : 'normal';
+            target.tone = state.status === 'failed' ? 'bad' : 'muted';
             target.markerTone = statusTone(state.status);
             target.lines = toolLines(state, workspaceDir);
             openTool = { state, item: target };
@@ -561,20 +570,39 @@ export function buildView(
     }
   }
 
-  // The cap is spent here rather than as the rows are built, because a
-  // streamed block is only whole once the last record has been read — and
-  // because one place deciding how much of a block is shown is easier to
-  // trust than two. Only a task's own rows are capped: they are the ones a
-  // click can unfold, and handsfree's own answer is the answer — as is the
-  // latest thing an agent has said in a task that was the person's own line.
+  // Decide folding after streaming has settled. Tool results own their click
+  // target, including short results and results outside a delegation. The
+  // latest answer stays whole; older prose still follows its task's cap.
   for (const item of items) {
     if (item.role === 'agent' && item.prose === true) item.text = stripReport(item.text);
     item.text = item.text.trim();
-    if (item.taskId === undefined || unfolded(item.taskId)) continue;
-    if (answers.get(item.taskId) === item.key) continue;
     const tool = tools.get(item.key);
-    if (tool) item.lines = toolLines(tool, workspaceDir, MAX_BLOCK_LINES, options.expandHint);
-    else if (item.prose === true) capText(item, options.expandHint);
+    if (tool) {
+      item.fold = undefined;
+      const full = toolLines(tool, workspaceDir);
+      if (full.length === 0) continue;
+      const detailCount = full.length - tool.notes.length;
+      const choice = options.folds?.get(item.key) ?? options.expanded ??
+        (item.taskId !== undefined && unfolded(item.taskId) ? false : undefined) ??
+        (tool.status === 'completed' || tool.status === 'failed' ? false : undefined);
+      item.lines = choice === false
+        ? [more(full.length, options.expandHint)]
+        : choice === true || detailCount <= MAX_BLOCK_LINES ? full
+        : [...full.slice(0, MAX_BLOCK_LINES), more(detailCount - MAX_BLOCK_LINES, options.expandHint), ...tool.notes];
+      const expanded = choice !== false && (choice === true || detailCount <= MAX_BLOCK_LINES);
+      item.fold = { id: item.key, expanded };
+      if (expanded && options.collapseHint) {
+        item.lines.push({ text: options.collapseHint, tone: 'muted' });
+      }
+      continue;
+    }
+    if (item.taskId === undefined || answers.get(item.taskId) === item.key) continue;
+    if (item.prose === true && item.text.split('\n').length > MAX_BLOCK_LINES) {
+      const expanded = unfolded(item.taskId);
+      item.fold ??= { id: `task:${item.taskId}`, expanded };
+      if (!expanded) capText(item, options.expandHint);
+      else if (options.collapseHint) item.lines.push({ text: options.collapseHint, tone: 'muted' });
+    }
   }
   // A block that was nothing but its REPORT has nothing left to draw.
   return items.filter((item) => !(item.role === 'agent' && item.prose === true && item.text === ''));
@@ -705,19 +733,13 @@ function headline(state: ToolState, root: string): string {
 
 /**
  * Everything shown under one tool call: what it produced, then what handsfree
- * did about it. The approvals sit outside the cap — they are the shortest lines
- * and the ones a reader is least willing to lose to a long file.
+ * did about it. Previewing and folding are applied once the row is complete.
  */
 function toolLines(
   state: ToolState,
   root: string,
-  limit = Number.POSITIVE_INFINITY,
-  hint?: string,
 ): ViewLine[] {
-  const detail = detailLines(state.content, root);
-  const hidden = detail.length - limit;
-  if (hidden <= 0) return [...detail, ...state.notes];
-  return [...detail.slice(0, limit), more(hidden, hint), ...state.notes];
+  return [...detailLines(state.content, root), ...state.notes];
 }
 
 /**
@@ -768,7 +790,7 @@ function blockLines(block: ContentBlock): ViewLine[] {
     case 'text':
       return block.text
         .split('\n')
-        .map((text) => ({ text: clip(text, MAX_LINE_CHARS), tone: 'muted' as Tone }));
+        .map((text) => ({ text: clip(text, Infinity), tone: 'muted' as Tone }));
     case 'image':
       return [{ text: '[image]', tone: 'muted' }];
     case 'audio':
@@ -810,8 +832,8 @@ function diffLines(diff: Diff, root: string): ViewLine[] {
 
   return [
     { text: summary, tone: 'muted' },
-    ...removed.map((text) => ({ text: clip(`- ${text}`, MAX_LINE_CHARS), tone: 'bad' as Tone })),
-    ...added.map((text) => ({ text: clip(`+ ${text}`, MAX_LINE_CHARS), tone: 'good' as Tone })),
+    ...removed.map((text) => ({ text: clip(`- ${text}`, Infinity), tone: 'bad' as Tone })),
+    ...added.map((text) => ({ text: clip(`+ ${text}`, Infinity), tone: 'good' as Tone })),
   ];
 }
 

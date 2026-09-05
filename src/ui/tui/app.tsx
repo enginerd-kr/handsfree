@@ -26,6 +26,7 @@ import {
   type Tone,
   type TurnPhase,
   type ViewItem,
+  type ViewOptions,
   sessionsOf,
 } from '../view-model.js';
 import { shortTokens, spendOf, type RunSpend, type Spend } from '../../orchestrator/usage.js';
@@ -55,7 +56,8 @@ import {
   GUTTER,
   itemAt,
   itemRows,
-  labelGap,
+  entryText,
+  textWidth,
   placeItems,
   totalHeight,
   visualRows,
@@ -383,8 +385,11 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     formRef.current = next;
     setForm(next);
   };
-  const [openTasks, setOpenTasks] = useState<ReadonlySet<number>>(() => new Set());
-  const [hoveredTask, setHoveredTask] = useState<number | undefined>();
+  const [viewOptions, setViewOptions] = useState<ViewOptions>(() => ({
+    expandHint: EXPAND_HINT,
+    collapseHint: 'click to collapse',
+  }));
+  const [hoveredFold, setHoveredFold] = useState<string | undefined>();
   // Who has a task open right now, replayed from the same records the view is.
   const [working, setWorking] = useState<ReadonlySet<string>>(() => new Set());
   // How far the running turn has got, replayed the same way, for the mark to
@@ -457,10 +462,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     const render = () => {
       const records = runtime.transcript.all();
       setItems(
-        buildView(records, runtime.workspace.dir, {
-          expandedTasks: openTasks,
-          expandHint: EXPAND_HINT,
-        }),
+        buildView(records, runtime.workspace.dir, viewOptions),
       );
       setWorking(workingAgents(records));
       setPhase(turnPhase(records));
@@ -472,7 +474,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     return () => {
       runtime.transcript.off('record', render);
     };
-  }, [runtime, openTasks]);
+  }, [runtime, viewOptions]);
 
   // Being here is what turns an `ask` verdict into a real question, and an
   // agent that stopped to ask something into a form. Without a mounted UI the
@@ -694,7 +696,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
         return {
           ...placed,
           text: renderMarkdown(placed.key, placed.text, {
-            width: Math.max(1, columns - placed.depth * 2 - GUTTER),
+            width: textWidth(placed, columns),
             highlight: highlighter,
             // A thought stays the quieter register, so the quiet ink is baked
             // into the styling rather than painted over it.
@@ -777,11 +779,10 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     [shown, columns, top],
   );
 
-  const tasks = useMemo(
-    () => new Set(shown.map((item) => item.taskId).filter((id) => id !== undefined)),
-    [shown],
-  );
-  const allOpen = tasks.size > 0 && [...tasks].every((id) => openTasks.has(id));
+  // "All" includes the transcript outside the viewport. Otherwise opening a
+  // large result can push the remaining folded blocks out of the toggle set.
+  const folds = items.flatMap((item) => item.fold ? [item.fold] : []);
+  const allOpen = folds.length > 0 && folds.every((fold) => fold.expanded);
   // Mouse rows are screen rows, but the frame starts wherever the shell prompt
   // left it — so where it sits is measured, not assumed. After each layout
   // settles the terminal is asked where its cursor is; Ink parks it on the
@@ -797,12 +798,23 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     return () => clearTimeout(timer);
   }, [stdout, placements]);
 
-  const toggleTask = (taskId: number) =>
-    setOpenTasks((current) => {
-      const next = new Set(current);
-      if (!next.delete(taskId)) next.add(taskId);
-      return next;
+  const toggleFold = (fold: NonNullable<ViewItem['fold']>) => {
+    applySelection(undefined);
+    setHoveredFold(undefined);
+    setViewOptions((current) => {
+      const next = new Map(current.folds);
+      const opening = !(next.get(fold.id) ?? fold.expanded);
+      next.set(fold.id, opening);
+      // Opening the conversation reveals its list of calls, with their
+      // results folded even if an earlier "expand all" had opened them.
+      if (opening && fold.id.startsWith('task:')) {
+        for (const item of buildView(runtime.transcript.all(), runtime.workspace.dir, { expanded: true })) {
+          if (`task:${item.taskId}` === fold.id && item.marker === 'tool') next.set(item.key, false);
+        }
+      }
+      return { ...current, folds: next };
     });
+  };
 
   // Mouse reports arrive through Ink's input parser. Do not attach a `data`
   // listener to stdin here: it switches the stream to flowing mode and races
@@ -1027,7 +1039,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       const row = mouse.row - (frameTop.current ?? (stdout?.isTTY ? 1 : 0));
       const inside = row >= HEADER_ROWS && row < HEADER_ROWS + bounds.current.viewport;
       if (mouse.type === 'hover') {
-        setHoveredTask(inside ? itemAt(layout.current, row)?.taskId : undefined);
+        setHoveredFold(inside ? itemAt(layout.current, row)?.fold?.id : undefined);
         return;
       }
       // A mouse row, taken into the transcript: clamped into the pane first —
@@ -1064,15 +1076,15 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       }
       // The release: a drag that moved is a selection, finished by copying it;
       // one that never moved is the click it always was, and folds or unfolds
-      // the task it landed on.
+      // the block it landed on.
       const drag = dragRef.current;
       dragRef.current = undefined;
       if (drag?.moved) {
         copySelection();
         return;
       }
-      const taskId = inside ? itemAt(layout.current, row)?.taskId : undefined;
-      if (taskId !== undefined) toggleTask(taskId);
+      const fold = inside ? itemAt(layout.current, row)?.fold : undefined;
+      if (fold !== undefined) toggleFold(fold);
       return;
     }
     // An image off the clipboard, where the terminal leaves ctrl+v to us —
@@ -1085,10 +1097,18 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       });
       return;
     }
-    // Folded tasks are still in the transcript; this is the way back to all of
-    // them at once, where a click opens the one it landed on.
+    // Rebuild from the current choices so repeated chords in one input batch
+    // toggle correctly, even before React has rendered the first one.
     if (key.ctrl && char === 'o') {
-      setOpenTasks(allOpen ? new Set() : new Set(tasks));
+      applySelection(undefined);
+      dragRef.current = undefined;
+      setHoveredFold(undefined);
+      setViewOptions((current) => {
+        const targets = buildView(runtime.transcript.all(), runtime.workspace.dir, current)
+          .flatMap((item) => item.fold ? [item.fold] : []);
+        if (targets.length === 0) return current;
+        return { ...current, expanded: !targets.every((fold) => fold.expanded), folds: new Map() };
+      });
       return;
     }
     // Scrolling the transcript, for the times the wheel is not where the hands
@@ -1299,15 +1319,15 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
         ) : (
           <Box flexDirection="column" flexShrink={0} marginTop={top}>
             {shown.map((item, index) => {
-              const hovered = hoveredTask !== undefined && item.taskId === hoveredTask;
-              const opened = item.taskId !== undefined && openTasks.has(item.taskId);
+              const hovered = hoveredFold !== undefined && item.fold?.id === hoveredFold;
+              const opened = item.fold?.expanded === true;
               const band = hovered ? HOVER_BAND : opened ? BAND : undefined;
               return (
                 <Entry
                   key={item.key}
                   item={item}
                   band={band}
-                  bridged={band !== undefined && shown[index - 1]?.taskId === item.taskId}
+                  bridged={band !== undefined && shown[index - 1]?.fold?.id === item.fold?.id}
                   agents={agents}
                   top={placements[index]?.top ?? 0}
                   columns={columns}
@@ -1641,12 +1661,12 @@ function Entry({
           )}
         >
           {item.label ? (
-            <Text bold={item.prose === true} {...paint(accent ? 'brand' : 'muted', accent)}>{`${item.label}${labelGap(item)}`}</Text>
+            <Text bold={item.prose === true} {...paint(accent && item.marker !== 'tool' ? 'brand' : 'muted', accent)}>{`${item.label}  `}</Text>
           ) : null}
           {item.marker === 'prompt' ? (
             <Mentioned text={item.text} tone={item.tone} agents={agents} />
           ) : (
-            <Text {...paint(item.tone)}>{item.text}</Text>
+            <Text {...paint(item.tone)}>{entryText(item, columns)}</Text>
           )}
         </Row>
         {item.lines.map((line, index) => (
