@@ -127,8 +127,24 @@ export function spawnTarget(profile: AgentProfile, options: SpawnOptions): Conne
         releasePipes();
         return;
       }
-      killGroup(child, 'SIGTERM');
       const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+      // The end of stdin is how an adapter is told the host has gone, and
+      // the one it can act on: it cancels its sessions and lets its own
+      // children — a Claude Code process, say — leave in good order. A
+      // signal to the group reaches those children at the same moment it
+      // reaches the adapter, and what the adapter then logs is that every
+      // session's teardown failed because the process it was tearing down
+      // had already been killed. So EOF first, a moment to act on it, and
+      // the signals only for an adapter that did not.
+      child.stdin?.end();
+      let grace: NodeJS.Timeout | undefined;
+      const left = await Promise.race([
+        exited.then(() => true),
+        new Promise<false>((resolve) => {
+          grace = setTimeout(() => resolve(false), EOF_GRACE_MS);
+        }),
+      ]).finally(() => clearTimeout(grace));
+      if (!left) killGroup(child, 'SIGTERM');
       const timer = setTimeout(() => killGroup(child, 'SIGKILL'), 2_000);
       await exited.finally(() => clearTimeout(timer));
       // The child's exit says nothing about the rest of its group; sweep it
@@ -138,6 +154,9 @@ export function spawnTarget(profile: AgentProfile, options: SpawnOptions): Conne
     },
   };
 }
+
+/** How long an adapter has to leave on its own after its stdin ends, before it is signalled. */
+const EOF_GRACE_MS = 1_000;
 
 /** Signals the whole adapter tree, falling back to the child alone. */
 function killGroup(child: ReturnType<typeof spawn>, signal: NodeJS.Signals): void {
