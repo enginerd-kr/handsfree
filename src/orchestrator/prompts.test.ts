@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildBrief } from './prompts.js';
 
-const base = { doneWhen: undefined, workspaceDir: '/ws', first: false };
+const base = { workspaceDir: '/ws', first: false };
 
 describe('buildBrief', () => {
   it('tells an agent asked a question to answer rather than build', () => {
@@ -32,16 +32,15 @@ describe('buildBrief', () => {
     expect(later.endsWith('End your turn with a REPORT block.')).toBe(true);
   });
 
-  it('puts the planner\'s context after the task and before the handoff', () => {
+  it('puts the handoff after the task, as the brief the planner wrote', () => {
     const brief = buildBrief({
       ...base,
       kind: 'change',
-      task: 'Rename the flag',
-      context: 'The user wants --strict.',
+      task: 'Rename the flag. Done when --strict is the only spelling.',
       handoff: 'Since your last task:\n- gemini, task 1: changed a.ts',
     });
     const at = (needle: string) => brief.indexOf(needle);
-    expect(at('Rename the flag')).toBeLessThan(at('Context: The user wants --strict.'));
-    expect(at('Context:')).toBeLessThan(at('Since your last task:'));
+    expect(at('Rename the flag')).toBeLessThan(at('Since your last task:'));
+    expect(brief).not.toContain('Context:');
   });
 });

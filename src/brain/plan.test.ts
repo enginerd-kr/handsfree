@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { extractJsonObject, MessageStream } from './json.js';
-import { parseStep } from './plan.js';
-
-const agents = ['claude', 'gemini'];
 
 describe('extractJsonObject', () => {
   it('finds an object wrapped in prose', () => {
@@ -36,8 +33,8 @@ describe('MessageStream', () => {
     expect(drip('{"message":"line\\none \\"two\\" \\u00e9!"}')).toBe('line\none "two" é!');
   });
 
-  it('yields nothing for a delegation, which has no message', () => {
-    expect(drip('{"action":"delegate","agent":"claude","task":"do it"}')).toBe('');
+  it('yields nothing for a tool call, which has no message', () => {
+    expect(drip('{"action":"call","tool":"agent","input":{"agent":"claude","prompt":"do it"}}')).toBe('');
   });
 
   it('does not mistake a longer key for the message', () => {
@@ -50,53 +47,5 @@ describe('MessageStream', () => {
 
   it('survives whitespace around the colon', () => {
     expect(drip('{ "message" : "spaced" }')).toBe('spaced');
-  });
-});
-
-describe('parseStep', () => {
-  it('reads an answer', () => {
-    const parsed = parseStep('{"action":"answer","message":"hi"}', agents);
-    expect(parsed).toEqual({ ok: true, step: { action: 'answer', message: 'hi' } });
-  });
-
-  it('reads a delegation wrapped in a code fence', () => {
-    const parsed = parseStep(
-      '```json\n{"action":"delegate","agent":"claude","task":"do it"}\n```',
-      agents,
-    );
-    expect(parsed.ok && parsed.step).toMatchObject({ action: 'delegate', agent: 'claude' });
-  });
-
-  it('refuses an agent that is not available', () => {
-    const parsed = parseStep('{"action":"delegate","agent":"codex","task":"do it"}', agents);
-    expect(parsed.ok).toBe(false);
-    if (!parsed.ok) expect(parsed.error).toContain('claude, gemini');
-  });
-
-  it('treats a delegation without a kind as a change', () => {
-    const parsed = parseStep('{"action":"delegate","agent":"claude","task":"do it"}', agents);
-    expect(parsed.ok && parsed.step).toMatchObject({ kind: 'change' });
-  });
-
-  it('reads a delegation that asks for an answer rather than a change', () => {
-    const parsed = parseStep(
-      '{"action":"delegate","agent":"claude","kind":"answer","task":"안녕?"}',
-      agents,
-    );
-    expect(parsed.ok && parsed.step).toMatchObject({ kind: 'answer', task: '안녕?' });
-  });
-
-  it('refuses a kind that is neither', () => {
-    expect(
-      parseStep('{"action":"delegate","agent":"claude","kind":"ponder","task":"x"}', agents).ok,
-    ).toBe(false);
-  });
-
-  it('refuses an empty task', () => {
-    expect(parseStep('{"action":"delegate","agent":"claude","task":""}', agents).ok).toBe(false);
-  });
-
-  it('refuses an unknown action', () => {
-    expect(parseStep('{"action":"sudo","message":"hi"}', agents).ok).toBe(false);
   });
 });

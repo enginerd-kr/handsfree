@@ -47,7 +47,7 @@ handsfree run "add a test"                       # one turn, no UI
 handsfree run --permission-mode bypass "..."     # one turn, nothing asked
 ```
 
-Simply describe your goal, and the planner automatically routes it to the most capable agent:
+Simply describe your goal, and the planner automatically routes it to the most capable agent. The planner works the way a coding agent drives a subagent: every step it either answers you or calls one tool, and the one tool it has is `agent` — it names the agent, writes the brief itself, and reads back a short report when the task ends.
 
 ```
 > fix the failing tests

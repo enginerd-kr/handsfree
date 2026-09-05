@@ -6,12 +6,6 @@ export interface BriefInput {
   task: string;
   /** Whether the agent is being asked for words or for a changed workspace. */
   kind: TaskKind;
-  doneWhen: string | undefined;
-  /**
-   * What the planner chose to pass on beyond the task: a fact from the
-   * conversation the handoff does not carry. Empty is the usual case.
-   */
-  context?: string | undefined;
   workspaceDir: string;
   /** The first brief of a session explains the ground rules; later ones do not. */
   first: boolean;
@@ -26,7 +20,9 @@ export interface BriefInput {
 /**
  * What the agent is actually told. It is short on purpose: the session keeps its
  * own memory, so repeating the preamble every task would only crowd out the part
- * that changed.
+ * that changed. The task is the planner's brief as it wrote it — what to do,
+ * what done looks like, and whatever from the conversation the agent needs —
+ * so nothing here restates any of that.
  *
  * An answer task says so in the brief rather than leaving it to be inferred. An
  * agent handed a bare question inside a workspace will otherwise write the
@@ -46,8 +42,6 @@ export function buildBrief(input: BriefInput): string {
       'Do not create, modify or delete any file, and do not run any command.',
     );
   }
-  if (input.doneWhen) lines.push('', `Done when: ${input.doneWhen}`);
-  if (input.context) lines.push('', `Context: ${input.context}`);
   if (input.handoff) lines.push('', input.handoff);
   if (input.first) {
     lines.push(

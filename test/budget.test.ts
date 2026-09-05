@@ -11,7 +11,7 @@ afterEach(async () => {
 });
 
 const delegate = (agent: string, task: string, kind: 'answer' | 'change' = 'change') =>
-  JSON.stringify({ action: 'delegate', agent, kind, task });
+  JSON.stringify({ action: 'call', tool: 'agent', input: { agent, kind, prompt: task } });
 const answer = (message: string) => JSON.stringify({ action: 'answer', message });
 
 /** A long, realistic closing account: what a coding agent says after a change. */

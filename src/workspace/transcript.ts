@@ -61,6 +61,8 @@ export type TranscriptBody =
       agentId: string;
       sessionId: string;
       task: string;
+      /** A few words naming the task, where the planner gave them. */
+      title?: string;
       model?: string;
     }
   | { type: 'session_update'; agentId: string; sessionId: string; update: SessionUpdate }

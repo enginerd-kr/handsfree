@@ -40,7 +40,11 @@ describe('handsfree as an ACP agent', () => {
 
     const served = createServeApp(config, {
       llm: scriptedModel([
-        JSON.stringify({ action: 'delegate', agent: 'claude', task: 'Create notes.txt' }),
+        JSON.stringify({
+          action: 'call',
+          tool: 'agent',
+          input: { agent: 'claude', description: 'create notes.txt', prompt: 'Create notes.txt containing hello' },
+        }),
         JSON.stringify({ action: 'answer', message: 'Created notes.txt.' }),
       ]),
       createTarget: () => sub.target(),
@@ -73,6 +77,9 @@ describe('handsfree as an ACP agent', () => {
     expect(result.stopReason).toBe('end_turn');
     const kinds = updates.map((notification) => notification.update.sessionUpdate);
     expect(kinds).toContain('tool_call');
+    // The task goes to the editor as a tool call, titled the way the planner titled it.
+    const call = updates.find((notification) => notification.update.sessionUpdate === 'tool_call');
+    expect(call?.update).toMatchObject({ toolCallId: 'task-1', title: 'claude: create notes.txt' });
     expect(kinds).toContain('agent_message_chunk');
 
     const text = updates
@@ -112,7 +119,7 @@ describe('handsfree as an ACP agent', () => {
 
     const served = createServeApp(config, {
       llm: scriptedModel([
-        JSON.stringify({ action: 'delegate', agent: 'claude', task: 'Do the unusual thing' }),
+        JSON.stringify({ action: 'call', tool: 'agent', input: { agent: 'claude', prompt: 'Do the unusual thing' } }),
         JSON.stringify({ action: 'answer', message: 'It was refused.' }),
       ]),
       createTarget: () => sub.target(),
@@ -170,7 +177,7 @@ describe('handsfree as an ACP agent', () => {
 
     const served = createServeApp(config, {
       llm: scriptedModel([
-        JSON.stringify({ action: 'delegate', agent: 'claude', task: 'Do the unusual thing' }),
+        JSON.stringify({ action: 'call', tool: 'agent', input: { agent: 'claude', prompt: 'Do the unusual thing' } }),
         JSON.stringify({ action: 'answer', message: 'Done.' }),
       ]),
       createTarget: () => sub.target(),
@@ -259,7 +266,7 @@ describe('handsfree as an ACP agent', () => {
 
     const served = createServeApp(config, {
       llm: scriptedModel([
-        JSON.stringify({ action: 'delegate', agent: 'claude', task: 'Fix the module' }),
+        JSON.stringify({ action: 'call', tool: 'agent', input: { agent: 'claude', prompt: 'Fix the module' } }),
         JSON.stringify({ action: 'answer', message: 'Patched it.' }),
       ]),
       createTarget: () => sub.target(),
@@ -316,7 +323,7 @@ describe('handsfree as an ACP agent', () => {
 
     const served = createServeApp(config, {
       llm: scriptedModel([
-        JSON.stringify({ action: 'delegate', agent: 'claude', task: 'Fix the module' }),
+        JSON.stringify({ action: 'call', tool: 'agent', input: { agent: 'claude', prompt: 'Fix the module' } }),
         JSON.stringify({ action: 'answer', message: 'Could not ask.' }),
       ]),
       createTarget: () => sub.target(),

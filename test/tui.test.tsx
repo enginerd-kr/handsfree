@@ -230,7 +230,7 @@ describe('terminal UI', () => {
         claude: fakeAgent({ script: () => [{ do: 'say', text: 'the long agent answer' }] }),
       },
       llm: scriptedModel([
-        JSON.stringify({ action: 'delegate', agent: 'claude', kind: 'answer', task: 'who?' }),
+        JSON.stringify({ action: 'call', tool: 'agent', input: { agent: 'claude', kind: 'answer', prompt: 'who?' } }),
         JSON.stringify({ action: 'answer', message: 'claude answered.' }),
       ]),
     });
@@ -316,7 +316,7 @@ describe('terminal UI', () => {
         claude: fakeAgent({ script: () => [{ do: 'say', text: 'the long agent answer' }] }),
       },
       llm: scriptedModel([
-        JSON.stringify({ action: 'delegate', agent: 'claude', kind: 'answer', task: '안녕?' }),
+        JSON.stringify({ action: 'call', tool: 'agent', input: { agent: 'claude', kind: 'answer', prompt: '안녕?' } }),
         JSON.stringify({ action: 'answer', message: 'claude answered.' }),
       ]),
     });
@@ -1258,7 +1258,7 @@ describe('terminal UI', () => {
         claude: fakeAgent({ script: () => [{ do: 'say', text: 'the long agent answer' }] }),
       },
       llm: scriptedModel([
-        JSON.stringify({ action: 'delegate', agent: 'claude', kind: 'answer', task: '안녕?' }),
+        JSON.stringify({ action: 'call', tool: 'agent', input: { agent: 'claude', kind: 'answer', prompt: '안녕?' } }),
         JSON.stringify({ action: 'answer', message: 'claude answered.' }),
       ]),
     });
@@ -1414,7 +1414,7 @@ describe('terminal UI', () => {
         claude: fakeAgent({ script: () => [{ do: 'say', text: answer }] }),
       },
       llm: scriptedModel([
-        JSON.stringify({ action: 'delegate', agent: 'claude', kind: 'answer', task: '안녕?' }),
+        JSON.stringify({ action: 'call', tool: 'agent', input: { agent: 'claude', kind: 'answer', prompt: '안녕?' } }),
         JSON.stringify({ action: 'answer', message: 'claude answered.' }),
       ]),
     });
@@ -1442,7 +1442,7 @@ describe('terminal UI', () => {
         claude: fakeAgent({ script: () => [{ do: 'say', text: 'the long agent answer' }] }),
       },
       llm: scriptedModel([
-        JSON.stringify({ action: 'delegate', agent: 'claude', kind: 'answer', task: '안녕?' }),
+        JSON.stringify({ action: 'call', tool: 'agent', input: { agent: 'claude', kind: 'answer', prompt: '안녕?' } }),
         JSON.stringify({ action: 'answer', message: 'claude answered.' }),
       ]),
     });
@@ -1486,7 +1486,7 @@ describe('terminal UI', () => {
         claude: fakeAgent({ script: () => [{ do: 'say', text: 'the long agent answer' }] }),
       },
       llm: scriptedModel([
-        JSON.stringify({ action: 'delegate', agent: 'claude', kind: 'answer', task: '안녕?' }),
+        JSON.stringify({ action: 'call', tool: 'agent', input: { agent: 'claude', kind: 'answer', prompt: '안녕?' } }),
         JSON.stringify({ action: 'answer', message: 'claude answered.' }),
       ]),
     });
@@ -1624,7 +1624,7 @@ describe('terminal UI', () => {
         }),
       },
       llm: scriptedModel([
-        JSON.stringify({ action: 'delegate', agent: 'claude', kind: 'answer', task: 'read it and change one line' }),
+        JSON.stringify({ action: 'call', tool: 'agent', input: { agent: 'claude', kind: 'answer', prompt: 'read it and change one line' } }),
         JSON.stringify({ action: 'answer', message: 'claude answered.' }),
       ]),
     });
@@ -1672,7 +1672,7 @@ describe('terminal UI', () => {
         }),
       },
       llm: scriptedModel([
-        JSON.stringify({ action: 'delegate', agent: 'claude', kind: 'change', task: 'go' }),
+        JSON.stringify({ action: 'call', tool: 'agent', input: { agent: 'claude', kind: 'change', prompt: 'go' } }),
         JSON.stringify({ action: 'answer', message: 'done.' }),
       ]),
     });
@@ -1719,7 +1719,7 @@ describe('terminal UI', () => {
         }),
       },
       llm: scriptedModel([
-        JSON.stringify({ action: 'delegate', agent: 'claude', kind: 'change', task: 'fix it' }),
+        JSON.stringify({ action: 'call', tool: 'agent', input: { agent: 'claude', kind: 'change', prompt: 'fix it' } }),
         JSON.stringify({ action: 'answer', message: 'done.' }),
       ]),
     });

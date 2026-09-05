@@ -361,7 +361,9 @@ export const ConfigSchema = z
         idleTimeoutMs: z.number().int().positive().default(180_000),
         /** How long to wait for a `cancelled` stop reason before killing the process. */
         cancelGraceMs: z.number().int().positive().default(10_000),
+        /** How many tool calls — tasks handed to agents, mostly — one message may run. */
         maxDelegationsPerTurn: z.number().int().positive().default(3),
+        /** How many replies the planner gets per message, calls and the answer together. */
         maxPlanSteps: z.number().int().positive().default(6),
         /**
          * Longest a task result handed to the planner is. Small, because what

@@ -96,7 +96,7 @@ export function scripted(replies: string[]): ChatClient {
 
 /** A planner reply that hands one task to one agent. */
 export const delegate = (agent: string, task: string, kind: 'answer' | 'change' = 'change'): string =>
-  JSON.stringify({ action: 'delegate', agent, kind, task });
+  JSON.stringify({ action: 'call', tool: 'agent', input: { agent, kind, prompt: task } });
 
 /** A planner reply that closes the turn with a written answer. */
 export const answer = (message: string): string => JSON.stringify({ action: 'answer', message });

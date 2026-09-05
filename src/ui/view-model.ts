@@ -294,10 +294,10 @@ export function buildView(
         // the way the person's line reads — the agent where the @ would be,
         // the task after it — and folds with the work. A brief that is the
         // person's own line gets no row: the agent's rows follow the line.
+        // A title the planner gave the task heads the row, the brief under it.
         if (!asked(lastUser, record.task)) {
-          const item = add(
-            row(`d${record.seq}`, 'system', 0, 'bullet', 'brand', record.task, 'normal', true),
-          );
+          const text = record.title ? `${record.title}\n${record.task}` : record.task;
+          const item = add(row(`d${record.seq}`, 'system', 0, 'bullet', 'brand', text, 'normal', true));
           // The label spells the routing the way it was asked for: the
           // agent, and the model when the task chose one — by the id it was
           // switched by, which is the id the mention typed and the id that
@@ -908,7 +908,7 @@ export function describeRecord(record: TranscriptRecord, workspaceDir: string): 
       // An empty text retracts a streamed block; there is nothing to print.
       return record.text === '' ? undefined : `\n${record.text}\n`;
     case 'delegation':
-      return `→ ${modelled(record.agentId, record)}: ${record.task}`;
+      return `→ ${modelled(record.agentId, record)}: ${record.title ?? record.task}`;
     case 'note':
       return [record.text, ...(record.lines ?? [])].map((line) => `  ${line}`).join('\n');
     case 'decision':

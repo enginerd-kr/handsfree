@@ -13,7 +13,7 @@ afterEach(async () => {
 });
 
 const delegate = (task: string) =>
-  JSON.stringify({ action: 'delegate', agent: 'claude', task });
+  JSON.stringify({ action: 'call', tool: 'agent', input: { agent: 'claude', prompt: task } });
 const answer = (message: string) => JSON.stringify({ action: 'answer', message });
 
 function assistantText(h: Harness): string[] {
@@ -148,7 +148,7 @@ describe('Conversation', () => {
   it('asks an agent a question without asking it to build anything', async () => {
     const agent = fakeAgent({ script: () => [{ do: 'say', text: '안녕하세요!' }] });
     const llm = scriptedModel([
-      JSON.stringify({ action: 'delegate', agent: 'claude', kind: 'answer', task: '안녕?' }),
+      JSON.stringify({ action: 'call', tool: 'agent', input: { agent: 'claude', kind: 'answer', prompt: '안녕?' } }),
       answer('claude says 안녕하세요!'),
     ]);
     const h = harness({ agents: { claude: agent }, llm });
@@ -199,7 +199,7 @@ describe('Conversation', () => {
 
     const observations = llm.seen
       .flat()
-      .filter((message) => message.content.startsWith('TASK RESULT'))
+      .filter((message) => message.content.startsWith('TOOL RESULT (agent)'))
       .map((message) => message.content)
       .join('\n');
     expect(observations).toContain('refused');
@@ -748,7 +748,7 @@ describe('Conversation', () => {
     // as typed, without the run state that went out ahead of it.
     expect(second.slice(1).map((message) => message.role)).toEqual(['user', 'assistant', 'user']);
     expect(second[1]?.content).toBe('add parse()');
-    expect(second.some((message) => message.content.startsWith('TASK RESULT'))).toBe(false);
+    expect(second.some((message) => message.content.startsWith('TOOL RESULT (agent)'))).toBe(false);
     // What the agent said survives in one place only: as the task's "said"
     // line in the run state, not as a message of its own.
     expect(JSON.stringify(second.slice(0, -1))).not.toContain('A long account');
@@ -779,7 +779,7 @@ describe('Conversation', () => {
 
     const last = llm.seen.at(-1) ?? [];
     // The turn folded to the line and the closing sentence: the result is gone...
-    expect(last.some((message) => message.content.startsWith('TASK RESULT'))).toBe(false);
+    expect(last.some((message) => message.content.startsWith('TOOL RESULT (agent)'))).toBe(false);
     expect(JSON.stringify(last)).not.toContain('at length');
     // ...but what the agent said it said is ahead of the new line, so a "yes"
     // has something to be a yes to.
@@ -808,7 +808,7 @@ describe('Conversation', () => {
     await h.runtime.conversation.send('add parse()');
 
     const result = llm.seen[1]?.at(-1)?.content ?? '';
-    expect(result.startsWith('TASK RESULT')).toBe(true);
+    expect(result.startsWith('TOOL RESULT (agent)')).toBe(true);
     expect(result).toContain('summary: Added parse() with a null return for empty input.');
     expect(result).toContain('open: the CLI still passes undefined sometimes');
     expect(result).toContain('already seen claude');
@@ -817,10 +817,12 @@ describe('Conversation', () => {
     expect(result).not.toContain('pnpm test');
     expect(result).not.toContain('great length');
 
+    // The count is of what the tool relayed: the result under the heading.
+    const relayed = result.slice(result.indexOf('\n') + 1);
     const usage = h.runtime.transcript
       .all()
       .find((record) => record.type === 'usage' && record.purpose === 'task');
-    expect(usage).toMatchObject({ taskId: 1, relayedChars: result.length });
+    expect(usage).toMatchObject({ taskId: 1, relayedChars: relayed.length });
     expect(usage && usage.type === 'usage' ? usage.promptChars : 0).toBeGreaterThan(0);
   });
 
@@ -837,14 +839,17 @@ describe('Conversation', () => {
     expect(result).not.toContain('already seen');
   });
 
-  it('passes the planner\'s context on to the agent, ahead of the handoff', async () => {
+  it('sends the agent the brief as the planner wrote it, and records its title', async () => {
     const claude = fakeAgent({ script: () => [{ do: 'say', text: 'ok' }] });
     const llm = scriptedModel([
       JSON.stringify({
-        action: 'delegate',
-        agent: 'claude',
-        task: 'Rename the flag',
-        context: 'The user wants it called --strict, not --pedantic.',
+        action: 'call',
+        tool: 'agent',
+        input: {
+          agent: 'claude',
+          description: 'rename the flag',
+          prompt: 'Rename the flag. The user wants it called --strict, not --pedantic.',
+        },
       }),
       answer('done.'),
     ]);
@@ -853,7 +858,28 @@ describe('Conversation', () => {
 
     await h.runtime.conversation.send('rename it');
 
-    expect(claude.prompts[0]).toContain('Context: The user wants it called --strict, not --pedantic.');
+    expect(claude.prompts[0]?.startsWith('Rename the flag. The user wants it called --strict, not --pedantic.')).toBe(true);
+    const delegation = h.runtime.transcript.all().find((record) => record.type === 'delegation');
+    expect(delegation).toMatchObject({ title: 'rename the flag', task: expect.stringContaining('Rename the flag') });
+  });
+
+  it('sends a planner that calls a tool it does not have, or an input the tool refuses, back for another try', async () => {
+    const claude = fakeAgent({ script: () => [{ do: 'say', text: 'ok' }] });
+    const llm = scriptedModel([
+      JSON.stringify({ action: 'call', tool: 'shout', input: { text: 'x' } }),
+      JSON.stringify({ action: 'call', tool: 'agent', input: { agent: 'claude', prompt: '' } }),
+      delegate('Do it'),
+      answer('done.'),
+    ]);
+    const h = harness({ agents: { claude }, llm });
+    open = h;
+
+    await h.runtime.conversation.send('do it');
+
+    const corrections = llm.seen.map((messages) => messages.at(-1)?.content ?? '');
+    expect(corrections[1]).toContain('"shout" is not a tool. Tools: agent');
+    expect(corrections[2]).toContain('Input for "agent" does not match: "prompt"');
+    expect(claude.prompts).toHaveLength(1);
   });
 
   it('drops the oldest turns first when the planner is over budget', async () => {

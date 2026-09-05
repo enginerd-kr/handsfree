@@ -264,7 +264,7 @@ describe('/cost', () => {
       script: () => [{ do: 'say', text: `${'prose '.repeat(100)}\n\nREPORT\noutcome: done\nsummary: Did it.` }],
     });
     const llm = scriptedModel([
-      JSON.stringify({ action: 'delegate', agent: 'claude', task: 'Do it' }),
+      JSON.stringify({ action: 'call', tool: 'agent', input: { agent: 'claude', prompt: 'Do it' } }),
       answer('done.'),
     ]);
     const h = harness({ agents: { claude }, llm });

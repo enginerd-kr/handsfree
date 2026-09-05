@@ -276,7 +276,7 @@ function toUpdate(record: TranscriptRecord) {
       return {
         sessionUpdate: 'tool_call' as const,
         toolCallId: `task-${record.taskId}`,
-        title: `${record.agentId}: ${record.task}`,
+        title: `${record.agentId}: ${record.title ?? record.task}`,
         kind: 'other' as const,
         status: 'in_progress' as const,
       };

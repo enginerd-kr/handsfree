@@ -167,6 +167,24 @@ describe('buildView', () => {
     expect(view[2]?.text).toMatch(/^Done/);
   });
 
+  it('heads a brief with the title the planner gave it, and names a task by that title in run output', () => {
+    const t = transcript();
+    t.append({ type: 'user', text: 'rename it' });
+    const titled = t.append({
+      type: 'delegation',
+      taskId: 1,
+      agentId: 'claude',
+      sessionId: 's',
+      task: 'Rename the flag to --strict everywhere.',
+      title: 'rename the flag',
+    });
+    const view = buildView(t.all(), WORKSPACE, { expanded: true });
+    expect(view[1]?.text).toBe('rename the flag\nRename the flag to --strict everywhere.');
+    expect(describeRecord(titled, WORKSPACE)).toBe('→ claude: rename the flag');
+    const bare = t.append({ type: 'delegation', taskId: 2, agentId: 'claude', sessionId: 's', task: 'say hi' });
+    expect(describeRecord(bare, WORKSPACE)).toBe('→ claude: say hi');
+  });
+
   it('marks every row of a task with its id, and nothing outside it', () => {
     const t = transcript();
     t.append({ type: 'user', text: 'hello' });
