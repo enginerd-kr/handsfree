@@ -1,6 +1,8 @@
 import path from 'node:path';
+import type { ToolKind } from '@agentclientprotocol/sdk';
+import type { RuleOutcome } from '../config/schema.js';
 import { Jail } from './jail.js';
-import { render } from './exec.js';
+import { render, scanScript } from './exec.js';
 import type { PermissionMode } from './mode.js';
 import type {
   AuditEntry,
@@ -13,7 +15,6 @@ import type {
 } from './types.js';
 
 export interface PolicyEngineOptions {
-  decisionTimeoutMs: number;
   jail: Jail;
   escalator?: Escalator;
   onDecision?: (entry: AuditEntry) => void;
@@ -36,11 +37,9 @@ export interface AskOptions {
 
 /**
  * One approval path for all host gates. Ask forwards each request to the user;
- * bypass approves it. Request kinds label the audit record without classifying
- * commands or paths against configurable permission rules.
+ * bypass approves it. Audit labels describe the operation.
  */
 export class PolicyEngine {
-  private readonly decisionTimeoutMs: number;
   private readonly jail: Jail;
   private escalator: Escalator | undefined;
   private currentMode: PermissionMode = 'ask';
@@ -50,7 +49,6 @@ export class PolicyEngine {
   private readonly waiting = new Map<string, number>();
   private readonly pendingApprovals = new Set<() => void>();
   constructor(options: PolicyEngineOptions) {
-    this.decisionTimeoutMs = options.decisionTimeoutMs;
     this.jail = options.jail;
     this.escalator = options.escalator;
     this.onDecision = options.onDecision;
@@ -87,8 +85,7 @@ export class PolicyEngine {
 
   /**
    * An agent that stopped to ask the user something. This is not a side effect
-   * and no rule judges it; what it borrows from the gates is the seat, the
-   * deadline, and the hold that keeps a turn alive while a person is reading.
+   * and no rule judges it; it uses the same input interface and cancellation path.
    * A seat that cannot take questions cancels rather than inventing an answer.
    */
   async elicit(
@@ -99,13 +96,13 @@ export class PolicyEngine {
     const escalator = this.escalator;
     if (!escalator?.input) return { action: 'cancel' };
 
-    const controller = this.deadline(options.signal);
+    const controller = this.cancellation(options.signal);
     const release = this.hold(context.agentId);
     try {
       return await Promise.race([
         escalator.input({ ...question, context, signal: controller.signal }),
         aborted(controller.signal).then((): InputAnswer => {
-          throw new Error('timed out');
+          throw new Error('cancelled');
         }),
       ]);
     } catch {
@@ -167,15 +164,13 @@ export class PolicyEngine {
       };
     }
 
-    const controller = this.deadline(signal);
+    const controller = this.cancellation(signal);
     const release = this.hold(request.agentId);
     let approve: () => void = () => {};
     const bypassed = new Promise<boolean>((resolve) => { approve = () => resolve(true); });
     this.pendingApprovals.add(approve);
     try {
-      // The deadline is enforced here rather than inside the escalator. An
-      // escalator that ignores the signal — a wedged UI, a bad implementation —
-      // must not be able to hold a permission request open indefinitely.
+      // Withdrawal also settles a request when the UI ignores cancellation.
       const allowed = await Promise.race([
         escalator.ask({
           summary,
@@ -190,7 +185,7 @@ export class PolicyEngine {
         }),
         bypassed,
         aborted(controller.signal).then((): boolean => {
-          throw new Error('timed out');
+          throw new Error('cancelled');
         }),
       ]);
       // A yes to a question the mode, as it stands now, would not have asked
@@ -206,13 +201,13 @@ export class PolicyEngine {
         ...(byMode ? { mode } : {}),
       };
     } catch (err) {
-      // A prompt that errors, times out, or is torn down is a denial. Every
+      // A prompt that errors or is torn down is a denial. Every
       // failure mode in this class has to fall the same way.
       const aborted = controller.signal.aborted;
       return {
         verdict: 'deny',
         rule: ruling.rule,
-        reason: aborted ? 'no answer in time' : `escalation failed: ${(err as Error).message}`,
+        reason: aborted ? 'request cancelled' : `escalation failed: ${(err as Error).message}`,
         escalated: true,
       };
     } finally {
@@ -224,17 +219,14 @@ export class PolicyEngine {
   }
 
   /**
-   * The clock a question is asked under: our own decision timeout, and the
-   * caller's signal folded in so a withdrawn request takes its question down
-   * with it.
+   * A withdrawn request takes its question down with it; no deadline is added.
    */
-  private deadline(signal: AbortSignal | undefined): {
+  private cancellation(signal: AbortSignal | undefined): {
     signal: AbortSignal;
     done: () => void;
     abort: () => void;
   } {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.decisionTimeoutMs);
     const relay = () => controller.abort();
     if (signal?.aborted) controller.abort();
     else signal?.addEventListener('abort', relay);
@@ -242,7 +234,6 @@ export class PolicyEngine {
       signal: controller.signal,
       abort: () => controller.abort(),
       done: () => {
-        clearTimeout(timer);
         signal?.removeEventListener('abort', relay);
       },
     };

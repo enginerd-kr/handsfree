@@ -8,9 +8,9 @@ import type {
   ToolCallContent,
   ToolCallStatus,
 } from '@agentclientprotocol/sdk';
-import { stripReport } from '../orchestrator/report.js';
+import { stripReport } from '../orchestrator/results/report.js';
 import { MODE_LABEL } from '../policy/mode.js';
-import { shortTokens, tokensOf } from '../orchestrator/usage.js';
+import { shortTokens, tokensOf } from '../orchestrator/usage/usage.js';
 import type { TranscriptRecord } from '../workspace/transcript.js';
 
 export type Tone = 'normal' | 'muted' | 'good' | 'bad' | 'warn' | 'accent' | 'brand';

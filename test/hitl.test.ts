@@ -56,9 +56,6 @@ async function runTurn(
 
   const session = await h.runtime.pool.session('claude');
   const { stopReason } = await session.prompt('go', {
-    turnTimeoutMs: h.runtime.config.limits.turnTimeoutMs,
-    idleTimeoutMs: h.runtime.config.limits.idleTimeoutMs,
-    cancelGraceMs: h.runtime.config.limits.cancelGraceMs,
   });
   return { ...h, stopReason, agent };
 }
@@ -81,7 +78,7 @@ describe('a turn that stops for a person', () => {
       ],
       {
         escalator: seat({ allow: true, delayMs: 400 }),
-        config: { limits: { idleTimeoutMs: 150, turnTimeoutMs: 2_000 } },
+        config: {},
       },
     );
 
@@ -89,12 +86,12 @@ describe('a turn that stops for a person', () => {
     expect(stopReason).toBe('end_turn');
   });
 
-  it('still cancels a turn that goes quiet with nothing pending', async () => {
-    const { stopReason } = await runTurn(() => [{ do: 'stall', ms: 5_000 }], {
+  it('allows quiet turns to finish with nothing pending', async () => {
+    const { stopReason } = await runTurn(() => [{ do: 'stall', ms: 250 }], {
       escalator: seat({ allow: true }),
-      config: { limits: { idleTimeoutMs: 150, turnTimeoutMs: 5_000, cancelGraceMs: 500 } },
+      config: {},
     });
-    expect(stopReason).toBe('cancelled');
+    expect(stopReason).toBe('end_turn');
   });
 });
 
@@ -344,7 +341,7 @@ describe('an agent that stops to ask a question', () => {
           delayMs: 400,
           input: () => ({ action: 'accept', content: { approach: 'patch' } }),
         }),
-        config: { limits: { idleTimeoutMs: 150, turnTimeoutMs: 2_000 } },
+        config: {},
       },
     );
 

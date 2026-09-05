@@ -14,12 +14,10 @@ beforeAll(() => {
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
 
 function engine(
-  overrides: { decisionTimeoutMs?: number } = {},
   escalator?: Escalator,
   audit?: AuditEntry[],
 ) {
   return new PolicyEngine({
-    decisionTimeoutMs: overrides.decisionTimeoutMs ?? 120_000,
     jail: new Jail([root]),
     escalator,
     onDecision: audit ? (entry) => audit.push(entry) : undefined,
@@ -32,7 +30,7 @@ const inside = (file: string) => path.join(root, file);
 describe('PolicyEngine', () => {
   it.each([true, false])('forwards every request to the user and applies their answer (%s)', async (allow) => {
     const ask = vi.fn().mockResolvedValue(allow);
-    const policy = engine({}, { ask });
+    const policy = engine( { ask });
     const requests: PolicyRequest[] = [
       { kind: 'fs.read', path: inside('a.ts'), ...where },
       { kind: 'fs.write', path: '/etc/hosts', bytes: 3, ...where },
@@ -53,7 +51,7 @@ describe('PolicyEngine', () => {
 
   it('asks again for repeated calls after a one-time approval', async () => {
     const ask = vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
-    const policy = engine({}, { ask });
+    const policy = engine( { ask });
     const request: PolicyRequest = { kind: 'fs.read', path: inside('a.ts'), ...where };
     expect((await policy.resolve(request)).verdict).toBe('allow');
     expect((await policy.resolve(request)).verdict).toBe('deny');
@@ -76,7 +74,7 @@ describe('PolicyEngine', () => {
 
   it('takes the answer from a human when one is available', async () => {
     const ask = vi.fn().mockResolvedValue(true);
-    const policy = engine({}, { ask });
+    const policy = engine( { ask });
     const decision = await policy.resolve({
       kind: 'tool',
       toolKind: 'other',
@@ -89,21 +87,23 @@ describe('PolicyEngine', () => {
     expect(ask).toHaveBeenCalledOnce();
   });
 
-  it('denies when the human does not answer in time', async () => {
-    const policy = engine({ decisionTimeoutMs: 20 }, { ask: () => new Promise(() => {}) });
-    const decision = await policy.resolve({
-      kind: 'tool',
-      toolKind: 'other',
-      title: 'Something unusual',
-      locations: [],
-      rawInput: null,
-      ...where,
-    });
-    expect(decision).toMatchObject({ verdict: 'deny', reason: 'no answer in time' });
+  it('keeps approvals pending without a deadline and withdraws them on cancellation', async () => {
+    vi.useFakeTimers();
+    try {
+      const policy = engine( { ask: () => new Promise(() => {}) });
+      const controller = new AbortController();
+      let settled = false;
+      const pending = policy.resolve({ kind: 'exec', command: 'echo', args: ['hello'], cwd: root, ...where }, { signal: controller.signal });
+      void pending.then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+      expect(settled).toBe(false);
+      controller.abort();
+      expect(await pending).toMatchObject({ verdict: 'deny', reason: 'request cancelled' });
+    } finally { vi.useRealTimers(); }
   });
 
   it('denies when the prompt itself fails', async () => {
-    const policy = engine({}, { ask: () => Promise.reject(new Error('ui gone')) });
+    const policy = engine( { ask: () => Promise.reject(new Error('ui gone')) });
     const decision = await policy.resolve({
       kind: 'tool',
       toolKind: 'other',
@@ -120,18 +120,18 @@ describe('PolicyEngine', () => {
     // Otherwise the question sits there for its whole deadline and the answer
     // lands on a request that is no longer open.
     const withdrawn = new AbortController();
-    const policy = engine({ decisionTimeoutMs: 60_000 }, { ask: () => new Promise(() => {}) });
+    const policy = engine( { ask: () => new Promise(() => {}) });
     setTimeout(() => withdrawn.abort(), 10);
     const decision = await policy.resolve(
       { kind: 'tool', toolKind: 'other', title: 'Something unusual', locations: [], rawInput: null, ...where },
       { signal: withdrawn.signal },
     );
-    expect(decision).toMatchObject({ verdict: 'deny', reason: 'no answer in time' });
+    expect(decision).toMatchObject({ verdict: 'deny', reason: 'request cancelled' });
   });
 
   it('says an agent is waiting for exactly as long as its question is open', async () => {
     let answer: (allowed: boolean) => void = () => {};
-    const policy = engine({}, { ask: () => new Promise<boolean>((resolve) => (answer = resolve)) });
+    const policy = engine( { ask: () => new Promise<boolean>((resolve) => (answer = resolve)) });
     expect(policy.isWaiting('claude')).toBe(false);
 
     const pending = policy.resolve({
@@ -154,13 +154,12 @@ describe('PolicyEngine', () => {
 
   it('asks a question of its own only when a seat can take one', async () => {
     const fields = [{ key: 'why', label: 'Why?', kind: 'string' as const, required: true }];
-    const alone = engine({}, { ask: async () => true });
+    const alone = engine( { ask: async () => true });
     expect(await alone.elicit(where, { summary: 'which way?', fields })).toEqual({
       action: 'cancel',
     });
 
     const seated = engine(
-      {},
       { ask: async () => true, input: async () => ({ action: 'accept', content: { why: 'a' } }) },
     );
     expect(await seated.elicit(where, { summary: 'which way?', fields })).toEqual({
@@ -169,22 +168,19 @@ describe('PolicyEngine', () => {
     });
   });
 
-  it('cancels a question nobody answers in time', async () => {
-    const policy = engine(
-      { decisionTimeoutMs: 20 },
-      { ask: async () => true, input: () => new Promise(() => {}) },
-    );
-    expect(
-      await policy.elicit(where, {
-        summary: 'which way?',
-        fields: [{ key: 'why', label: 'Why?', kind: 'string', required: true }],
-      }),
-    ).toEqual({ action: 'cancel' });
+  it('cancels an unanswered question only when its caller withdraws it', async () => {
+    const policy = engine( { ask: async () => true, input: () => new Promise(() => {}) });
+    const controller = new AbortController();
+    const pending = policy.elicit(where, {
+      summary: 'which way?', fields: [{ key: 'why', label: 'Why?', kind: 'string', required: true }],
+    }, { signal: controller.signal });
+    controller.abort();
+    expect(await pending).toEqual({ action: 'cancel' });
   });
 
   it('records every decision, allowed or refused', async () => {
     const audit: AuditEntry[] = [];
-    const policy = engine({}, { ask: vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false) }, audit);
+    const policy = engine( { ask: vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false) }, audit);
     await policy.resolve({ kind: 'fs.read', path: inside('a.ts'), ...where });
     await policy.resolve({ kind: 'fs.write', path: '/etc/passwd', bytes: 3, ...where });
     expect(audit.map((entry) => entry.verdict)).toEqual(['allow', 'deny']);
@@ -193,7 +189,7 @@ describe('PolicyEngine', () => {
 
   it('preserves the tool title verbatim', async () => {
     const audit: AuditEntry[] = [];
-    const policy = engine({}, undefined, audit);
+    const policy = engine( undefined, audit);
     await policy.resolve({
       kind: 'tool',
       toolKind: 'edit',
@@ -263,7 +259,7 @@ describe('PolicyEngine under a permission mode', () => {
 
   it('records bypass on every automatic approval', async () => {
     const audit: AuditEntry[] = [];
-    const policy = engine({}, undefined, audit);
+    const policy = engine( undefined, audit);
     policy.setMode('bypass');
     await policy.resolve({ kind: 'fs.read', path: inside('a.ts'), ...where });
     await policy.resolve(commit);
@@ -275,7 +271,7 @@ describe('PolicyEngine under a permission mode', () => {
 
   it('takes the standing approval in bypass without asking', async () => {
     let asked = 0;
-    const policy = engine({}, { ask: () => ((asked += 1), Promise.resolve(false)) });
+    const policy = engine( { ask: () => ((asked += 1), Promise.resolve(false)) });
     policy.setMode('bypass');
     const widened = await policy.confirm(commit, { rule: 'tool.sessionWideOnly', reason: 'whole session' });
     expect(widened).toMatchObject({ verdict: 'allow', rule: 'tool.sessionWideOnly', mode: 'bypass' });
@@ -301,7 +297,7 @@ describe('PolicyEngine under a permission mode', () => {
         return true;
       },
     };
-    policy = engine({}, escalator);
+    policy = engine( escalator);
     expect(await policy.resolve(commit)).toMatchObject({
       verdict: 'allow',
       rule: 'exec',
@@ -309,14 +305,14 @@ describe('PolicyEngine under a permission mode', () => {
       mode: 'bypass',
     });
     // A yes in ask mode is a person's, and carries no mode.
-    const byHand = await engine({}, { ask: async () => true }).resolve(commit);
+    const byHand = await engine( { ask: async () => true }).resolve(commit);
     expect(byHand).toMatchObject({ verdict: 'allow', escalated: true });
     expect(byHand.mode).toBeUndefined();
   });
 
   it('approves pending requests when switching to bypass without relying on the UI', async () => {
     const ask = vi.fn(() => new Promise<boolean>(() => {}));
-    const policy = engine({}, { ask });
+    const policy = engine( { ask });
     const first = policy.resolve(commit);
     const second = policy.resolve(outside);
     expect(policy.isWaiting('claude')).toBe(true);
@@ -330,7 +326,7 @@ describe('PolicyEngine under a permission mode', () => {
   });
 
   it('leaves an agent’s own question alone in bypass', async () => {
-    const policy = engine({});
+    const policy = engine();
     policy.setMode('bypass');
     expect(
       await policy.elicit(where, {

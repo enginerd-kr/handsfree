@@ -2,11 +2,9 @@ import fs from 'node:fs';
 import { EventEmitter } from 'node:events';
 import type { SessionUpdate, StopReason, ToolCallStatus, ToolKind } from '@agentclientprotocol/sdk';
 import type { AuditEntry } from '../policy/types.js';
-import type { TurnUsage } from '../host/session.js';
-import type { TokenUsage } from '../orchestrator/meter.js';
-import type { TaskStatus } from '../orchestrator/outcome.js';
-import type { TaskResult } from '../orchestrator/contract.js';
-import type { ContextEntry } from '../orchestrator/context.js';
+import type { TurnUsage, TokenUsage } from '../contracts/usage.js';
+import type { TaskStatus, TaskResult } from '../contracts/task.js';
+import type { ContextEntry } from '../contracts/context.js';
 
 export type TranscriptBody =
   | { type: 'context'; entry: ContextEntry }

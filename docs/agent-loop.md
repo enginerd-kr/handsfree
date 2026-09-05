@@ -42,26 +42,24 @@ The index processes only newly appended records. Task-ledger reconstruction is c
 Every planning step receives:
 
 1. Stable instructions and tool schemas.
-2. A bounded view of previous user/assistant turns.
+2. All previous user/assistant turns in the current conversation.
 3. The exact current request, latest review, and active objectives, constraints, decisions and open items.
-4. Current worker sessions, compact task state and result source addresses.
-5. The latest tool call and result.
+4. Current worker sessions, complete task reports and result source addresses.
+5. All tool calls and results from the current turn.
 
-Earlier tool exchanges leave the chat window after the next result; their actions and evidence remain addressable in the run file. Retrieved pages have a separate bounded evidence cache, so reading a second result does not erase the first result needed for comparison. Repeated identical reads share a cache entry. A completed page read records execution of the selected read item; `nextOffset` still indicates further evidence to retrieve when needed. Worker prose and reports precede long briefs in result pages. Recent findings have a bounded preview and an address for their full text. Active commitments and the exact current request are mandatory input: if they cannot fit, planning fails visibly instead of silently dropping them. Mandatory notes and the latest review are also attached to worker briefs, so a shortened model-written prompt does not erase saved constraints.
+Tool exchanges remain in the active turn. Retrieved evidence and saved findings are retained in full, and repeated identical reads share an entry. Worker prose and reports precede briefs in result retrieval. Active notes and the latest review also accompany worker briefs, preserving saved constraints even when the model writes a short prompt.
 
 Restarting the same run reconstructs recent conversation and active notes. An unfinished turn is represented as interrupted, and its actions/results are available for inspection; workers are not automatically rerun. `/clear` creates a new context boundary. Old source IDs and late turn checkpoints cannot repopulate that context.
 
-## Execution limits
+## Execution and cancellation
 
-The conversation orchestrator and workers record token usage without token or spending limits. Context fitting, request timeouts and configurable `maxPlanSteps` still apply. Compatible HTTP planners receive an output-size parameter; ACP planners are not cancelled based on token counts. The default planning-step ceiling is 32 and bounds accidental loops. Worker calls remain subject to `maxDelegationsPerTurn`. A context lookup, saved conclusion or result read does not consume a worker slot.
+Planner and worker calls are metered without token, spending, character, step or delegation limits. There are no automatic request deadlines. Worker errors return to planning for recovery, evidence lookup or a blocker report. User cancellation ends the loop and closes an active worker connection. Direct `@agent` requests retain their direct routing and agent-owned reply.
 
-Worker errors return to planning, allowing another worker, an evidence lookup or a blocker report. A worker limit refuses further delegations but permits analysis. User cancellation ends the loop immediately. A step limit triggers a report with a limit note; it is stored as `limited`, not task completion. Direct `@agent` requests retain their direct routing and agent-owned reply.
-
-The structured MCP/CLI executor keeps its own routing and usage-accounting contract. This redesign concerns the conversational loop.
+The structured MCP/CLI executor also runs without numerical limits; workspace exclusion and one prompt at a time per worker session preserve execution ordering.
 
 ## Validation
 
-Tests cover self-only answers, intermediate self work, failed-worker recovery, constraint propagation, reads after worker exhaustion, disk replay, source paging and revisions, interrupted turns, clear boundaries, required context under pressure and conversation-pair eviction. A fixed context-size scenario measures the dynamic packet separately from the stable instruction prefix. Scripted models test host guarantees; live local-model checks separately assess whether the model uses the loop well.
+Tests cover self-only answers, intermediate self work, failed-worker recovery, constraint propagation, repeated delegation and result reads, disk replay, complete source retrieval and revisions, interrupted turns, clear boundaries, full context/history retention, large batches and explicit cancellation. Scripted models test host guarantees; live local-model checks separately assess whether the model uses the loop well.
 
 An explicit live planner smoke check uses deterministic worker replies and restarts the same run before asking about the original constraints:
 

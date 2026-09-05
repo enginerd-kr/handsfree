@@ -68,19 +68,8 @@ describe('defaults', () => {
     expect(parsed.success).toBe(false);
   });
 
-  it('provides host resources without a policy configuration', () => {
+  it('advertises host command execution', () => {
     const config = ConfigSchema.parse({});
-    expect(config.capabilities.terminal).toBe(true);
-    expect(config).not.toHaveProperty('policy');
-    expect(config.execution.terminal).toEqual({
-      timeoutMs: 120_000, outputByteLimit: 65536, env: ['PATH', 'HOME', 'LANG', 'TERM', 'TMPDIR'],
-    });
-    expect(config.limits.decisionTimeoutMs).toBe(120_000);
-  });
-
-  it('discards legacy permission rules rather than validating or applying them', () => {
-    const config = ConfigSchema.parse({ policy: { exec: { enabled: false, mode: 'deny' }, fs: { write: 'deny' } } });
-    expect(config).not.toHaveProperty('policy');
     expect(config.capabilities.terminal).toBe(true);
   });
 

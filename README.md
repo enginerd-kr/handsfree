@@ -49,13 +49,13 @@ Run from the project directory. MCP exposes `delegate`, `batch`, `read_result`, 
 
 Results include task status, a short summary, blockers, artifacts, verification provenance, token usage, and a `resultRef`. Reusing a request ID returns its recorded result. An interrupted request is not automatically rerun. Fetch full details with `read_result` when the summary is insufficient. Batch requests declare dependencies; independent inspections may overlap while changes run exclusively.
 
-See [execution contracts, token efficiency, and operating limits](docs/execution.md) for configuration and examples.
+See [execution contracts and configuration](docs/execution.md) for configuration and examples.
 
 Structured routing defaults to local/API selection and skips ACP selection calls. The [measured local 4B path](docs/execution-controls.md) includes real role-selection and worker checks. All agent profiles default to `nativeTools: "allow"`, including existing configurations that omit the setting. Codex runs using its adapter's permissions and sandbox. Profiles allowing native tools run tasks exclusively. Set `agents.<id>.nativeTools` to `"deny"` to block known Codex adapters before prompting.
 
-In conversation, the orchestration model can select several recipients in one `agent` call, for example `"agent": ["claude", "gemini", "codex"]`. It interprets requests such as “ask everyone” from the conversation. The host executes each selected recipient independently and reports every outcome; each recipient counts toward the turn's delegation limit, and any recipients skipped at that limit are named.
+In conversation, the orchestration model can select several recipients in one `agent` call, for example `"agent": ["claude", "gemini", "codex"]`. It interprets requests such as “ask everyone” from the conversation. The host executes each selected recipient independently and reports every outcome.
 
-The conversation loop returns every result, including failures, to the orchestrator for review. It can use `context` to preserve objectives, constraints, decisions and open items, search older records, or save its own intermediate conclusions. `task_result` retrieves full worker replies. These operations do not consume worker delegation limits. See [the loop and context design](docs/agent-loop.md).
+The conversation loop returns every result, including failures, to the orchestrator for review. It can use `context` to preserve objectives, constraints, decisions and open items, search older records, or save its own intermediate conclusions. `task_result` retrieves full worker replies. See [the loop and context design](docs/agent-loop.md).
 
 ## Install
 
@@ -161,6 +161,8 @@ Use the `/config` command to inspect active settings and their origins. Refer to
 
 ## Development
 
+Source modules are grouped by responsibility inside `src/`. See [source architecture](docs/architecture.md) for the directory layout, dependency direction and migration map.
+
 ```bash
 pnpm typecheck
 pnpm test
@@ -169,7 +171,7 @@ pnpm benchmark --live # same artifact checks with the configured worker/model
 pnpm screenshots     # re-shoot every picture in this README, from the real TUI
 ```
 
-The benchmark compares direct, conversational, and structured execution on identical isolated fixtures. It reports artifact success, total/frontier tokens, planning overhead, failed calls, estimation gaps, and latency. Simulation results measure the orchestration path, not real model quality or billing. Live runs record usage without imposing host token or spending limits.
+The benchmark compares direct, conversational, and structured execution on identical isolated fixtures. It reports artifact success, total/frontier tokens, planning overhead, failed calls, estimation gaps, and latency. Simulation results measure the orchestration path, not real model quality or billing. Live runs record usage without imposing token, output, task-count or time limits.
 
 ## License
 

@@ -7,9 +7,9 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { ConfigSchema } from '../src/config/schema.js';
 import { loadConfig } from '../src/config/load.js';
 import { createRuntime } from '../src/runtime.js';
-import { createMcpServer } from '../src/commands/mcp.js';
-import type { TaskResult } from '../src/orchestrator/contract.js';
-import { sessionMemory } from '../src/orchestrator/memory.js';
+import { createMcpServer } from '../src/servers/mcp.js';
+import type { TaskResult } from '../src/contracts/task.js';
+import { sessionMemory } from '../src/orchestrator/context/memory.js';
 
 // Explicit live integration suite. Never imported by the unit test runner.
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'handsfree-use-cases-'));
@@ -19,12 +19,11 @@ const configured = loadConfig().config;
 if (process.argv.includes('--allow-native')) configured.agents.codex!.nativeTools = 'allow';
 const config = ConfigSchema.parse({ ...configured, workspaceRoot: root, cleanupPeriodDays: 0,
   capabilities: { ...configured.capabilities, terminal: true },
-  limits: { ...configured.limits, turnTimeoutMs: 180_000, idleTimeoutMs: 90_000, cancelGraceMs: 5000 },
 });
 const runtime = createRuntime({ config, permissionMode: 'bypass' });
 const workspace = runtime.workspace.dir;
 const report: Record<string, unknown> = { date: new Date().toISOString(), root, workspace, runId: runtime.workspace.id,
-  configurationChanges: ['isolated workspace', 'host terminal enabled; bypass permission mode'],
+  configurationChanges: ['isolated workspace', 'terminal enabled'],
   agents: {}, cases: [], completed: false };
 const cases = report.cases as { name: string; ok: boolean; detail: unknown }[];
 function save() { fs.writeFileSync(path.join(root, 'report.json'), JSON.stringify(report, null, 2)); }

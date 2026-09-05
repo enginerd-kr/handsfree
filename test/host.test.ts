@@ -25,9 +25,6 @@ async function runTurn(
 
   const session = await h.runtime.pool.session('claude');
   const { stopReason } = await session.prompt('go', {
-    turnTimeoutMs: 5_000,
-    idleTimeoutMs: 5_000,
-    cancelGraceMs: 500,
   });
   return { ...h, stopReason, agent };
 }
@@ -312,18 +309,12 @@ describe('turn lifecycle', () => {
     expect(stopReason).toBe('end_turn');
   });
 
-  it('cancels a turn that goes quiet for too long', async () => {
-    const agent = fakeAgent({ script: () => [{ do: 'stall', ms: 10_000 }] });
+  it('allows a quiet turn to finish without an idle deadline', async () => {
+    const agent = fakeAgent({ script: () => [{ do: 'stall', ms: 250 }, { do: 'say', text: 'finished' }] });
     const h = harness({ agents: { claude: agent } });
     open = h;
-
     const session = await h.runtime.pool.session('claude');
-    const { stopReason } = await session.prompt('go', {
-      turnTimeoutMs: 10_000,
-      idleTimeoutMs: 150,
-      cancelGraceMs: 1_000,
-    });
-    expect(stopReason).toBe('cancelled');
+    expect((await session.prompt('go')).stopReason).toBe('end_turn');
   });
 
   it('cancels when the caller asks it to', async () => {
@@ -335,9 +326,6 @@ describe('turn lifecycle', () => {
     const controller = new AbortController();
     setTimeout(() => controller.abort(), 50);
     const { stopReason } = await session.prompt('go', {
-      turnTimeoutMs: 10_000,
-      idleTimeoutMs: 10_000,
-      cancelGraceMs: 1_000,
       signal: controller.signal,
     });
     expect(stopReason).toBe('cancelled');
@@ -356,9 +344,6 @@ describe('turn lifecycle', () => {
     controller.abort();
     const startedAt = Date.now();
     const { stopReason } = await session.prompt('go', {
-      turnTimeoutMs: 10_000,
-      idleTimeoutMs: 10_000,
-      cancelGraceMs: 1_000,
       signal: controller.signal,
     });
     expect(stopReason).toBe('cancelled');
@@ -372,9 +357,9 @@ describe('turn lifecycle', () => {
     open = h;
 
     const first = await h.runtime.pool.session('claude');
-    await first.prompt('one', { turnTimeoutMs: 5_000, idleTimeoutMs: 5_000, cancelGraceMs: 500 });
+    await first.prompt('one', {});
     const second = await h.runtime.pool.session('claude');
-    await second.prompt('two', { turnTimeoutMs: 5_000, idleTimeoutMs: 5_000, cancelGraceMs: 500 });
+    await second.prompt('two', {});
 
     expect(second.sessionId).toBe(first.sessionId);
     expect(agent.prompts).toEqual(['one', 'two']);
@@ -423,7 +408,7 @@ describe('turn lifecycle', () => {
     open = h;
 
     const session = await h.runtime.pool.session('claude');
-    const end = await session.prompt('go', { turnTimeoutMs: 5_000, idleTimeoutMs: 5_000, cancelGraceMs: 500 });
+    const end = await session.prompt('go', {});
     expect(end).toEqual({
       stopReason: 'end_turn',
       usage: { inputTokens: 1_000, outputTokens: 200, cachedReadTokens: 3_000, totalTokens: 4_200 },
@@ -445,7 +430,7 @@ describe('turn lifecycle', () => {
     open = h;
 
     const session = await h.runtime.pool.session('gemini');
-    const end = await session.prompt('go', { turnTimeoutMs: 5_000, idleTimeoutMs: 5_000, cancelGraceMs: 500 });
+    const end = await session.prompt('go', {});
     expect(end).toEqual({
       stopReason: 'end_turn',
       usage: { inputTokens: 800, outputTokens: 50, totalTokens: 850 },
@@ -458,42 +443,21 @@ describe('turn lifecycle', () => {
     open = h;
 
     const session = await h.runtime.pool.session('claude');
-    const end = await session.prompt('go', { turnTimeoutMs: 5_000, idleTimeoutMs: 5_000, cancelGraceMs: 500 });
+    const end = await session.prompt('go', {});
     expect(end).toEqual({ stopReason: 'end_turn' });
   });
 });
 
-describe('terminal output ceiling', () => {
-  it('hands the agent the end of a long output and writes the whole of it under the run', async () => {
+describe('terminal output', () => {
+  it('returns complete output larger than the former default ceiling', async () => {
     const results: { ok: boolean; detail: string; output?: string }[] = [];
-    const script = "process.stdout.write(Array.from({length: 400}, (_, i) => `line ${i} ${'x'.repeat(20)}`).join('\\n'))";
-    const { runtime } = await runApprovedTurn(
-      () => [
-        {
-          do: 'exec',
-          command: 'node',
-          args: ['-e', script],
-          onResult: (result) => results.push(result),
-        },
-      ],
-      { execution: { terminal: { outputByteLimit: 1024 } } },
-    );
-
-    const output = results[0]?.output ?? '';
+    const { runtime } = await runApprovedTurn(() => [{ do: 'exec', command: 'node',
+      args: ['-e', "process.stdout.write('START' + 'x'.repeat(100000) + 'END')"],
+      onResult: (result) => results.push(result),
+    }]);
     expect(results[0]?.ok).toBe(true);
-    // The end, since that is where a failing command says why.
-    expect(output).toContain('line 399');
-    expect(output).not.toContain('line 0 ');
-    expect(output.length).toBeLessThanOrEqual(1024);
-
-    const spill = path.join(runtime.workspace.runDir, 'spill', 'term-1.txt');
-    const whole = fs.readFileSync(spill, 'utf8');
-    expect(whole).toContain('line 0 ');
-    expect(whole).toContain('line 399');
-    const note = runtime.transcript
-      .all()
-      .find((record) => record.type === 'note' && record.text.includes('whole output'));
-    expect(note && note.type === 'note' ? note.text : '').toContain(spill);
+    expect(results[0]?.output).toBe('START' + 'x'.repeat(100000) + 'END');
+    expect(fs.existsSync(path.join(runtime.workspace.runDir, 'spill'))).toBe(false);
   });
 
   it('writes nothing aside when the output fit', async () => {

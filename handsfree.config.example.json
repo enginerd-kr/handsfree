@@ -8,14 +8,9 @@
     },
     "acp": {
       "agent": "claude",
-      "model": "haiku",
-      "timeoutMs": 120000
+      "model": "haiku"
     },
-    "maxHistoryMessages": 30,
-    "contextBudgetTokens": 8000,
-    "relayAnswers": false,
-    "maxOutputTokens": 768,
-    "maxRepairAttempts": 2
+    "relayAnswers": false
   },
   "env": {},
   "agents": {
@@ -52,38 +47,8 @@
     "terminal": true,
     "elicitation": true
   },
-  "limits": {
-    "handshakeTimeoutMs": 90000,
-    "turnTimeoutMs": 600000,
-    "idleTimeoutMs": 180000,
-    "cancelGraceMs": 10000,
-    "maxDelegationsPerTurn": 3,
-    "maxPlanSteps": 6,
-    "maxResultChars": 1200,
-    "handoffBudgetChars": 1600,
-    "reportSummaryChars": 300,
-    "rebriefEveryTasks": 8,
-    "decisionTimeoutMs": 120000
-  },
   "execution": {
-    "estimatedTaskTokens": 4096,
-    "maxParallel": 2,
-    "maxBatchTasks": 16,
-    "maxCandidates": 3,
-    "rotateContextRatio": 0.85,
-    "routing": "auto",
-    "routingContextTokens": 2048,
-    "terminal": {
-      "timeoutMs": 120000,
-      "outputByteLimit": 65536,
-      "env": [
-        "PATH",
-        "HOME",
-        "LANG",
-        "TERM",
-        "TMPDIR"
-      ]
-    }
+    "routing": "auto"
   },
   "prices": {}
 }

@@ -1,5 +1,7 @@
 # Execution controls and lightweight routing — 2026-09-05
 
+This is a historical evaluation. Token, output, context and execution limits described below have since been removed; see [current execution behavior](execution.md).
+
 This follow-up addresses the three issues found in the [three-agent live run](live-use-cases.md): unmediated Codex tools, ACP input overhead exceeding the old task limit, and expensive ACP selection calls.
 
 ## Native execution

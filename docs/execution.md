@@ -1,6 +1,6 @@
 # Execution contracts and token efficiency
 
-The execution core is `src/orchestrator/executor.ts`. It owns deterministic request validation, candidate selection, scheduling, result persistence, and idempotency. `Delegator` owns the ACP worker lifecycle. `Conversation` supplies the dialogue interface, and MCP and the `task` command supply structured interfaces.
+The execution core is [`src/orchestrator/execution/executor.ts`](../src/orchestrator/execution/executor.ts). It owns deterministic request validation, candidate selection, scheduling, result persistence, and idempotency. `Delegator` owns the ACP worker lifecycle. `Conversation` supplies the dialogue interface, and MCP and the `task` command supply structured interfaces. Shared request and result schemas live in `src/contracts/task.ts`; see [source architecture](architecture.md) for the full dependency structure.
 
 ## Interfaces
 
@@ -38,7 +38,7 @@ handsfree task --permission-mode bypass '{"task":"Inspect src/parser.ts","kind":
 | `requestId` | At-most-once retry key within a run. Different content under the same key fails. |
 | `resolves` | Earlier task IDs whose recorded blockers/decisions this successful task supersedes. |
 
-The result includes `taskId`, `runId`, `agent`, `status`, `summary`, `artifacts`, `blockers`, `verification`, `usage`, and `resultRef`. Full output is persisted separately under the run's `results` directory. Artifact and blocker lists in the compact result are bounded; full lists remain in the detailed result.
+The result includes `taskId`, `runId`, `agent`, `status`, `summary`, `artifacts`, `blockers`, `verification`, `usage`, and `resultRef`. Full output is persisted separately under the run's `results` directory. Artifact and blocker lists are returned in full.
 
 `end_turn` is a protocol termination signal, not proof of task completion. A report saying `blocked` or `partial` produces `blocked` or `incomplete`; cancellation and failure remain distinct. For backwards compatibility, a clean turn without a report is accepted as done, with verification marked `unreported`. `verification.source: agent_report` identifies the worker's claim, not an independent test performed by handsfree. Callers can add a verification task and inspect its evidence.
 
@@ -56,47 +56,40 @@ Before executing a keyed request, handsfree writes a journal entry. A completed 
 }
 ```
 
-Unknown dependencies, cycles, duplicate IDs and oversized batches are rejected before work starts. Failed prerequisites block dependent work. Prerequisite summaries, artifacts, and references accompany the dependent task's original requirements. Identical requests with identical dependencies in one batch share one execution. A worker session never receives overlapping prompts. A workspace lock allows concurrent inspections but serializes changes against all work, including other ACP runtimes in the same host process. Independent handsfree processes require separate writable checkouts or external coordination.
+Unknown dependencies, cycles and duplicate IDs are rejected before work starts. Failed prerequisites block dependent work. Prerequisite summaries, artifacts, and references accompany the dependent task's original requirements. Identical requests with identical dependencies in one batch share one execution. A worker session never receives overlapping prompts. A workspace lock allows concurrent inspections but serializes changes against all work, including other ACP runtimes in the same host process. Independent handsfree processes require separate writable checkouts or external coordination.
 
 ### `read_result`, resources, and `usage`
 
-`read_result({taskId, offset:0, maxChars:8000})` returns a text page and an optional `nextOffset`. Its maximum page is 32,000 characters. The `handsfree://runs/{runId}/tasks/{taskId}` resource returns the first page. Resources are restricted to the current run; arbitrary paths cannot be supplied.
+`read_result({taskId, offset:0, maxChars:8000})` returns a text page and an optional `nextOffset`. Omitting `maxChars` returns the complete result; explicit page sizes have no upper ceiling. The `handsfree://runs/{runId}/tasks/{taskId}` resource returns the complete result. Resources are restricted to the current run; arbitrary paths cannot be supplied.
 
 `usage` returns total tokens, frontier tokens, known USD cost, estimated-call count, and calls without known prices. `/cost` also shows this accounting in the conversation. Full reports are not inserted into the planner's context unless its `task_result` tool explicitly retrieves a page.
 
-## Token efficiency and small models
+## Models and usage
 
 ```json
 {
   "orchestration": {
     "provider": "api",
-    "local": {"baseURL":"https://your-compatible-endpoint/v1","model":"your-small-model","apiKey":"your-key"},
-    "contextBudgetTokens": 8000,
-    "maxOutputTokens": 768,
-    "maxRepairAttempts": 2
+    "local": {"baseURL":"https://your-compatible-endpoint/v1","model":"your-model","apiKey":"your-key"}
   },
-  "execution": {"estimatedTaskTokens":4096,"routing":"auto","routingContextTokens":2048,"maxParallel":2,"maxBatchTasks":16,"maxCandidates":3,"rotateContextRatio":0.85},
+  "execution": {"routing":"auto"},
   "prices": {}
 }
 ```
 
-Handsfree focuses on efficient token use. Account and spending limits belong to the provider; handsfree records usage without refusing or cancelling work based on token counts or USD cost. The former configuration `budget` block is ignored, and structured requests no longer accept `budget`. The cold-start estimate now lives at `execution.estimatedTaskTokens` and only informs ranking.
+Handsfree does not impose token or USD budgets, output or context ceilings, planning/delegation counts, batch/candidate/parallel counts, or handshake, turn, idle, command and approval deadlines. Previous `budget`, `limits`, and `policy` configuration blocks and their orchestration/execution limit fields are no longer read. Older configuration files may still load, but those fields are ignored. The structured task contract no longer accepts `budget`.
 
-Both conversational planning and structured routing record usage. `provider: local` records selector tokens as local; `provider: api` and `provider: acp` record them as frontier usage. The legacy `local` configuration block holds the compatible endpoint for local and API providers. ACP opens a fresh planning session per call and releases its bookkeeping afterwards; workers keep their sessions. See [the conversation loop](agent-loop.md).
+Conversation history, reports, handoffs and retrieved results are passed without automatic truncation. The planner can repair invalid replies and continue taking steps until it answers, an operation fails, or the user cancels. Model servers and adapters still have their own context and output capacities. Explicit user cancellation closes the affected connection immediately; a subsequent worker task opens a new connection. Approvals remain governed by the session's `ask`/`bypass` mode and can be withdrawn by cancellation. Command environments inherit the host environment and apply the caller's overrides.
 
-Candidate ranking considers recent usage and failure history, relevant unchanged files, and session occupancy. In `execution.routing: auto`, local/API selectors may be consulted, while ACP uses deterministic ranking without a selection call. `deterministic` always skips the selector; `model` explicitly permits it, including ACP. The selector sees neutral IDs and configured roles in a 2,048-token window. If the complete task cannot fit that small window, it is passed intact to the deterministically selected worker. The bounded selector chooses an ID from the shortlist in at most one model call; invalid replies fall back to the ranked candidate without repair calls. A single candidate, an explicit agent, or a strong context-affinity advantage skips selection. The dialogue planner retains its configurable bounded repair loop for conversational compatibility.
+In `execution.routing: auto`, local/API selectors may be consulted, while ACP uses deterministic ranking. `deterministic` always skips selection; `model` enables it for any provider. Selection considers all eligible agents and receives the complete task. Invalid selection replies fall back to ranking. An explicit agent, a single candidate, or strong context affinity skips selection. Worker sessions are serialized and workspace changes run exclusively to prevent conflicting work; independent inspections have no numerical parallel ceiling.
 
-Worker estimates use the 90th percentile of the last eight positive usage records and the current reported context size; cold starts use `execution.estimatedTaskTokens`. These estimates rank candidates. Actual response usage replaces estimates in accounting, and failed calls are recorded too. Context occupancy is only a lower-bound signal, not cumulative billing usage. Token estimates use a character heuristic and do not guarantee a model's tokenizer count.
-
-Cache reads and writes are counted in total tokens and priced separately. USD rates, when needed, are configured per model ID or agent ID as `input`, `output`, `cachedRead`, and `cachedWrite`, in USD per million tokens. There are no built-in model prices. Reported USD task cost is used when an adapter supplies it; missing prices leave cost unknown and do not block execution. Local inference has zero provider-billed cost in this accounting; hardware and electricity are not measured.
-
-Planner context fitting reserves output and schema space. Compatible HTTP providers receive `maxOutputTokens` as a generation parameter; ACP replies are not cancelled based on their estimated token length. Required current-task context survives history eviction. If the mandatory content cannot fit, handsfree reports an error before calling the model. Status and blockers precede file lists in compact results, and omitted details are explicitly marked.
+Usage accounting remains available for planners and workers, including failed calls. `provider: local` attributes selector usage to local inference; `api` and `acp` attribute it to frontier models. Provider counts replace character-based estimates when reported. Cache reads and writes are counted and priced separately. Rates are configured per model or agent as `input`, `output`, `cachedRead`, and `cachedWrite`, in USD per million tokens. Missing prices do not block execution. Reported USD cost is used when available; local inference records zero provider-billed cost.
 
 ## Session memory
 
-The host records file metadata versions, topics, task reports, and session IDs. Changed versions lose context-affinity credit and generate a re-read reminder. A large reported context drop invalidates older memory hints; an almost-full session is rotated before another task unless the request pins an exact session. Metadata versions are inexpensive freshness hints, not proof that a compacted model still remembers file contents.
+The host records file metadata versions, topics, task reports, and session IDs. Changed versions lose context-affinity credit and generate a re-read reminder. A large reported context drop invalidates older memory hints; session rotation is explicit rather than triggered by a context ratio. Metadata versions are inexpensive freshness hints, not proof that a compacted model still remembers file contents.
 
-Relevant decisions and open items are retrieved independently of the recent-task window. `resolves` explicitly supersedes older facts after successful work. Raw history remains available for audit. Task transcript extraction filters by task/agent/session so overlapping workers do not borrow one another's output or permission records.
+Relevant decisions and open items are retrieved from the complete task record. `resolves` explicitly supersedes older facts after successful work. Raw history remains available for audit. Task transcript extraction filters by task/agent/session so overlapping workers do not borrow one another's output or permission records.
 
 ## Validation and benchmarking
 
@@ -110,10 +103,10 @@ pnpm benchmark
 pnpm benchmark --live
 ```
 
-The benchmark uses fresh isolated workspaces and identical artifact checks for direct, conversational, and structured execution. It exercises a first task and a follow-up after the input file changes. The simulated worker reports deliberately modeled token counts, and the output is labeled `simulation`; these figures are not real model efficiency measurements. Live mode uses the same configured worker/model in all modes, records token usage and retains failed samples. Its small data-transformation fixture is a smoke benchmark, not evidence of broad coding quality.
+The benchmark uses fresh isolated workspaces and identical artifact checks for direct, conversational, and structured execution. It exercises a first task and a follow-up after the input file changes. The simulated worker reports deliberately modeled token counts, and the output is labeled `simulation`; these figures are not real model efficiency measurements. Live mode uses the same configured worker/model in all modes, records usage and failed samples rather than excluding them. Its small data-transformation fixture is a smoke benchmark, not evidence of broad coding quality.
 
-Coverage includes goal retention under pressure, schema/output reserves, blocked reports, result paging, ACP embedded context and full answers, MCP cancellation, concurrent isolation, read-only enforcement, dependency failures, idempotency, session freshness, and usage reconciliation.
+Coverage includes complete goal/history delivery, large outputs, blocked reports, result paging, ACP embedded context and full answers, MCP cancellation, concurrent isolation, read-only enforcement, dependency failures, idempotency, session freshness, and usage reconciliation.
 
-See [recorded simulation and live results](benchmark-results.md) for historical measured overhead and limitations.
+See [recorded simulation and live results](benchmark-results.md) for the measured overhead and the historical live run's limitations.
 
 See [three-agent live use cases](live-use-cases.md) for actual Claude/Gemini/Codex coordination, independent artifact checks, and adapter compatibility limits.

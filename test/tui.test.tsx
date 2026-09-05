@@ -10,7 +10,7 @@ import { readClipboardImage } from '../src/ui/tui/clipboard.js';
 import { DOT_BUSY, DOT_IDLE, PLAN_BUSY, PLAN_IDLE, PROMPT_CHAR } from '../src/ui/tui/theme.js';
 import { fakeAgent } from './fake-agent.js';
 import { harness, scriptedModel, type Harness } from './harness.js';
-import type { ChatClient } from '../src/brain/client.js';
+import type { ChatClient } from '../src/models/client.js';
 
 // A paste must never reach for the machine's real clipboard.
 vi.mock('../src/ui/tui/clipboard.js', async (importOriginal) => ({
@@ -1574,7 +1574,7 @@ describe('terminal UI', () => {
         rawInput: { command: 'git diff --stat' }, onAnswer: (id) => answers.push(id) },
       { do: 'say', text: 'Inspection continued.' },
     ] });
-    const h = harness({ agents: { claude: agent }, config: {} });
+    const h = harness({ agents: { claude: agent } });
     open = h;
     const app = render(<App runtime={h.runtime} />);
     try {

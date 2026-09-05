@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { createMcpServer } from '../src/commands/mcp.js';
+import { createMcpServer } from '../src/servers/mcp.js';
 import { harness, type Harness } from './harness.js';
 import { fakeAgent } from './fake-agent.js';
 

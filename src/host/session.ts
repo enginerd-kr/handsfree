@@ -1,3 +1,4 @@
+import type { TurnUsage } from '../contracts/usage.js';
 import type {
   ContentBlock,
   PromptRequest,
@@ -85,20 +86,6 @@ function flatten(options: SessionConfigSelectOptions): ModelChoice[] {
   return choices;
 }
 
-/**
- * What one turn cost, as the agent counted it. `inputTokens` is what was read
- * fresh; a cached read or write is counted apart, the way the agents report
- * it, and `totalTokens` is the agent's own sum where it gave one.
- */
-export interface TurnUsage {
-  inputTokens: number;
-  outputTokens: number;
-  totalTokens?: number;
-  cachedReadTokens?: number;
-  cachedWriteTokens?: number;
-  thoughtTokens?: number;
-}
-
 /** How a turn ended, and what it cost where the agent said. */
 export interface TurnEnd {
   stopReason: StopReason;
@@ -138,12 +125,6 @@ export function usageOf(response: PromptResponse): TurnUsage | undefined {
 }
 
 export interface PromptOptions {
-  /** Wall clock for the whole turn. */
-  turnTimeoutMs: number;
-  /** How long the agent may go without sending any update. */
-  idleTimeoutMs: number;
-  /** How long to wait for a `cancelled` stop reason after asking it to stop. */
-  cancelGraceMs: number;
   signal?: AbortSignal;
 }
 
@@ -161,8 +142,9 @@ export class SessionUnresponsiveError extends Error {
  */
 export class HostSession {
   private turn: AbortController | undefined;
-  private lastUpdateAt = 0;
   private busy = false;
+  private lastUpdateAt = 0;
+  invalidated = false;
   /** What the agent said about models, once its opening answer has said it. */
   private state: ModelState | undefined;
   /**
@@ -177,13 +159,7 @@ export class HostSession {
     readonly sessionId: string,
     private readonly transport: SessionTransport,
     private readonly onUpdate: (update: SessionUpdate) => void,
-    /**
-     * Whether a person is currently being asked something on this agent's
-     * behalf. An agent blocked on a question of its own sends no updates and
-     * makes no progress, and neither of those is the agent's fault — so the
-     * timers below stand still until the answer comes back.
-     */
-    private readonly blocked: () => boolean = () => false,
+    private readonly dispose: () => Promise<void> = async () => {},
   ) {}
 
   /**
@@ -277,8 +253,10 @@ export class HostSession {
 
   async prompt(
     prompt: string | ContentBlock[],
-    options: PromptOptions,
+    options: PromptOptions = {},
   ): Promise<TurnEnd> {
+    if (options.signal?.aborted) return { stopReason: 'cancelled' };
+    if (this.invalidated) throw new SessionUnresponsiveError('Session was cancelled; open a new session');
     if (this.busy) throw new Error(`session ${this.sessionId} is already running a turn`);
     this.busy = true;
 
@@ -286,7 +264,6 @@ export class HostSession {
       typeof prompt === 'string' ? [{ type: 'text', text: prompt }] : prompt;
     const turn = new AbortController();
     this.turn = turn;
-    this.lastUpdateAt = Date.now();
 
     const ended = async (): Promise<TurnEnd> => {
       const response = await this.transport.prompt(
@@ -304,32 +281,6 @@ export class HostSession {
     if (options.signal?.aborted) turn.abort();
     else options.signal?.addEventListener('abort', abortOnCaller, { once: true });
 
-    // Both clocks are read from one tick so both can be stopped by one
-    // condition. Time spent waiting on a person is not time the agent had:
-    // the idle deadline is pushed along while it lasts and the wall clock
-    // discounts it, or a question left up for two minutes would end the turn
-    // that asked it — and the answer would land on a session already cancelled.
-    const startedAt = Date.now();
-    let blockedFor = 0;
-    let blockedSince: number | undefined;
-    const clock = setInterval(
-      () => {
-        const now = Date.now();
-        if (this.blocked()) {
-          blockedSince ??= now;
-          this.lastUpdateAt = now;
-          return;
-        }
-        if (blockedSince !== undefined) {
-          blockedFor += now - blockedSince;
-          blockedSince = undefined;
-        }
-        if (now - this.lastUpdateAt > options.idleTimeoutMs) turn.abort();
-        else if (now - startedAt - blockedFor > options.turnTimeoutMs) turn.abort();
-      },
-      Math.min(options.idleTimeoutMs, options.turnTimeoutMs, 5_000),
-    );
-
     try {
       const pending = ended();
       const raced = await Promise.race([
@@ -338,31 +289,19 @@ export class HostSession {
       ]);
       if (raced.done) return raced.end;
 
-      // Cancellation is cooperative: tell the agent to stop, then give it a
-      // bounded moment to close the turn properly. A turn that will not close is
-      // reported as unresponsive so the caller can tear the process down.
-      await this.transport.cancel(this.sessionId).catch(() => {});
-      // The grace timer must not outlive the race it loses: a live timer holds
-      // the event loop, which on /quit is ten more seconds of a process that
-      // looks hung.
-      let grace: NodeJS.Timeout | undefined;
-      const settled = await Promise.race([
-        pending.catch((): TurnEnd => ({ stopReason: 'cancelled' })),
-        new Promise<undefined>((resolve) => {
-          grace = setTimeout(() => resolve(undefined), options.cancelGraceMs);
-        }),
-      ]).finally(() => clearTimeout(grace));
-      if (settled === undefined) {
-        throw new SessionUnresponsiveError(
-          `${this.agentId} did not end its turn ${options.cancelGraceMs}ms after being cancelled`,
-        );
-      }
-      return settled;
+      void this.transport.cancel(this.sessionId).catch(() => {});
+      return { stopReason: 'cancelled' };
+    } catch (error) {
+      if (!turn.signal.aborted) throw error;
+      return { stopReason: 'cancelled' };
     } finally {
-      clearInterval(clock);
       options.signal?.removeEventListener('abort', abortOnCaller);
       this.turn = undefined;
       this.busy = false;
+      if (turn.signal.aborted) {
+        this.invalidated = true;
+        await this.dispose();
+      }
     }
   }
 }

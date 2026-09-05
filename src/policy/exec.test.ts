@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { scanScript } from './exec.js';
+import { scanScript, scanChain } from './exec.js';
 
 describe('scanScript', () => {
   it('splits a plain command', () => {
@@ -35,5 +35,17 @@ describe('scanScript', () => {
 
   it('reports an unterminated quote rather than guessing', () => {
     expect(scanScript('echo "oops').ok).toBe(false);
+  });
+});
+
+describe('scanChain', () => {
+  it('splits on the chain operators and keeps quoted text whole', () => {
+    const chain = scanChain(`cd /ws && node -e 'a && b' | tee`);
+    expect(chain).toEqual({ ok: true, segments: [['cd', '/ws'], ['node', '-e', 'a && b'], ['tee']] });
+  });
+
+  it('refuses an empty link', () => {
+    expect(scanChain('node a.js &&').ok).toBe(false);
+    expect(scanChain('| node').ok).toBe(false);
   });
 });

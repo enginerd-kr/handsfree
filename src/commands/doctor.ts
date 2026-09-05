@@ -92,7 +92,7 @@ export async function doctor(
   log(`  fs/write_text_file  ${caps.writeTextFile ? 'yes' : 'no'}`);
   log(
     `  terminal/*          ${caps.terminal ? 'yes' : 'no'}` +
-      (caps.terminal ? ' — session permission mode' : ' — no host terminal; native adapter tools may differ'),
+      (caps.terminal ? ' (host-managed)' : ' — no host terminal; native adapter tools may differ'),
   );
   log(
     `  elicitation/create  ${caps.elicitation ? 'yes (form)' : 'no'}` +

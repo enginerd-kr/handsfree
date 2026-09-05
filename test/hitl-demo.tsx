@@ -1,7 +1,7 @@
 import React from 'react';
 import { render } from 'ink';
 import { App } from '../src/ui/tui/app.js';
-import type { ChatClient } from '../src/brain/client.js';
+import type { ChatClient } from '../src/models/client.js';
 import { fakeAgent, type Act } from './fake-agent.js';
 import { harness } from './harness.js';
 
@@ -93,7 +93,7 @@ const h = harness({
   llm: model,
   // Deliberately short, so `slow` proves the clocks stand still for a question
   // instead of merely being generous.
-  config: { limits: { idleTimeoutMs: 10_000, turnTimeoutMs: 120_000 } },
+  config: {},
 });
 
 console.log(`\n  demo: ${WHICH} — type anything and press enter. ctrl+c to leave.\n`);

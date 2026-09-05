@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { client, methods, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
-import { createServeApp } from '../src/commands/serve.js';
+import { createServeApp } from '../src/servers/acp.js';
 import { harness, scriptedModel } from './harness.js';
 import { fakeAgent } from './fake-agent.js';
 

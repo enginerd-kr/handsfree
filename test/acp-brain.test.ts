@@ -24,9 +24,8 @@ describe('acp orchestration', () => {
     });
     const config = ConfigSchema.parse({
       workspaceRoot: root,
-      orchestration: { provider: 'acp', maxOutputTokens: 1, acp: { agent: 'claude', timeoutMs: 5_000 } },
+      orchestration: { provider: 'acp', acp: { agent: 'claude' } },
       agents: { claude: { command: 'unused', args: [] } },
-      limits: { turnTimeoutMs: 5_000, idleTimeoutMs: 5_000, cancelGraceMs: 500 },
     });
     const runtime = createRuntime({ config, createTarget: () => brain.target() });
 
@@ -69,9 +68,8 @@ describe('acp orchestration', () => {
     });
     const config = ConfigSchema.parse({
       workspaceRoot: root,
-      orchestration: { provider: 'acp', acp: { agent: 'claude', timeoutMs: 5_000 } },
+      orchestration: { provider: 'acp', acp: { agent: 'claude' } },
       agents: { claude: { command: 'unused', args: [] } },
-      limits: { turnTimeoutMs: 5_000, idleTimeoutMs: 5_000, cancelGraceMs: 500 },
     });
     const runtime = createRuntime({ config, createTarget: () => brain.target() });
 
@@ -99,9 +97,8 @@ describe('acp orchestration', () => {
     });
     const config = ConfigSchema.parse({
       workspaceRoot: root,
-      orchestration: { provider: 'acp', acp: { agent: 'claude', timeoutMs: 5_000 } },
+      orchestration: { provider: 'acp', acp: { agent: 'claude' } },
       agents: { claude: { command: 'unused', args: [] } },
-      limits: { turnTimeoutMs: 5_000, idleTimeoutMs: 5_000, cancelGraceMs: 500 },
     });
     const runtime = createRuntime({ config, createTarget: () => brain.target() });
 
@@ -128,9 +125,8 @@ describe('acp orchestration', () => {
     const config = ConfigSchema.parse({
       workspaceRoot: root,
       // Matched the way a person types it, so a prefix is enough.
-      orchestration: { provider: 'acp', acp: { agent: 'claude', model: 'haik', timeoutMs: 5_000 } },
+      orchestration: { provider: 'acp', acp: { agent: 'claude', model: 'haik' } },
       agents: { claude: { command: 'unused', args: [] } },
-      limits: { turnTimeoutMs: 5_000, idleTimeoutMs: 5_000, cancelGraceMs: 500 },
     });
     const runtime = createRuntime({ config, createTarget: () => brain.target() });
 
@@ -156,9 +152,8 @@ describe('acp orchestration', () => {
     });
     const config = ConfigSchema.parse({
       workspaceRoot: root,
-      orchestration: { provider: 'acp', acp: { agent: 'claude', model: 'gpt-5', timeoutMs: 5_000 } },
+      orchestration: { provider: 'acp', acp: { agent: 'claude', model: 'gpt-5' } },
       agents: { claude: { command: 'unused', args: [] } },
-      limits: { turnTimeoutMs: 5_000, idleTimeoutMs: 5_000, cancelGraceMs: 500 },
     });
     const runtime = createRuntime({ config, createTarget: () => brain.target() });
 
@@ -195,9 +190,8 @@ describe('acp orchestration', () => {
       });
       const config = ConfigSchema.parse({
         workspaceRoot: root,
-        orchestration: { provider: 'acp', acp: { agent: 'claude', timeoutMs: 5_000 } },
+        orchestration: { provider: 'acp', acp: { agent: 'claude' } },
         agents: { claude: { command: 'unused', args: [] }, gemini: { command: 'unused', args: [] } },
-        limits: { turnTimeoutMs: 5_000, idleTimeoutMs: 5_000, cancelGraceMs: 500 },
       });
       const runtime = createRuntime({
         config,

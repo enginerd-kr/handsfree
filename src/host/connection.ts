@@ -11,12 +11,12 @@ import {
   type SessionNotification,
   type SessionUpdate,
 } from '@agentclientprotocol/sdk';
-import type { HostContext } from '../capabilities/context.js';
+import type { HostContext } from './capabilities/context.js';
 import { debug } from '../debug.js';
-import { createElicitationHandler } from '../capabilities/elicit.js';
-import { createFsHandlers } from '../capabilities/fs.js';
-import { createPermissionHandler } from '../capabilities/permission.js';
-import { TerminalRegistry } from '../capabilities/terminal.js';
+import { createElicitationHandler } from './capabilities/elicit.js';
+import { createFsHandlers } from './capabilities/fs.js';
+import { createPermissionHandler } from './capabilities/permission.js';
+import { TerminalRegistry } from './capabilities/terminal.js';
 import { VERSION } from '../version.js';
 import { HostSession, modelStateOf } from './session.js';
 import { mediationProblem } from './mediation.js';
@@ -40,6 +40,7 @@ export interface OpenOptions {
   agentId: string;
   host: HostContext;
   target: ConnectionTarget;
+  signal?: AbortSignal;
 }
 
 export class AuthenticationRequiredError extends Error {
@@ -92,7 +93,8 @@ export class AgentConnection {
     private readonly terminals: TerminalRegistry | undefined,
   ) {}
 
-  static async open({ agentId, host, target }: OpenOptions): Promise<AgentConnection> {
+  static async open({ agentId, host, target, signal }: OpenOptions): Promise<AgentConnection> {
+    signal?.throwIfAborted();
     const caps = host.config.capabilities;
     const sessions = new Map<string, HostSession>();
     const permission = createPermissionHandler(host);
@@ -136,7 +138,7 @@ export class AgentConnection {
     }
 
     const connection = target.connect(app);
-    debug(agentId, `initialize → ${target.description} (timeout ${host.config.limits.handshakeTimeoutMs}ms)`);
+    debug(agentId, `initialize → ${target.description}`);
     const started = Date.now();
     let initialized;
     try {
@@ -155,8 +157,7 @@ export class AgentConnection {
           },
         }),
         target.broken,
-        host.config.limits.handshakeTimeoutMs,
-        'no answer to initialize'
+        signal,
       );
     } catch (err) {
       debug(agentId, `initialize failed after ${Date.now() - started}ms: ${(err as Error).message}`);
@@ -314,7 +315,7 @@ export class AgentConnection {
         },
       },
       onUpdate,
-      () => this.host.policy.isWaiting(this.agentId),
+      () => this.close(),
     );
     this.sessions.set(sessionId, session);
     return session;
@@ -355,37 +356,18 @@ export class AgentConnection {
   }
 }
 
-/** A wait in the words a person counts in: whole seconds where it is one, else ms. */
-function duration(ms: number): string {
-  return ms % 1000 === 0 ? `${ms / 1000}s` : `${ms}ms`;
-}
-
-/**
- * The handshake is the one exchange with no protocol-level timeout behind it: if
- * an adapter starts but never answers, nothing else will ever notice.
- */
-function orBroken<T>(
-  work: Promise<T>,
-  broken: Promise<Error> | undefined,
-  timeoutMs: number,
-  timeoutMessage: string,
-): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`${timeoutMessage} within ${duration(timeoutMs)}`)),
-      timeoutMs,
-    );
-  });
-  const races: Promise<T>[] = [work, deadline];
-  if (broken) {
-    races.push(
-      broken.then((error) => {
-        throw error;
-      }),
-    );
-  }
-  return Promise.race(races).finally(() => clearTimeout(timer));
+/** Fail promptly when the adapter exits while initialization is pending. */
+async function orBroken<T>(work: Promise<T>, broken: Promise<Error> | undefined, signal?: AbortSignal): Promise<T> {
+  const races = [work];
+  if (broken) races.push(broken.then((error) => { throw error; }));
+  let abort: (() => void) | undefined;
+  if (signal) races.push(new Promise<never>((_, reject) => {
+    abort = () => reject(signal.reason ?? new Error('Cancelled'));
+    if (signal.aborted) abort();
+    else signal.addEventListener('abort', abort, { once: true });
+  }));
+  try { return await Promise.race(races); }
+  finally { if (abort) signal?.removeEventListener('abort', abort); }
 }
 
 /** How long a loaded session has to be silent before its replay is taken as over. */

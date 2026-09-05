@@ -1,25 +1,25 @@
 import { orchestrationModel, type Config } from './config/schema.js';
 import type { ConfigLocation } from './config/load.js';
-import { AcpModel } from './brain/acp.js';
-import { LocalModel, type ChatClient } from './brain/client.js';
-import { Planner, type OrchestrationChoice } from './brain/planner.js';
+import { AcpModel } from './models/acp.js';
+import { LocalModel, type ChatClient } from './models/client.js';
+import { Planner, type OrchestrationChoice } from './models/planner.js';
 import { PolicyEngine } from './policy/engine.js';
 import type { Escalator } from './policy/types.js';
 import type { PermissionMode } from './policy/mode.js';
 import { AgentPool, type PoolOptions } from './host/pool.js';
 import { resolveModel } from './host/models.js';
-import { Conversation } from './orchestrator/conversation.js';
-import { Executor } from './orchestrator/executor.js';
-import { UsageTracker } from './orchestrator/meter.js';
-import { workspaceScheduler } from './orchestrator/scheduler.js';
+import { Conversation } from './orchestrator/conversation/conversation.js';
+import { Executor } from './orchestrator/execution/executor.js';
+import { UsageTracker } from './orchestrator/usage/meter.js';
+import { workspaceScheduler } from './orchestrator/execution/scheduler.js';
 import { Transcript } from './workspace/transcript.js';
 import { pruneOldRuns } from './workspace/prune.js';
 import { Workspace } from './workspace/workspace.js';
 import type { Jail } from './policy/jail.js';
 import { debug } from './debug.js';
+import { loadCommands } from './orchestrator/conversation/commands/registry.js';
 import { registerShutdown } from './shutdown.js';
-import { loadCommands } from './slash/registry.js';
-import type { Command, CommandHost } from './slash/command.js';
+import type { Command, CommandHost } from './orchestrator/conversation/commands/command.js';
 
 /** Long enough that pruning never races startup, short enough to actually run. */
 const PRUNE_DELAY_MS = 5_000;
@@ -81,7 +81,6 @@ export function createRuntime(options: RuntimeOptions): Runtime {
   const jail = workspace.jail();
 
   const policy = new PolicyEngine({
-    decisionTimeoutMs: config.limits.decisionTimeoutMs,
     jail,
     escalator: options.escalator,
     onDecision: (entry) => {
@@ -122,8 +121,6 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       // agents do; otherwise whatever the profile asks for, so that pinning a
       // model for an agent pins it for every session with that agent.
       ...(model === undefined ? {} : { model }),
-      timeoutMs: config.orchestration.acp.timeoutMs,
-      cancelGraceMs: config.limits.cancelGraceMs,
       createTarget: options.createTarget,
     });
   };
@@ -211,7 +208,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
   prune.unref();
 
   const usage = new UsageTracker(config, transcript);
-  const scheduling = workspaceScheduler(workspace.dir, config.execution.maxParallel);
+  const scheduling = workspaceScheduler(workspace.dir);
   const executor = new Executor({ config, pool, transcript, workspace, policy, usage, llm: planner, scheduler: scheduling.scheduler });
   const conversation = new Conversation({
     config,

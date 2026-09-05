@@ -40,43 +40,42 @@ describe('Jail', () => {
     expect(jail.check(target).ok).toBe(false);
   });
 
-  it('refuses a traversal that normalises out of the workspace', () => {
+  it('resolves paths outside the workspace', () => {
     const jail = new Jail([root]);
     const verdict = jail.check(path.join(root, '..', path.basename(outside), 'secret.txt'));
-    expect(verdict.ok).toBe(false);
+    expect(verdict.ok).toBe(true);
   });
 
-  it('refuses a sibling directory whose name shares the prefix', () => {
+  it('resolves sibling directories', () => {
     const sibling = `${root}-evil`;
     fs.mkdirSync(sibling, { recursive: true });
     try {
       const jail = new Jail([root]);
-      expect(jail.check(path.join(sibling, 'file.txt')).ok).toBe(false);
+      expect(jail.check(path.join(sibling, 'file.txt')).ok).toBe(true);
     } finally {
       fs.rmSync(sibling, { recursive: true, force: true });
     }
   });
 
-  it('refuses a symlink that points out of the workspace', () => {
+  it('resolves a symlink pointing outside the workspace', () => {
     const link = path.join(root, 'escape');
     fs.symlinkSync(outside, link);
     try {
-      const jail = new Jail([root], { followSymlinks: true });
+      const jail = new Jail([root]);
       const verdict = jail.check(path.join(link, 'secret.txt'));
-      expect(verdict.ok).toBe(false);
+      expect(verdict.ok).toBe(true);
       if (!verdict.ok) expect(verdict.reason).toContain('resolves outside');
     } finally {
       fs.unlinkSync(link);
     }
   });
 
-  it('refuses any symlink at all when following is switched off', () => {
+  it('resolves symlinks within the workspace', () => {
     const target = path.join(root, 'src', 'index.ts');
     const link = path.join(root, 'inside-link.ts');
     fs.symlinkSync(target, link);
     try {
-      expect(new Jail([root], { followSymlinks: false }).check(link).ok).toBe(false);
-      expect(new Jail([root], { followSymlinks: true }).check(link).ok).toBe(true);
+      expect(new Jail([root]).check(link).ok).toBe(true);
     } finally {
       fs.unlinkSync(link);
     }

@@ -191,7 +191,7 @@ async function main(): Promise<number> {
     if (args.mcp) {
       const refusal = args.sandbox ? undefined : tooBroadToAttach(process.cwd());
       if (refusal) { process.stderr.write(`${refusal}\n`); return 2; }
-      const { serveMcp } = await import('./commands/mcp.js');
+      const { serveMcp } = await import('./servers/mcp.js');
       const permissionMode = parsePermissionMode(args.permissionMode);
       if (args.permissionMode && !permissionMode) { process.stderr.write('Invalid permission mode\n'); return 2; }
       return serveMcp({ config, configSources: sources, cwd: process.cwd(),
@@ -199,7 +199,7 @@ async function main(): Promise<number> {
         ...(args.sandbox ? {} : { attachTo: process.cwd() }), ...(args.runId ? { runId: args.runId } : {}) });
     }
     // stdout belongs to the protocol from here on: nothing else may write to it.
-    const { serve } = await import('./commands/serve.js');
+    const { serve } = await import('./servers/acp.js');
     return serve(config, sources);
   }
 

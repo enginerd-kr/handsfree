@@ -158,6 +158,7 @@ describe('slash commands', () => {
 });
 
 describe('expansion through the policy engine', () => {
+
   it('runs an allowed command and puts its output in the prompt', async () => {
     const llm = scriptedModel([answer('done')]);
     const h = harness({

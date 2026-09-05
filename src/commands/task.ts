@@ -1,5 +1,5 @@
 import { createRuntime, type Runtime, type RuntimeOptions } from '../runtime.js';
-import { TaskRequestSchema } from '../orchestrator/contract.js';
+import { TaskRequestSchema } from '../contracts/task.js';
 import { stdinSeat } from '../ui/stdin-seat.js';
 
 export async function task(json: string, options: RuntimeOptions, write: (line: string) => void): Promise<number> {

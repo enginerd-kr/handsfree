@@ -3,7 +3,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { fakeAgent } from './fake-agent.js';
 import { harness, scriptedModel, type Harness } from './harness.js';
-import { estimateTokens, type ChatClient } from '../src/brain/client.js';
+import { type ChatClient } from '../src/models/client.js';
 import { buildView, describeRecord } from '../src/ui/view-model.js';
 import { agentsConfigPath, loadConfig } from '../src/config/load.js';
 
@@ -133,16 +133,16 @@ describe('Conversation', () => {
     expect(buildView(h.runtime.transcript.all(), h.workspaceDir).filter((r) => r.text === summary)).toHaveLength(1);
   });
 
-  it('narrates group results when the planning step limit is reached', async () => {
+  it('reports group results after returning to the planner', async () => {
     const agents = Object.fromEntries(['claude', 'gemini'].map((id) => [id,
       fakeAgent({ script: () => [{ do: 'say', text: 'Hi' }] }),
     ]));
     const summary = 'claude and gemini both replied.';
     const llm = scriptedModel([
       JSON.stringify({ action: 'call', tool: 'agent', input: { agent: Object.keys(agents), kind: 'answer', prompt: 'Hi?' } }),
-      summary,
+      answer(summary),
     ]);
-    const h = harness({ agents, llm, config: { limits: { maxPlanSteps: 1 } } });
+    const h = harness({ agents, llm });
     open = h;
 
     await h.runtime.conversation.send('Say hi to both agents.');
@@ -153,9 +153,9 @@ describe('Conversation', () => {
     });
   });
 
-  it('charges grouped recipients against the remaining turn limit and names omissions', async () => {
+  it('contacts every grouped recipient without a per-turn ceiling', async () => {
     const agents = Object.fromEntries(['a', 'b', 'c'].map((id) => [id, fakeAgent({ script: () => [{ do: 'say', text: 'Hi' }] })]));
-    const h = harness({ agents, config: { limits: { maxDelegationsPerTurn: 2 } }, llm: scriptedModel([
+    const h = harness({ agents, llm: scriptedModel([
       JSON.stringify({ action: 'call', tool: 'agent', input: { agent: 'a', kind: 'answer', prompt: 'Hi' } }),
       JSON.stringify({ action: 'call', tool: 'agent', input: { agent: ['b', 'c'], kind: 'answer', prompt: 'Hi' } }),
     ]) });
@@ -163,8 +163,8 @@ describe('Conversation', () => {
     await h.runtime.conversation.send('인사해 줘');
     expect(agents.a!.prompts).toHaveLength(1);
     expect(agents.b!.prompts).toHaveLength(1);
-    expect(agents.c!.prompts).toHaveLength(0);
-    expect(assistantText(h).at(-1)).toContain('Not contacted (delegation limit reached): c');
+    expect(agents.c!.prompts).toHaveLength(1);
+    expect(assistantText(h).at(-1)).not.toContain('Not contacted');
   });
 
   it('answers directly without touching an agent', async () => {
@@ -349,7 +349,7 @@ describe('Conversation', () => {
       }),
       answer(summary),
     ]);
-    const h = harness({ agents: { claude: agent }, llm, config: {} });
+    const h = harness({ agents: { claude: agent }, llm });
     open = h;
 
     await h.runtime.conversation.send('@claude 변경 사항 확인해');
@@ -386,20 +386,20 @@ describe('Conversation', () => {
     expect(assistantText(h).at(-1)).toBe('Checked.');
   });
 
-  it('stops at the delegation limit and still reports', async () => {
+  it('continues delegating until the planner finishes', async () => {
     const agent = fakeAgent({ script: () => [{ do: 'say', text: 'ok' }] });
     const llm = scriptedModel([delegate('one'), delegate('two'), delegate('three')]);
     const h = harness({
       agents: { claude: agent },
       llm,
-      config: { limits: { maxDelegationsPerTurn: 2 } },
+      config: {},
     });
     open = h;
 
     await h.runtime.conversation.send('go');
 
-    expect(agent.prompts).toHaveLength(2);
-    expect(assistantText(h).at(-1)).toContain('limit of 2');
+    expect(agent.prompts).toHaveLength(3);
+    expect(assistantText(h).at(-1)).not.toContain('limit of 2');
   });
 
   it('falls back to a ledger when the local model cannot be reached', async () => {
@@ -473,8 +473,7 @@ describe('Conversation', () => {
     });
     // What gemma-3-12b actually replies when asked to summarise a finished task.
     const llm = scriptedModel([delegate('Create notes.txt'), "Great! What's next?"]);
-    // One step, so the reply after the task is the summary rather than a plan.
-    const h = harness({ agents: { claude: agent }, llm, config: { limits: { maxPlanSteps: 1 } } });
+    const h = harness({ agents: { claude: agent }, llm });
     open = h;
 
     await h.runtime.conversation.send('make notes.txt');
@@ -492,9 +491,9 @@ describe('Conversation', () => {
     });
     const llm = scriptedModel([
       delegate('Run the tokenize tests and report the count'),
-      'The tokenize tests were executed and all nine passed. Nothing was changed.',
+      answer('The tokenize tests were executed and all nine passed. Nothing was changed.'),
     ]);
-    const h = harness({ agents: { claude: agent }, llm, config: { limits: { maxPlanSteps: 1 } } });
+    const h = harness({ agents: { claude: agent }, llm });
     open = h;
 
     await h.runtime.conversation.send('run the tests');
@@ -505,7 +504,7 @@ describe('Conversation', () => {
   it('marks a reply that is the ledger, so the view can hang it on the agent', async () => {
     const agent = fakeAgent({ script: () => [{ do: 'say', text: 'ok' }] });
     const llm = scriptedModel([delegate('Create notes.txt'), "Great! What's next?"]);
-    const h = harness({ agents: { claude: agent }, llm, config: { limits: { maxPlanSteps: 1 } } });
+    const h = harness({ agents: { claude: agent }, llm });
     open = h;
 
     await h.runtime.conversation.send('make notes.txt');
@@ -517,8 +516,8 @@ describe('Conversation', () => {
 
   it('keeps a summary that does report the work', async () => {
     const agent = fakeAgent({ script: () => [{ do: 'say', text: 'ok' }] });
-    const llm = scriptedModel([delegate('Create notes.txt'), 'claude created the file.']);
-    const h = harness({ agents: { claude: agent }, llm, config: { limits: { maxPlanSteps: 1 } } });
+    const llm = scriptedModel([delegate('Create notes.txt'), answer('claude created the file.')]);
+    const h = harness({ agents: { claude: agent }, llm });
     open = h;
 
     await h.runtime.conversation.send('make notes.txt');
@@ -863,13 +862,13 @@ describe('Conversation', () => {
     expect(claude.prompts[1]).not.toContain('Added parse().');
   });
 
-  it('briefs an agent again once its session has run enough tasks to have compacted', async () => {
+  it('does not rebrief solely because of a task count', async () => {
     const claude = fakeAgent({ script: () => [{ do: 'say', text: 'ok' }] });
     const llm = scriptedModel([answer('a'), answer('b'), answer('c')]);
     const h = harness({
       agents: { claude },
       llm,
-      config: { limits: { rebriefEveryTasks: 2 } },
+      config: {},
     });
     open = h;
 
@@ -879,8 +878,8 @@ describe('Conversation', () => {
 
     expect(claude.prompts[0]).toContain('handsfree approves or refuses');
     expect(claude.prompts[1]).not.toContain('handsfree approves or refuses');
-    // Two tasks on from the rules, so they go out again.
-    expect(claude.prompts[2]).toContain('handsfree approves or refuses');
+    // A task count alone does not force a new briefing.
+    expect(claude.prompts[2]).not.toContain('handsfree approves or refuses');
   });
 
   it('briefs an agent again after a turn that ran out of tokens', async () => {
@@ -1091,7 +1090,7 @@ describe('Conversation', () => {
       delegate('Do it'),
       answer('done.'),
     ]);
-    const h = harness({ agents: { claude }, llm, config: { orchestration: { maxRepairAttempts: 3 } } });
+    const h = harness({ agents: { claude }, llm, config: { orchestration: {} } });
     open = h;
 
     await h.runtime.conversation.send('do it');
@@ -1102,38 +1101,30 @@ describe('Conversation', () => {
     expect(claude.prompts).toHaveLength(1);
   });
 
-  it('drops the oldest turns first when the planner is over budget', async () => {
+  it('preserves all earlier turns even with long requests', async () => {
     const claude = fakeAgent({ script: () => [] });
     const llm = scriptedModel([answer('warmup'), answer('one'), answer('two'), answer('three'), answer('four')]);
-    let fixed = 0;
-    const measured: ChatClient = { async chat(messages, options) {
-      fixed = estimateTokens(messages[0]?.content ?? '') + estimateTokens(JSON.stringify(options?.schema?.schema ?? {}));
-      return llm.chat(messages, options);
-    } };
-    // Room for the instructions and current request, but not all four turns.
     const h = harness({
       agents: { claude },
-      llm: measured,
-      config: { orchestration: { maxOutputTokens: 128 } },
+      llm,
+      config: { orchestration: {} },
     });
     open = h;
 
     const line = 'a line of conversation that takes up room '.repeat(100);
     await h.runtime.conversation.send('warmup');
-    h.runtime.config.orchestration.contextBudgetTokens = fixed + estimateTokens(line) + 400;
     await h.runtime.conversation.send(`${line}1`);
     await h.runtime.conversation.send(`${line}2`);
     await h.runtime.conversation.send(`${line}3`);
     await h.runtime.conversation.send(`${line}4`);
 
     const last = llm.seen.at(-1) ?? [];
-    // The system prompt stays, the newest line stays, and what was dropped
-    // was dropped from the front — whole turns, so a user line always leads.
+    // Every previous conversation pair stays alongside the current request.
     expect(last[0]?.role).toBe('system');
     expect(last.at(-1)?.content.endsWith('4')).toBe(true);
-    expect(last.length).toBeLessThan(8);
+    expect(last.length).toBe(10);
     expect(last[1]?.role).toBe('user');
-    expect(last.some((message) => message.content.endsWith('1'))).toBe(false);
+    expect(last.some((message) => message.content.endsWith('1'))).toBe(true);
   });
 
   it('writes down what each call to the planner cost', async () => {

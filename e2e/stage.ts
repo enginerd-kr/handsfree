@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ConfigSchema } from '../src/config/schema.js';
 import { createRuntime, type Runtime } from '../src/runtime.js';
-import type { ChatClient, ChatMessage } from '../src/brain/client.js';
+import type { ChatClient, ChatMessage } from '../src/models/client.js';
 import type { FakeAgent } from '../test/fake-agent.js';
 
 /**

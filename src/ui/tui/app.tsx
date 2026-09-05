@@ -29,7 +29,7 @@ import {
   type ViewOptions,
   sessionsOf,
 } from '../view-model.js';
-import { shortTokens, spendOf, type RunSpend, type Spend } from '../../orchestrator/usage.js';
+import { shortTokens, spendOf, type RunSpend, type Spend } from '../../orchestrator/usage/usage.js';
 import { matchModel, type ModelChoice } from '../../host/models.js';
 import { agentRole, plannerLabel, type Config } from '../../config/schema.js';
 import {
@@ -38,18 +38,9 @@ import {
   suggest,
   takesArguments,
   type Command,
-} from '../../slash/command.js';
-import {
-  completeMention,
-  completeModel,
-  mentionSpans,
-  modelTokenAt,
-  ORCHESTRATOR,
-  parseMention,
-  plannerTokenAt,
-  suggestAgents,
-  suggestModels,
-} from '../../mention/mention.js';
+} from '../../orchestrator/conversation/commands/command.js';
+import { completeMention, completeModel, mentionSpans, modelTokenAt, plannerTokenAt, parseMention, suggestAgents, suggestModels } from '../../orchestrator/conversation/mention.js';
+import { ORCHESTRATOR } from '../../contracts/identity.js';
 import { readClipboardImage } from './clipboard.js';
 import { NOTHING_SENT, recall, remember, settle, type History } from './history.js';
 import { DETAIL_INDENT, GUTTER, entryText, heightOf, textWidth, totalHeight } from './layout.js';

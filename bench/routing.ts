@@ -2,13 +2,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { loadConfig } from '../src/config/load.js';
-import { LocalModel, type Usage } from '../src/brain/client.js';
-import { routingRequest } from '../src/orchestrator/router.js';
+import { LocalModel, type Usage } from '../src/models/client.js';
+import { routingRequest } from '../src/orchestrator/execution/router.js';
 
 // Only the selector makes model calls. No coding agents are launched.
 const { config } = loadConfig();
 const model = process.argv[2] ?? 'google/gemma-3-4b';
-const llm = new LocalModel({ ...config.orchestration.local, model, timeoutMs: 90_000 });
+const llm = new LocalModel({ ...config.orchestration.local, model });
 const candidates = [
   { agent: 'claude', description: 'Implement multi-file application features and API changes.' },
   { agent: 'gemini', description: 'Translate documentation and transform bulk text or CSV data.' },
@@ -35,8 +35,8 @@ for (const [task, expected] of samples) {
   const started = Date.now();
   let usage: Usage | undefined, reply = '', error: string | undefined, agent: string | undefined;
   try {
-    const request = routingRequest(candidates, task!, 2048);
-    reply = await llm.chat(request.messages, { schema: request.schema, maxOutputTokens: request.maxOutputTokens,
+    const request = routingRequest(candidates, task!);
+    reply = await llm.chat(request.messages, { schema: request.schema,
       onUsage: (count) => { usage = count; }, onDelta: () => {} });
     agent = request.parse(reply);
   } catch (err) { error = String(err); }

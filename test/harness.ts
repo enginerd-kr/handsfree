@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ConfigSchema, type Config } from '../src/config/schema.js';
 import { createRuntime, type Runtime } from '../src/runtime.js';
-import type { ChatClient, ChatMessage } from '../src/brain/client.js';
+import type { ChatClient, ChatMessage } from '../src/models/client.js';
 import type { Escalator } from '../src/policy/types.js';
 import type { FakeAgent } from './fake-agent.js';
 
@@ -11,7 +11,6 @@ export interface HarnessOptions {
   agents: Record<string, FakeAgent>;
   config?: Partial<{
     capabilities: Partial<Config['capabilities']>;
-    limits: Partial<Config['limits']>;
     /** Per-agent profile fields beyond the command — the optional model override. */
     profiles: Record<string, { model?: string; nativeTools?: 'allow' | 'deny' }>;
     /** What each agent is for, as a config file would say it. */
@@ -56,7 +55,6 @@ export function harness(options: HarnessOptions): Harness {
     ...(options.config?.orchestration ? { orchestration: options.config.orchestration } : {}),
     ...(options.config?.execution ? { execution: options.config.execution } : {}),
     ...(options.config?.prices ? { prices: options.config.prices } : {}),
-    limits: { turnTimeoutMs: 5_000, idleTimeoutMs: 5_000, cancelGraceMs: 500, ...(options.config?.limits ?? {}) },
   });
   config.workspaceRoot = root;
 

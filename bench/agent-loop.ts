@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { loadConfig } from '../src/config/load.js';
-import { LocalModel, type ChatClient } from '../src/brain/client.js';
+import { LocalModel, type ChatClient } from '../src/models/client.js';
 import { fakeAgent } from '../test/fake-agent.js';
 import { harness } from '../test/harness.js';
 

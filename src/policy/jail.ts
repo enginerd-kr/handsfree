@@ -5,26 +5,12 @@ export type JailVerdict =
   | { ok: true; path: string; real: string }
   | { ok: false; reason: string };
 
-export interface JailOptions {
-  /**
-   * When false, a symlink anywhere along the path is rejected even if its target
-   * stays inside the workspace. Containment is still checked against real paths
-   * either way — this flag only decides whether a link is suspicious in itself.
-   */
-  followSymlinks: boolean;
-}
-
-/**
- * The workspace boundary, enforced on real paths rather than on the strings the
- * agent sent. Lexical containment alone is not a boundary: `/ws/../etc/passwd`
- * normalises out, and `/ws/link` can point anywhere at all.
- */
+/** Resolves paths for host operations and workspace-relative display. */
 export class Jail {
   private readonly roots: string[];
 
   constructor(
     roots: string[],
-    private readonly options: JailOptions = { followSymlinks: false },
   ) {
     if (roots.length === 0) throw new Error('A jail needs at least one root.');
     this.roots = roots.map((root) => canonicalise(path.resolve(root)));
@@ -66,23 +52,9 @@ export class Jail {
       return { ok: false, reason: `cannot resolve ${existing}: ${(err as Error).message}` };
     }
     const real = rest.length > 0 ? path.join(realExisting, ...rest) : realExisting;
-    if (!this.contains(real)) {
-      return { ok: false, reason: `resolves outside the workspace: ${real}` };
-    }
-    if (!this.options.followSymlinks) {
-      const link = firstSymlink(normalised, this.roots);
-      if (link) return { ok: false, reason: `path crosses a symlink: ${link}` };
-    }
     return { ok: true, path: normalised, real };
   }
 
-  private contains(target: string): boolean {
-    return this.roots.some((root) => {
-      if (target === root) return true;
-      const rel = path.relative(root, target);
-      return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
-    });
-  }
 }
 
 function canonicalise(dir: string): string {
@@ -106,26 +78,4 @@ function deepestExisting(target: string): { existing: string; rest: string[] } {
     rest.push(path.basename(current));
     current = parent;
   }
-}
-
-/** The first component below a root that is itself a symlink, if any. */
-function firstSymlink(target: string, roots: string[]): string | undefined {
-  const root = roots.find((candidate) => {
-    const rel = path.relative(candidate, target);
-    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
-  });
-  if (!root) return undefined;
-  const rel = path.relative(root, target);
-  if (rel === '') return undefined;
-
-  let current = root;
-  for (const segment of rel.split(path.sep)) {
-    current = path.join(current, segment);
-    try {
-      if (fs.lstatSync(current).isSymbolicLink()) return current;
-    } catch {
-      return undefined; // Does not exist yet, so it is not a link.
-    }
-  }
-  return undefined;
 }

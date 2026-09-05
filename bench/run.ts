@@ -5,9 +5,9 @@ import { pathToFileURL } from 'node:url';
 import { ConfigSchema, type Config } from '../src/config/schema.js';
 import { loadConfig } from '../src/config/load.js';
 import { createRuntime } from '../src/runtime.js';
-import { estimateTokens, type ChatClient } from '../src/brain/client.js';
-import { tokensOf } from '../src/orchestrator/usage.js';
-import { taskBrief, TaskRequestSchema } from '../src/orchestrator/contract.js';
+import { estimateTokens, type ChatClient } from '../src/models/client.js';
+import { tokensOf } from '../src/orchestrator/usage/usage.js';
+import { taskBrief, TaskRequestSchema } from '../src/contracts/task.js';
 import { fakeAgent, type Act } from '../test/fake-agent.js';
 
 type Mode = 'direct' | 'conversation' | 'structured';
@@ -89,16 +89,17 @@ export async function benchmark(live = false): Promise<{ mode: 'simulation' | 'l
           if (mode === 'direct') {
             const session = await runtime.pool.session(agentId);
             const brief = taskBrief(request);
+            const lease = runtime.usage.begin(agentId, session.currentModel() ?? agentId, profile.frontier);
             let failed = true;
             let counted: Awaited<ReturnType<typeof session.prompt>> | undefined;
             const before = runtime.transcript.all().length;
             try {
-              counted = await session.prompt(brief, { turnTimeoutMs: 120_000, idleTimeoutMs: 60_000, cancelGraceMs: 3000 });
+              counted = await session.prompt(brief, {});
               failed = counted.stopReason !== 'end_turn';
             } finally {
               const chunks = runtime.transcript.all().slice(before).flatMap((record) => record.type === 'session_update'
                 && record.update.sessionUpdate === 'agent_message_chunk' && record.update.content.type === 'text' ? [record.update.content.text] : []).join('');
-              runtime.usage.record(agentId, session.currentModel() ?? agentId, profile.frontier, { tokens: counted?.usage ? tokensOf(counted.usage) : estimateTokens(brief + chunks), inputTokens: counted?.usage?.inputTokens ?? estimateTokens(brief),
+              lease.finish({ tokens: counted?.usage ? tokensOf(counted.usage) : estimateTokens(brief + chunks), inputTokens: counted?.usage?.inputTokens ?? estimateTokens(brief),
                 outputTokens: counted?.usage ? counted.usage.outputTokens + (counted.usage.thoughtTokens ?? 0) : estimateTokens(chunks), cachedReadTokens: counted?.usage?.cachedReadTokens,
                 cachedWriteTokens: counted?.usage?.cachedWriteTokens, estimated: counted?.usage === undefined }, failed);
             }

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ORCHESTRATOR } from '../mention/mention.js';
+import { ORCHESTRATOR } from '../contracts/identity.js';
 
 /**
  * handsfree never asks an agent to pre-approve its own side effects: the whole
@@ -56,7 +56,7 @@ export const AgentProfileSchema = z
      * it only to override that.
      */
     model: z.string().min(1).optional(),
-    /** Track local worker usage separately from frontier tokens. */
+    /** Whether usage is attributed to a frontier model. */
     frontier: z.boolean().default(true),
     /** Allow adapter-native operations by default; deny opts out of native execution. */
     nativeTools: z.enum(['deny', 'allow']).default('allow'),
@@ -114,6 +114,8 @@ export const DEFAULT_AGENTS: Record<string, z.input<typeof AgentProfileSchema>> 
 export const EnvSchema = z.record(z.string(), z.string().nullable()).prefault({});
 export type EnvConfig = z.infer<typeof EnvSchema>;
 
+export type RuleOutcome = 'allow' | 'ask' | 'deny';
+
 /**
  * What each agent is for, in the words the planner is given. Keyed by agent id.
  *
@@ -146,8 +148,6 @@ export const OrchestrationSchema = z.object({
       model: z.string().default('google/gemma-3-12b'),
       apiKey: z.string().default('not-needed'),
       temperature: z.number().min(0).max(2).default(0.1),
-      timeoutMs: z.number().int().positive().default(120_000),
-      maxOutputTokens: z.number().int().positive().default(768),
     })
     .prefault({}),
   /** A frontier model reached by driving one of the configured agents over ACP. */
@@ -164,36 +164,17 @@ export const OrchestrationSchema = z.object({
        * and failing that the agent's own default.
        */
       model: z.string().min(1).optional(),
-      /** Wall clock for a single planning or summary reply. */
-      timeoutMs: z.number().int().positive().default(120_000),
     })
     .prefault({}),
-  /** Local models have small context windows; history is trimmed to this. */
-  maxHistoryMessages: z.number().int().positive().default(30),
   /**
-   * How much the planner is sent per call, in estimated tokens: the system
-   * prompt, the run state, the history and the line being answered. Older
-   * turns go first when it is over, then the run state shortens. Unset, a
-   * local endpoint gets 8,000 and a frontier agent over ACP gets 32,000 — the
-   * one has a small window and the other pays by the token.
-   */
-  contextBudgetTokens: z.number().int().positive().optional(),
-  /**
-   * Include the agent's reply in the immediate tool result when it fits the
-   * result size limit. Otherwise the planner receives a report and can use
+   * Include the agent's reply in the immediate tool result. Otherwise the
+   * planner receives a report and can use
    * task_result to retrieve details for follow-up questions. This controls
    * context delivery, not whether the planner may discuss agent findings.
    */
   relayAnswers: z.boolean().default(false),
-  /** API mode also accepts remote OpenAI-compatible small models via `local`. */
-  maxOutputTokens: z.number().int().positive().default(768),
-  maxRepairAttempts: z.number().int().min(1).max(3).default(3),
 });
 
-/** The planner's budget, with the provider deciding it where the config did not. */
-export function contextBudgetTokens(orchestration: Orchestration): number {
-  return orchestration.contextBudgetTokens ?? (orchestration.provider === 'acp' ? 32_000 : 8_000);
-}
 export type Orchestration = z.infer<typeof OrchestrationSchema>;
 
 export const PriceSchema = z.object({
@@ -217,22 +198,8 @@ export const ConfigSchema = z
     /** USD per million tokens, keyed by model id or agent id. No built-in prices. */
     prices: z.record(z.string(), PriceSchema).default({}),
     execution: z.object({
-      /** Host terminal resources; permission decisions use the session mode. */
-      terminal: z.object({
-        timeoutMs: z.number().int().positive().default(120_000),
-        outputByteLimit: z.number().int().positive().default(64 * 1024),
-        /** Parent environment variables forwarded to host commands. */
-        env: z.array(z.string()).default(['PATH', 'HOME', 'LANG', 'TERM', 'TMPDIR']),
-      }).prefault({}),
-      /** Cold-start token estimate used only to rank workers. */
-      estimatedTaskTokens: z.number().int().positive().default(4_096),
       /** Auto consults local/API selectors; ACP selection is an explicit opt-in. */
       routing: z.enum(['auto', 'deterministic', 'model']).default('auto'),
-      routingContextTokens: z.number().int().min(256).default(2048),
-      maxParallel: z.number().int().min(1).max(8).default(2),
-      maxBatchTasks: z.number().int().min(1).max(64).default(16),
-      maxCandidates: z.number().int().min(1).max(8).default(3),
-      rotateContextRatio: z.number().positive().max(1).default(0.85),
     }).prefault({}),
     env: EnvSchema,
     agents: z.record(z.string(), AgentProfileSchema).prefault(DEFAULT_AGENTS),
@@ -241,50 +208,12 @@ export const ConfigSchema = z
       .object({
         readTextFile: z.boolean().default(true),
         writeTextFile: z.boolean().default(true),
-        /** Offer host terminals governed by the session permission mode. */
+        /** Advertise host-managed command execution. */
         terminal: z.boolean().default(true),
         elicitation: z.boolean().default(true),
       })
       .prefault({}),
-    limits: z
-      .object({
-        /** How long a user has to answer an approval or general question. */
-        decisionTimeoutMs: z.number().int().positive().default(120_000),
-        /**
-         * How long an adapter has to answer `initialize`. Generous, because an
-         * adapter fetched through `npx` downloads itself on first use — but never
-         * unbounded, or a wedged adapter wedges handsfree.
-         */
-        handshakeTimeoutMs: z.number().int().positive().default(90_000),
-        /** Wall clock for a single session/prompt. */
-        turnTimeoutMs: z.number().int().positive().default(600_000),
-        /** No session/update for this long and the turn is cancelled. */
-        idleTimeoutMs: z.number().int().positive().default(180_000),
-        /** How long to wait for a `cancelled` stop reason before killing the process. */
-        cancelGraceMs: z.number().int().positive().default(10_000),
-        /** Worker tasks per message. Context updates and result reads do not consume this. */
-        maxDelegationsPerTurn: z.number().int().positive().default(3),
-        /** How many replies the planner gets per message, calls and the answer together. */
-        maxPlanSteps: z.number().int().positive().default(32),
-        /**
-         * Longest a task result handed to the planner is. Small, because what
-         * it carries is the report's summary and open items, not the reply.
-         */
-        maxResultChars: z.number().int().min(256).default(1200),
-        /** Longest the "since your last task" section of a brief is. */
-        handoffBudgetChars: z.number().int().positive().default(1600),
-        /** Longest a report's summary is kept, from the agent's REPORT block or the fallback. */
-        reportSummaryChars: z.number().int().positive().default(300),
-        /**
-         * How many tasks an agent's session gets between repeats of the ground
-         * rules. The session keeps its own memory, but a long one is compacted
-         * by the agent and what goes first is what was said first — the brief
-         * that explained the jail. A repeat is a hundred tokens; being told
-         * about it is not something a session can do.
-         */
-        rebriefEveryTasks: z.number().int().positive().default(8),
-      })
-      .prefault({}),
+
   })
   .superRefine((config, ctx) => {
     // `@orchestrator:agent:model` moves the planner, so the name is spoken for.

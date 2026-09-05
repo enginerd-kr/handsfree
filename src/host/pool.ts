@@ -1,5 +1,5 @@
 import type { AgentProfile, Config } from '../config/schema.js';
-import type { HostContext } from '../capabilities/context.js';
+import type { HostContext } from './capabilities/context.js';
 import type { ConnectionTarget } from './connection.js';
 import type { PolicyEngine } from '../policy/engine.js';
 import type { Jail } from '../policy/jail.js';
@@ -52,6 +52,7 @@ export class AgentStartError extends Error {
 export class AgentPool {
   private readonly connections = new Map<string, AgentConnection>();
   private readonly sessions = new Map<string, HostSession>();
+  private readonly launches = new Map<string, AbortController>();
   private readonly opening = new Map<string, Promise<AgentConnection>>();
   private readonly starting = new Map<string, Promise<HostSession>>();
   private readonly openingTargets = new Set<ConnectionTarget>();
@@ -127,7 +128,8 @@ export class AgentPool {
   async session(agentId: string): Promise<HostSession> {
     this.assertOpen();
     const existing = this.sessions.get(agentId);
-    if (existing) return existing;
+    if (existing && !existing.invalidated) return existing;
+    if (existing) await this.discard(agentId);
     const pending = this.starting.get(agentId);
     if (pending) return pending;
 
@@ -171,6 +173,7 @@ export class AgentPool {
 
   /** Drops a wedged agent so the next request starts a fresh process. */
   async discard(agentId: string): Promise<void> {
+    this.launches.get(agentId)?.abort();
     this.sessions.delete(agentId);
     const connection = this.connections.get(agentId);
     this.connections.delete(agentId);
@@ -183,6 +186,7 @@ export class AgentPool {
 
   closeAll(): Promise<void> {
     this.closed = true;
+    for (const launch of this.launches.values()) launch.abort();
     return this.closing ??= this.closeConnections();
   }
 
@@ -224,34 +228,39 @@ export class AgentPool {
       (args): args is string[] => args !== undefined,
     );
 
-    let lastError: Error | undefined;
-    for (const args of attempts) {
-      this.assertOpen();
-      const profileForAttempt = { ...profile, args };
-      const target = this.options.createTarget
-        ? this.options.createTarget(agentId, profileForAttempt)
-        : spawnTarget(profileForAttempt, {
-            cwd: this.options.workspace.dir,
-            env: this.options.config.env,
-            onStderr: (text) =>
-              this.options.transcript.append({ type: 'agent_stderr', agentId, text }),
-          });
-      this.openingTargets.add(target);
-      try {
-        const connection = await AgentConnection.open({ agentId, host, target });
-        if (this.closed) {
-          await connection.close();
-          this.assertOpen();
+    const launch = new AbortController();
+    this.launches.set(agentId, launch);
+    try {
+      let lastError: Error | undefined;
+      for (const args of attempts) {
+        this.assertOpen();
+        launch.signal.throwIfAborted();
+        const profileForAttempt = { ...profile, args };
+        const target = this.options.createTarget
+          ? this.options.createTarget(agentId, profileForAttempt)
+          : spawnTarget(profileForAttempt, {
+              cwd: this.options.workspace.dir,
+              env: this.options.config.env,
+              onStderr: (text) =>
+                this.options.transcript.append({ type: 'agent_stderr', agentId, text }),
+            });
+        try {
+          this.openingTargets.add(target);
+          const connection = await AgentConnection.open({ agentId, host, target, signal: launch.signal });
+          if (this.closed) {
+            await connection.close();
+            this.assertOpen();
+          }
+          this.connections.set(agentId, connection);
+          return connection;
+        } catch (err) {
+          lastError = err as Error;
+          await target.close();
+        } finally {
+          this.openingTargets.delete(target);
         }
-        this.connections.set(agentId, connection);
-        return connection;
-      } catch (err) {
-        lastError = err as Error;
-        await target.close();
-      } finally {
-        this.openingTargets.delete(target);
       }
-    }
-    throw lastError ?? new Error(`Could not start ${agentId}.`);
+      throw lastError ?? new Error(`Could not start ${agentId}.`);
+    } finally { this.launches.delete(agentId); }
   }
 }

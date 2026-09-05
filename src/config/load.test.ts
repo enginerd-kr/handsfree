@@ -121,30 +121,25 @@ describe('layering', () => {
     const { cwd, home } = layout({
       user: {
         orchestration: { local: { baseURL: 'http://localhost:9999/v1', model: 'mine' } },
-        execution: { terminal: { outputByteLimit: 2048, timeoutMs: 5000 } },
       },
       project: {
         orchestration: { local: { model: 'theirs' } },
-        execution: { terminal: { timeoutMs: 1000 } },
       },
     });
     const { config, sources } = loadConfig(cwd, home);
     // The project spoke, so it wins the key it named…
     expect(config.orchestration.local.model).toBe('theirs');
-    expect(config.execution.terminal.timeoutMs).toBe(1000);
     // …and everything it stayed quiet about is still the user's.
     expect(config.orchestration.local.baseURL).toBe('http://localhost:9999/v1');
-    expect(config.execution.terminal.outputByteLimit).toBe(2048);
     expect(sources.map((source) => source.scope)).toEqual(['project', 'user']);
   });
 
-  it('replaces an array rather than adding to it', () => {
+  it('replaces agent argument arrays rather than combining commands', () => {
     const { cwd, home } = layout({
-      user: { execution: { terminal: { env: ['PATH', 'HOME'] } } },
-      project: { execution: { terminal: { env: ['PATH'] } } },
+      user: { agents: { local: { command: 'agent', args: ['--old'] } } },
+      project: { agents: { local: { command: 'agent', args: ['--new'] } } },
     });
-    const { config } = loadConfig(cwd, home);
-    expect(config.execution.terminal.env).toEqual(['PATH']);
+    expect(loadConfig(cwd, home).config.agents.local?.args).toEqual(['--new']);
   });
 
   it('takes an agent profile whole, and keeps the ones the project did not name', () => {
@@ -210,32 +205,13 @@ describe('layering', () => {
 });
 
 describe('legacy policy resources', () => {
-  it('keeps resource settings while discarding permission rules', () => {
-    const { cwd, home } = layout({ project: { policy: {
-      workspaceOnly: true, fs: { write: 'deny', outside: 'deny' }, escalation: [],
-      exec: { enabled: false, mode: 'deny', allow: [], shellOperators: 'deny',
-        timeoutMs: 4321, outputByteLimit: 2048, env: ['PATH'] },
-      decisionTimeoutMs: 1234,
-    } } });
+  it('ignores removed permission and resource configuration', () => {
+    const { cwd, home } = layout({ project: { policy: { exec: { mode: 'deny', timeoutMs: 1 }, decisionTimeoutMs: 1 } } });
     const { config } = loadConfig(cwd, home);
     expect(config).not.toHaveProperty('policy');
-    expect(config.execution.terminal).toEqual({ timeoutMs: 4321, outputByteLimit: 2048, env: ['PATH'] });
-    expect(config.limits.decisionTimeoutMs).toBe(1234);
+    expect(config).not.toHaveProperty('limits');
+    expect(config.execution).not.toHaveProperty('terminal');
     expect(config.capabilities.terminal).toBe(true);
-  });
-
-  it('prefers current names within a file and preserves project precedence across names', () => {
-    const { cwd, home } = layout({
-      user: { execution: { terminal: { timeoutMs: 1000, env: ['HOME'] } }, limits: { decisionTimeoutMs: 1000 } },
-      project: {
-        policy: { exec: { timeoutMs: 2000, env: ['PATH'] }, decisionTimeoutMs: 2000 },
-        execution: { terminal: { timeoutMs: 3000 } },
-      },
-    });
-    const { config } = loadConfig(cwd, home);
-    expect(config.execution.terminal.timeoutMs).toBe(3000);
-    expect(config.execution.terminal.env).toEqual(['PATH']);
-    expect(config.limits.decisionTimeoutMs).toBe(2000);
   });
 });
 
@@ -243,14 +219,14 @@ describe('legacy llm block', () => {
   it('is read as orchestration.local', () => {
     const { cwd, home } = layout({
       project: {
-        llm: { baseURL: 'http://localhost:9999/v1', model: 'legacy', maxHistoryMessages: 7 },
+        llm: { baseURL: 'http://localhost:9999/v1', model: 'legacy', },
       },
     });
     const { config } = loadConfig(cwd, home);
     expect(config.orchestration.provider).toBe('local');
     expect(config.orchestration.local.baseURL).toBe('http://localhost:9999/v1');
     expect(config.orchestration.local.model).toBe('legacy');
-    expect(config.orchestration.maxHistoryMessages).toBe(7);
+    expect(config.orchestration).not.toHaveProperty('maxHistoryMessages');
   });
 
   it('yields to an orchestration block in the same file', () => {

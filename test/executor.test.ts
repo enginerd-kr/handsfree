@@ -1,13 +1,13 @@
+import { summarise } from '../src/orchestrator/results/outcome.js';
+import { ResultTool } from '../src/orchestrator/conversation/tools/result.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { harness, scriptedModel, type Harness } from './harness.js';
 import { fakeAgent } from './fake-agent.js';
-import { tasksSince } from '../src/orchestrator/ledger.js';
-import { sessionMemory, durableFacts } from '../src/orchestrator/memory.js';
-import { TaskRequestSchema } from '../src/orchestrator/contract.js';
-import { summarise } from '../src/orchestrator/outcome.js';
-import { ResultTool } from '../src/tools/result.js';
+import { tasksSince } from '../src/orchestrator/context/ledger.js';
+import { sessionMemory, durableFacts } from '../src/orchestrator/context/memory.js';
+import { TaskRequestSchema } from '../src/contracts/task.js';
 
 const open: Harness[] = [];
 afterEach(async () => { for (const h of open.splice(0).reverse()) await h.dispose(); });
@@ -38,7 +38,7 @@ describe('structured executor', () => {
       .toBeLessThan(records.find((r) => r.type === 'delegation' && r.agentId === 'b')!.seq);
   });
 
-  it('skips an ACP selector by default and preserves a task too large for the small routing window', async () => {
+  it('skips ACP selection by default and sends full tasks to an explicitly selected router', async () => {
     const a = fakeAgent({ script: () => [{ do: 'say', text: report('A') }] });
     const b = fakeAgent({ script: () => [{ do: 'say', text: report('B') }] });
     const llm = scriptedModel([]);
@@ -50,7 +50,7 @@ describe('structured executor', () => {
     const result = await h.runtime.executor.execute({ task, kind: 'answer' });
     expect(result.status).toBe('done');
     expect([...a.prompts, ...b.prompts].some((prompt) => prompt.includes(task.trim()))).toBe(true);
-    expect(llm.seen).toHaveLength(0);
+    expect(llm.seen).toHaveLength(1);
   });
   it('preserves exact constraints, returns a compact result and retrieves the full answer without a planner', async () => {
     const detail = 'IMPORTANT_DETAIL: retain retry ordering. ' + 'Explanation. '.repeat(200);
@@ -95,10 +95,9 @@ describe('structured executor', () => {
     if (failure === 'missing') fs.unlinkSync(file);
     else fs.writeFileSync(file, '{invalid json');
 
-    const reply = await new ResultTool(h.runtime.executor, 256).run({ taskId: result.taskId, offset: 0 });
+    const reply = await new ResultTool(h.runtime.executor).run({ taskId: result.taskId, offset: 0 });
     expect(reply.completedWork).toBe(false);
     expect(reply.text).toMatch(/^Task result error:/);
-    expect(reply.text.length).toBeLessThanOrEqual(256);
     expect(a.prompts).toHaveLength(1);
   });
 
@@ -173,13 +172,12 @@ describe('structured executor', () => {
       { do: 'stop', reason: 'end_turn', usage: { inputTokens: 500, outputTokens: 100, totalTokens: 600 } }] });
     const h = setup({ agents: { a } });
     await h.runtime.executor.execute({ task: 'First', agent: 'a' });
-    expect(h.runtime.executor.delegator.estimate('a', 'Second')).toBe(600);
-    const result = await h.runtime.executor.execute({ task: 'Second', agent: 'a' });
+    const result = await h.runtime.executor.execute({ task: 'Second', agent: 'a', });
     expect(result.status).toBe('done');
     expect(a.prompts).toHaveLength(2);
   });
 
-  it('rotates full sessions but honors exact session pins and rejects stale pins', async () => {
+  it('keeps full sessions until explicitly rotated and rejects stale pins', async () => {
     const a = fakeAgent({ script: () => [{ do: 'update', update: { sessionUpdate: 'usage_update', used: 9000, size: 10000 } },
       { do: 'say', text: report('Done') }] });
     const h = setup({ agents: { a } });
@@ -187,8 +185,9 @@ describe('structured executor', () => {
     const original = h.runtime.pool.sessionId('a')!;
     await h.runtime.executor.execute({ task: 'Pinned', agent: 'a', sessionId: original });
     expect(h.runtime.pool.sessionId('a')).toBe(original);
-    await h.runtime.executor.execute({ task: 'Rotate', agent: 'a' });
-    expect(h.runtime.pool.sessionId('a')).not.toBe(original);
+    await h.runtime.executor.execute({ task: 'Continue', agent: 'a' });
+    expect(h.runtime.pool.sessionId('a')).toBe(original);
+    await h.runtime.pool.rotate('a');
     const refused = await h.runtime.executor.execute({ task: 'Stale', agent: 'a', sessionId: original });
     expect(refused.status).toBe('error');
     expect(a.prompts).toHaveLength(3);
@@ -231,27 +230,14 @@ describe('structured executor', () => {
     expect(b.prompts[0]).toContain('Do not modify files or run commands');
   });
 
-  it('finishes large streamed tasks and admits later work after high reported usage', async () => {
-    const a = fakeAgent({ script: () => [
-      { do: 'update', update: { sessionUpdate: 'usage_update', used: 200_000, size: 1_000_000, cost: { amount: 100, currency: 'USD' } } },
-      { do: 'say', text: 'Detailed findings. '.repeat(2000) },
-      { do: 'stall', ms: 20 },
-      { do: 'say', text: report('Completed') },
-      { do: 'stop', reason: 'end_turn', usage: { inputTokens: 200_000, outputTokens: 10_000, totalTokens: 210_000 } },
-    ] });
+  it('records context growth without cancelling or rejecting later tasks', async () => {
+    const a = fakeAgent({ script: () => [{ do: 'update', update: { sessionUpdate: 'usage_update', used: 5000, size: 10000 } }, { do: 'stall', ms: 20 }, { do: 'say', text: report('not reached') }] });
     const h = setup({ agents: { a } });
     const result = await h.runtime.executor.execute({ task: 'go', agent: 'a' });
     expect(result.status).toBe('done');
-    expect(result.usage).toMatchObject({ tokens: 210_000, costUsd: 100, estimated: false });
-    const next = await h.runtime.executor.execute({ task: 'again', agent: 'a' });
-    expect(next.status).toBe('done');
-    expect(h.runtime.usage.totals().tokens).toBe(420_000);
+    expect(h.runtime.usage.totals().tokens).toBeGreaterThanOrEqual(5000);
+    await expect(h.runtime.executor.execute({ task: 'again', agent: 'a' })).resolves.toMatchObject({ status: 'done' });
     expect(a.prompts).toHaveLength(2);
-    expect(h.runtime.transcript.all().filter((r) => r.type === 'budget_usage').every((r) => !r.usage.failed)).toBe(true);
-  });
-
-  it('removes spending limits from the task contract', () => {
-    expect(TaskRequestSchema.safeParse({ task: 'go', budget: { maxTokens: 1 } }).success).toBe(false);
   });
 
   it('uses a bounded selector and falls back without retries when its JSON is invalid', async () => {

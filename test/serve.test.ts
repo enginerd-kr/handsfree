@@ -10,7 +10,7 @@ import {
   type SessionNotification,
 } from '@agentclientprotocol/sdk';
 import { ConfigSchema } from '../src/config/schema.js';
-import { createServeApp } from '../src/commands/serve.js';
+import { createServeApp } from '../src/servers/acp.js';
 import { fakeAgent } from './fake-agent.js';
 import { scriptedModel } from './harness.js';
 

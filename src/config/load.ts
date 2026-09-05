@@ -163,14 +163,13 @@ function migrateLegacyLlm(raw: unknown): unknown {
   if (record['orchestration'] !== undefined) return raw;
   if (typeof legacy !== 'object' || legacy === null || Array.isArray(legacy)) return raw;
 
-  const { maxHistoryMessages, ...local } = legacy as Record<string, unknown>;
+  const local = legacy as Record<string, unknown>;
   const { llm: _llm, ...rest } = record;
   return {
     ...rest,
     orchestration: {
       provider: 'local',
       local,
-      ...(maxHistoryMessages !== undefined ? { maxHistoryMessages } : {}),
     },
   };
 }

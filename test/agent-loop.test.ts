@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { harness, scriptedModel, type Harness } from './harness.js';
 import { fakeAgent } from './fake-agent.js';
-import type { ChatClient, ChatMessage } from '../src/brain/client.js';
-import type { LoopReview } from '../src/orchestrator/review.js';
+import type { ChatClient, ChatMessage } from '../src/models/client.js';
+import type { LoopReview } from '../src/contracts/review.js';
 
 const opened: Harness[] = [];
 afterEach(async () => { for (const h of opened.splice(0).reverse()) await h.dispose(); });
@@ -72,7 +72,7 @@ describe('analyze, execute, review loop', () => {
         default: return answer('The replacement review confirmed compatibility.');
       }
     } };
-    const h = harness({ agents: { failed, healthy }, llm, config: { limits: { maxDelegationsPerTurn: 2 } } });
+    const h = harness({ agents: { failed, healthy }, llm });
     opened.push(h);
     await h.runtime.conversation.send('Review the flag. Keep --legacy compatible.');
     expect(failed.prompts).toHaveLength(1);
@@ -80,26 +80,26 @@ describe('analyze, execute, review loop', () => {
     expect(healthy.prompts[0]).toContain('Keep --legacy compatible.');
     expect(seen[2]?.at(-1)?.content).toContain('error');
     expect(seen[3]?.find((m) => m.pinned)?.content).toContain('The first review failed; another worker is needed.');
-    expect(seen.at(-1)?.length).toBeLessThanOrEqual(4);
+    expect(seen.at(-1)?.length).toBe(10);
     expect(replies(h).at(-1)).toBe('The replacement review confirmed compatibility.');
     expect(h.runtime.transcript.all().filter((r) => r.type === 'context' && r.entry.event === 'step')).toHaveLength(5);
   });
 
-  it('can read and analyze results after the worker limit is reached', async () => {
+  it('can delegate again and read earlier results', async () => {
     const worker = fakeAgent({ script: () => [{ do: 'say', text: 'Detailed finding: the legacy flag remains supported.' }] });
     const llm = scriptedModel([
       delegate('claude', 'Review the flag.'),
       delegate('claude', 'Run an extra review.'),
       call('task_result', { taskId: 1 }),
-      answer('The original review says the flag is supported; the extra review was not run.'),
+      answer('Both reviews say the flag is supported.'),
     ]);
-    const h = harness({ agents: { claude: worker }, llm, config: { limits: { maxDelegationsPerTurn: 1 } } });
+    const h = harness({ agents: { claude: worker }, llm });
     opened.push(h);
     await h.runtime.conversation.send('Review the flag and explain it.');
-    expect(worker.prompts).toHaveLength(1);
-    expect(llm.seen[2]?.at(-1)?.content).toContain('was not contacted');
+    expect(worker.prompts).toHaveLength(2);
+    expect(llm.seen[2]?.at(-1)?.content).toContain('Task 2');
     expect(llm.seen[3]?.at(-1)?.content).toContain('Detailed finding:');
-    expect(replies(h).at(-1)).toContain('extra review was not run');
+    expect(replies(h).at(-1)).toContain('Both reviews');
   });
 
   it('recovers when the planner confuses a result record number with its taskId without rerunning the worker', async () => {
@@ -122,7 +122,7 @@ describe('analyze, execute, review loop', () => {
         default: return answer(detail);
       }
     } };
-    const h = harness({ agents: { claude: worker }, llm, config: { limits: { maxDelegationsPerTurn: 1 } } });
+    const h = harness({ agents: { claude: worker }, llm });
     opened.push(h);
     await h.runtime.conversation.send('Summarize README.');
 
@@ -163,17 +163,15 @@ describe('analyze, execute, review loop', () => {
     expect(replies(resumed).at(-1)).toBe('네, 이전 요청을 기억합니다.');
   });
 
-  it('continues planning after a worker reports high token usage', async () => {
-    const worker = fakeAgent({ script: () => [{ do: 'say', text: 'Review complete.' },
-      { do: 'stop', reason: 'end_turn', usage: { inputTokens: 200_000, outputTokens: 10_000, totalTokens: 210_000 } }] });
-    const llm = scriptedModel([delegate('claude', 'Review the code.'), answer('The review is complete.')]);
+  it('reviews workers without a token budget admission check', async () => {
+    const worker = fakeAgent({ script: () => [] });
+    const llm = scriptedModel([delegate('claude', 'Review the code.'), answer('The worker completed the review.')]);
     const h = harness({ agents: { claude: worker }, llm });
     opened.push(h);
     await h.runtime.conversation.send('Review the code.');
     expect(worker.prompts).toHaveLength(1);
     expect(llm.seen).toHaveLength(2);
-    expect(h.runtime.usage.totals().tokens).toBeGreaterThanOrEqual(210_000);
     expect(llm.seen[1]?.at(-1)?.content).toContain('done');
-    expect(replies(h).at(-1)).toBe('The review is complete.');
+    expect(replies(h).at(-1)).toBe('The worker completed the review.');
   });
 });
