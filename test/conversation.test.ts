@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { fakeAgent } from './fake-agent.js';
 import { harness, scriptedModel, type Harness } from './harness.js';
 import type { ChatClient } from '../src/brain/client.js';
-import { describeRecord } from '../src/ui/view-model.js';
+import { buildView, describeRecord } from '../src/ui/view-model.js';
 
 let open: Harness | undefined;
 
@@ -45,7 +45,7 @@ describe('Conversation', () => {
     ]));
     const llm = scriptedModel([
       JSON.stringify({ action: 'call', tool: 'agent', input: { agent: Object.keys(agents), kind: 'answer', prompt: '하이?' } }),
-      answer('Okay.'),
+      answer('세 에이전트 모두 응답했습니다.'),
     ]);
     const h = harness({ agents, llm });
     open = h;
@@ -55,18 +55,26 @@ describe('Conversation', () => {
       expect(agent.prompts).toHaveLength(1);
       expect(agent.prompts[0]).toContain('하이?');
       expect(agent.prompts[0]).toContain('Do not create, modify or delete');
-      expect(assistantText(h).at(-1)).toContain(id);
     }
     expect(h.runtime.transcript.all().filter((r) => r.type === 'task_result')).toHaveLength(3);
+    expect(llm.seen).toHaveLength(2);
+    for (const id of Object.keys(agents)) {
+      expect(llm.seen[1]?.at(-1)?.content).toContain(id);
+    }
+    expect(assistantText(h).at(-1)).toBe('세 에이전트 모두 응답했습니다.');
+    expect(buildView(h.runtime.transcript.all(), h.workspaceDir).at(-1)).toMatchObject({
+      role: 'handsfree', text: '세 에이전트 모두 응답했습니다.',
+    });
   });
 
   it('continues a selected group after an adapter fails', async () => {
     const failed = fakeAgent({ script: () => [{ do: 'fail', message: 'adapter failed' }] });
     const healthy = fakeAgent({ script: () => [{ do: 'say', text: 'Hello' }] });
-    const h = harness({ agents: { failed, healthy }, llm: scriptedModel([
+    const llm = scriptedModel([
       JSON.stringify({ action: 'call', tool: 'agent', input: { agent: ['failed', 'healthy'], kind: 'answer', prompt: 'Hello?' } }),
-      answer('Done'),
-    ]) });
+      answer('healthy responded, but failed ended with an error.'),
+    ]);
+    const h = harness({ agents: { failed, healthy }, llm });
     open = h;
     await h.runtime.conversation.send('둘 다 인사해 줘');
     expect(healthy.prompts).toHaveLength(1);
@@ -76,6 +84,54 @@ describe('Conversation', () => {
     expect(results).toHaveLength(2);
     expect(results[0]?.result.status).not.toBe('done');
     expect(results[1]?.result.status).toBe('done');
+    expect(llm.seen[1]?.at(-1)?.content).toContain('Task 1 (failed): error');
+    expect(llm.seen[1]?.at(-1)?.content).toContain('Task 2 (healthy): done');
+    expect(buildView(h.runtime.transcript.all(), h.workspaceDir).at(-1)).toMatchObject({
+      role: 'handsfree', text: 'healthy responded, but failed ended with an error.',
+    });
+  });
+
+  it('continues planning after a group and displays the final streamed answer', async () => {
+    const claude = fakeAgent({ script: () => [{ do: 'say', text: 'Hello from claude' }] });
+    const gemini = fakeAgent({ script: () => [{ do: 'say', text: 'Hello from gemini' }] });
+    const summary = 'Both agents replied, and claude answered the follow-up.';
+    const llm = streamingModel([
+      JSON.stringify({ action: 'call', tool: 'agent', input: { agent: ['claude', 'gemini'], kind: 'answer', prompt: 'Hi?' } }),
+      JSON.stringify({ action: 'call', tool: 'agent', input: { agent: 'claude', kind: 'answer', prompt: 'How are you?' } }),
+      answer(summary),
+    ]);
+    const h = harness({ agents: { claude, gemini }, llm });
+    open = h;
+
+    await h.runtime.conversation.send('Say hi to both, then ask claude how it is.');
+
+    expect(claude.prompts).toHaveLength(2);
+    expect(claude.prompts[1]).toContain('How are you?');
+    expect(gemini.prompts).toHaveLength(1);
+    expect(assistantText(h).at(-1)).toBe(summary);
+    const deltas = h.runtime.transcript.all().filter((r) => r.type === 'assistant_delta');
+    expect(deltas.map((r) => r.text).join('')).toBe(summary);
+    expect(buildView(h.runtime.transcript.all(), h.workspaceDir).filter((r) => r.text === summary)).toHaveLength(1);
+  });
+
+  it('narrates group results when the planning step limit is reached', async () => {
+    const agents = Object.fromEntries(['claude', 'gemini'].map((id) => [id,
+      fakeAgent({ script: () => [{ do: 'say', text: 'Hi' }] }),
+    ]));
+    const summary = 'claude and gemini both replied.';
+    const llm = scriptedModel([
+      JSON.stringify({ action: 'call', tool: 'agent', input: { agent: Object.keys(agents), kind: 'answer', prompt: 'Hi?' } }),
+      summary,
+    ]);
+    const h = harness({ agents, llm, config: { limits: { maxPlanSteps: 1 } } });
+    open = h;
+
+    await h.runtime.conversation.send('Say hi to both agents.');
+
+    expect(llm.seen).toHaveLength(2);
+    expect(buildView(h.runtime.transcript.all(), h.workspaceDir).at(-1)).toMatchObject({
+      role: 'handsfree', text: summary,
+    });
   });
 
   it('charges grouped recipients against the remaining turn limit and names omissions', async () => {
@@ -427,17 +483,20 @@ describe('Conversation', () => {
     expect(assistantText(h)).toEqual([]);
   });
 
-  it('ends a cancelled turn silently, right where it stood', async () => {
+  it.each([false, true])('ends a cancelled turn silently (group: %s)', async (group) => {
     const agent = fakeAgent({ script: () => [{ do: 'stall', ms: 10_000 }] });
     let calls = 0;
     const llm: ChatClient = {
       async chat() {
         calls++;
-        if (calls === 1) return delegate('Sleep forever');
+        if (calls === 1) return group
+          ? JSON.stringify({ action: 'call', tool: 'agent', input: { agent: ['claude', 'gemini'], kind: 'answer', prompt: 'Sleep forever' } })
+          : delegate('Sleep forever');
         throw new Error('a cancelled turn must not ask the model anything');
       },
     };
-    const h = harness({ agents: { claude: agent }, llm });
+    const gemini = fakeAgent({ script: () => [{ do: 'say', text: 'Hi' }] });
+    const h = harness({ agents: { claude: agent, gemini }, llm });
     open = h;
 
     const turn = h.runtime.conversation.send('sleep');
@@ -452,6 +511,7 @@ describe('Conversation', () => {
     expect(calls).toBe(1);
     expect(assistantText(h)).toEqual([]);
     expect(h.runtime.transcript.all().map((record) => record.type)).toContain('stop');
+    expect(gemini.prompts).toHaveLength(0);
   });
 
   it('routes a leading @mention straight to its agent, planner unconsulted', async () => {
@@ -841,7 +901,43 @@ describe('Conversation', () => {
     expect(line.endsWith('\n---\n응')).toBe(true);
   });
 
-  it('hands the planner a report, not the reply, and says the user has seen the rest', async () => {
+  it('preserves a group conversation and retrieves omitted details for follow-up questions', async () => {
+    const detail = 'claude mentioned uncommitted changes in conversation.ts and conversation.test.ts.';
+    const agents = {
+      claude: fakeAgent({ script: () => [{ do: 'say', text: `Hello. ${detail}\n\nREPORT\noutcome: done\nsummary: Greeted the user.` }] }),
+      gemini: fakeAgent({ script: () => [{ do: 'say', text: 'Hello from gemini' }] }),
+      codex: fakeAgent({ script: () => [{ do: 'say', text: 'Hello from codex' }] }),
+    };
+    const llm = scriptedModel([
+      JSON.stringify({ action: 'call', tool: 'agent', input: { agent: Object.keys(agents), kind: 'answer', prompt: '안녕?' } }),
+      answer('세 에이전트 모두 응답했습니다.'),
+      JSON.stringify({ action: 'call', tool: 'task_result', input: { taskId: 1 } }),
+      answer(detail),
+      answer('Claude만 수정 중인 파일을 언급했고, 나머지 둘은 인사만 했습니다.'),
+    ]);
+    const h = harness({ agents, llm });
+    open = h;
+
+    await h.runtime.conversation.send('모든 에이전트에게 "안녕?"이라고 물어봐');
+    await h.runtime.conversation.send('특이사항은?');
+    await h.runtime.conversation.send('특이 사항이 뭐냐고.');
+
+    const followup = llm.seen[2] ?? [];
+    expect(followup[1]?.content).toBe('모든 에이전트에게 "안녕?"이라고 물어봐');
+    expect(followup[2]?.content).toContain('세 에이전트 모두 응답했습니다.');
+    expect(followup.at(-1)?.content).toContain('Task 1 (claude): done');
+    expect(followup.at(-1)?.content.endsWith('특이사항은?')).toBe(true);
+    // The report omitted this detail, but reading the saved result recovers it.
+    expect(JSON.stringify(followup)).not.toContain(detail);
+    expect(llm.seen[3]?.at(-1)?.content).toContain(detail);
+    const correction = llm.seen[4] ?? [];
+    expect(correction.some((message) => message.role === 'user' && message.content === '특이사항은?')).toBe(true);
+    expect(correction.some((message) => message.role === 'assistant' && message.content.includes(detail))).toBe(true);
+    for (const agent of Object.values(agents)) expect(agent.prompts).toHaveLength(1);
+    expect(assistantText(h).at(-1)).toBe('Claude만 수정 중인 파일을 언급했고, 나머지 둘은 인사만 했습니다.');
+  });
+
+  it('hands the planner a report with a way to retrieve the rest', async () => {
     const claude = fakeAgent({
       script: () => [
         {
@@ -864,7 +960,7 @@ describe('Conversation', () => {
     expect(result.startsWith('TOOL RESULT (agent)')).toBe(true);
     expect(result).toContain('summary: Added parse() with a null return for empty input.');
     expect(result).toContain('open: the CLI still passes undefined sometimes');
-    expect(result).toContain('already seen claude');
+    expect(result).toContain('use task_result for details');
     // What is for the next agent stays out of the planner's way, and so does the prose.
     expect(result).not.toContain('decided');
     expect(result).not.toContain('pnpm test');
@@ -938,15 +1034,15 @@ describe('Conversation', () => {
   it('drops the oldest turns first when the planner is over budget', async () => {
     const claude = fakeAgent({ script: () => [] });
     const llm = scriptedModel([answer('one'), answer('two'), answer('three'), answer('four')]);
-    // Small enough that the system prompt and two turns are all that fit.
+    // Room for the instructions and current request, but not all four turns.
     const h = harness({
       agents: { claude },
       llm,
-      config: { orchestration: { contextBudgetTokens: 1_400, maxOutputTokens: 128 } },
+      config: { orchestration: { contextBudgetTokens: 2_000, maxOutputTokens: 128 } },
     });
     open = h;
 
-    const line = 'a line of conversation that takes up room '.repeat(20);
+    const line = 'a line of conversation that takes up room '.repeat(40);
     await h.runtime.conversation.send(`${line}1`);
     await h.runtime.conversation.send(`${line}2`);
     await h.runtime.conversation.send(`${line}3`);

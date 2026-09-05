@@ -308,11 +308,10 @@ export const OrchestrationSchema = z.object({
    */
   contextBudgetTokens: z.number().int().positive().optional(),
   /**
-   * Whether the planner is handed an agent's whole reply after a task, the
-   * way it used to be, so it can repeat it to the user. Off, it gets the
-   * report's summary and a note that the user has already seen the reply —
-   * which they have, on screen, as it streamed. On, for a client that shows
-   * only handsfree's own replies.
+   * Include the agent's reply in the immediate tool result when it fits the
+   * result size limit. Otherwise the planner receives a report and can use
+   * task_result to retrieve details for follow-up questions. This controls
+   * context delivery, not whether the planner may discuss agent findings.
    */
   relayAnswers: z.boolean().default(false),
   /** API mode also accepts remote OpenAI-compatible small models via `local`. */

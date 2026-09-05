@@ -250,10 +250,9 @@ export class Conversation {
     const notes: string[] = [];
     let answered = false;
     /**
-     * Whether the turn closes on the ledger as it stands, with no narrator.
-     * A line that named its agent ran one task the user watched to the end;
-     * a summary of that would only say what the ledger already says, and
-     * costs a planner round trip after the agent has already finished.
+     * Only a direct @mention closes on the ledger: the named agent owns
+     * that reply. Planner-routed tasks return to the planner for follow-up
+     * work or a final answer, including calls to a group of agents.
      */
     let ledgerOnly = false;
     let calls = 0;
@@ -341,9 +340,8 @@ export class Conversation {
 
         if (planned.step.action === 'answer') {
           history.push({ role: 'assistant', content: JSON.stringify(planned.step) });
-          const message = ledgerOnly ? renderLedger({ userMessage: prompt, outcomes, notes, workspaceDir: workspace.dir }) : planned.step.message;
-          if (ledgerOnly) stream.retract();
-          stream.end(message, ledgerOnly);
+          const message = planned.step.message;
+          stream.end(message);
           answered = true;
           closing = JSON.stringify({ action: 'answer', message });
           break;
@@ -360,10 +358,7 @@ export class Conversation {
         const result = await call.run({ signal: turn.signal, remainingCalls: config.limits.maxDelegationsPerTurn - calls });
         calls += result.callsUsed ?? 1;
         if (result.outcome) outcomes.push(result.outcome);
-        if (result.outcomes) {
-          outcomes.push(...result.outcomes);
-          ledgerOnly = true;
-        }
+        if (result.outcomes) outcomes.push(...result.outcomes);
         if (result.note) notes.push(result.note);
         history.push({ role: 'user', content: this.relay(call.name, result.text) });
 

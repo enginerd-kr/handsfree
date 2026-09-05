@@ -80,7 +80,7 @@ Group example: {"action":"call","tool":"agent","input":{"agent":${JSON.stringify
 answer: reply only; inspect: read files and report, no commands or edits; change: implement and verify.
 Preserve the user's exact requirements and file names. Never invent a file for a question.
 Prefer an agent with relevant unchanged context; sessions are reused and receive relevant handoffs.
-Agent replies are delivered to the user separately; return only a short status, without repeating them.
+Agent replies are visible to the user. Use their findings to answer the current question, including explanation or comparison when requested. Summarize relevant details without copying unrelated material.
 Permission refusals are final. Report blockers; an ended turn is not proof of success.
 Example: {"action":"call","tool":"agent","input":{"agent":"${first}","kind":"change","prompt":"Create notes.txt containing exactly hello world."}}`;
   }
@@ -151,7 +151,7 @@ Example: {"action":"call","tool":"agent","input":{"agent":"${first}","kind":"cha
     const relayMessage = config.orchestration.relayAnswers;
     const lines = [renderOutcome(outcome, workspace.dir, { relayMessage, maxChars: Math.max(1, maxChars - 120) })];
     if (!relayMessage && outcome.message) {
-      lines.push(`(The user has already seen ${outcome.agentId}'s full reply on screen; do not repeat it.)`);
+      lines.push(`(${outcome.agentId}'s full reply is visible to the user; use task_result for details missing from this report.)`);
     }
     const result = lines.join('\n');
     transcript.append({

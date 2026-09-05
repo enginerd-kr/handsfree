@@ -110,7 +110,7 @@ describe('AgentTool', () => {
     expect(result.halt).toBeFalsy();
     expect(result.text).toContain('Task 1 (claude): done');
     expect(result.text).toContain('summary: Made it so.');
-    expect(result.text).toContain('already seen');
+    expect(result.text).toContain('use task_result for details');
     const usage = transcript.all().find((record) => record.type === 'usage');
     expect(usage).toMatchObject({ purpose: 'task', taskId: 1, promptChars: 40, relayedChars: result.text.length });
   });
