@@ -86,11 +86,8 @@ export function parseArgs(argv: string[]): Args {
 
   if (args.command === 'tui' && rest.length > 0) {
     const [first, ...tail] = rest;
-    if (first === 'run') {
-      args.command = 'run';
-      args.prompt = tail.join(' ');
-    } else if (first === 'task') {
-      args.command = 'task';
+    if (first === 'run' || first === 'task') {
+      args.command = first;
       args.prompt = tail.join(' ');
     } else if (first === 'doctor') {
       args.command = 'doctor';

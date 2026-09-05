@@ -1,13 +1,12 @@
 import type { AgentProfile, Config } from '../config/schema.js';
 import type { HostContext } from './capabilities/context.js';
-import type { ConnectionTarget } from './connection.js';
+import type { AgentConnection, ConnectionTarget } from './connection.js';
 import type { PolicyEngine } from '../policy/engine.js';
 import type { Jail } from '../policy/jail.js';
 import type { Transcript } from '../workspace/transcript.js';
 import type { Workspace } from '../workspace/workspace.js';
-import { AgentConnection } from './connection.js';
 import { mediationProblem } from './mediation.js';
-import { fallbackArgs, spawnTarget } from './launch.js';
+import { openAgent } from './open.js';
 import type { ModelChoice } from './models.js';
 import type { HostSession } from './session.js';
 
@@ -55,7 +54,6 @@ export class AgentPool {
   private readonly launches = new Map<string, AbortController>();
   private readonly opening = new Map<string, Promise<AgentConnection>>();
   private readonly starting = new Map<string, Promise<HostSession>>();
-  private readonly openingTargets = new Set<ConnectionTarget>();
   private readonly discarding = new Set<Promise<void>>();
   private closed = false;
   private closing: Promise<void> | undefined;
@@ -195,7 +193,6 @@ export class AgentPool {
     // flight, then drain the callers before the runtime ends its transcript.
     const pending = Promise.allSettled([...this.opening.values(), ...this.starting.values()]);
     const cleanup = await Promise.allSettled([
-      ...[...this.openingTargets].map((target) => target.close()),
       ...[...this.connections.values()].map((connection) => connection.close()),
       ...this.discarding,
     ]);
@@ -224,43 +221,17 @@ export class AgentPool {
       transcript: this.options.transcript,
     };
 
-    const attempts = [profile.args, fallbackArgs(profile.args)].filter(
-      (args): args is string[] => args !== undefined,
-    );
-
     const launch = new AbortController();
     this.launches.set(agentId, launch);
     try {
-      let lastError: Error | undefined;
-      for (const args of attempts) {
+      const connection = await openAgent({ agentId, profile, host,
+        signal: launch.signal, createTarget: this.options.createTarget });
+      if (this.closed) {
+        await connection.close();
         this.assertOpen();
-        launch.signal.throwIfAborted();
-        const profileForAttempt = { ...profile, args };
-        const target = this.options.createTarget
-          ? this.options.createTarget(agentId, profileForAttempt)
-          : spawnTarget(profileForAttempt, {
-              cwd: this.options.workspace.dir,
-              env: this.options.config.env,
-              onStderr: (text) =>
-                this.options.transcript.append({ type: 'agent_stderr', agentId, text }),
-            });
-        try {
-          this.openingTargets.add(target);
-          const connection = await AgentConnection.open({ agentId, host, target, signal: launch.signal });
-          if (this.closed) {
-            await connection.close();
-            this.assertOpen();
-          }
-          this.connections.set(agentId, connection);
-          return connection;
-        } catch (err) {
-          lastError = err as Error;
-          await target.close();
-        } finally {
-          this.openingTargets.delete(target);
-        }
       }
-      throw lastError ?? new Error(`Could not start ${agentId}.`);
+      this.connections.set(agentId, connection);
+      return connection;
     } finally { this.launches.delete(agentId); }
   }
 }

@@ -1,8 +1,8 @@
 import type { SessionUpdate } from '@agentclientprotocol/sdk';
 import type { AgentProfile } from '../config/schema.js';
 import type { HostContext } from '../host/capabilities/context.js';
-import { AgentConnection, type ConnectionTarget } from '../host/connection.js';
-import { fallbackArgs, spawnTarget } from '../host/launch.js';
+import type { AgentConnection, ConnectionTarget } from '../host/connection.js';
+import { openAgent } from '../host/open.js';
 import { mediationProblem } from '../host/mediation.js';
 import { SessionUnresponsiveError } from '../host/session.js';
 import type { ChatClient, ChatMessage, ChatOptions, JsonSchemaSpec } from './client.js';
@@ -40,16 +40,17 @@ export interface AcpModelOptions {
 export class AcpModel implements ChatClient {
   private lifetime = new AbortController();
   private connecting: Promise<AgentConnection> | undefined;
-  private openingTarget: ConnectionTarget | undefined;
   private readonly discarding = new Set<Promise<void>>();
   private closed = false;
   private closing: Promise<void> | undefined;
+  private resetting: Promise<void> | undefined;
 
   constructor(private readonly options: AcpModelOptions) {}
 
   async chat(messages: ChatMessage[], options: ChatOptions = {}): Promise<string> {
+    await this.resetting;
     options.signal?.throwIfAborted();
-    const cancel = () => { void this.close(); };
+    const cancel = () => { void this.reset(); };
     options.signal?.addEventListener('abort', cancel, { once: true });
     try { return await this.reply(messages, options); }
     finally { options.signal?.removeEventListener('abort', cancel); }
@@ -115,6 +116,11 @@ export class AcpModel implements ChatClient {
     return reply;
   }
 
+  private reset(): Promise<void> {
+    this.lifetime.abort();
+    return this.resetting ??= this.closeConnection().finally(() => { this.resetting = undefined; });
+  }
+
   close(): Promise<void> {
     this.closed = true;
     this.lifetime.abort();
@@ -124,7 +130,6 @@ export class AcpModel implements ChatClient {
   private async closeConnection(): Promise<void> {
     const pending = this.connecting;
     const results = await Promise.allSettled([
-      this.openingTarget?.close(),
       pending?.then((connection) => connection.close(), () => {}),
       ...this.discarding,
     ]);
@@ -137,44 +142,13 @@ export class AcpModel implements ChatClient {
     this.assertOpen();
     if (this.connecting) return this.connecting;
     if (this.lifetime.signal.aborted) this.lifetime = new AbortController();
-    const attempt = this.open().catch((err) => {
+    const attempt = openAgent({ ...this.options, signal: this.lifetime.signal }).catch((err) => {
       // A failed launch must not poison every later turn.
       if (this.connecting === attempt) this.connecting = undefined;
       throw err;
     });
     this.connecting = attempt;
     return attempt;
-  }
-
-  private async open(): Promise<AgentConnection> {
-    const { profile, host } = this.options;
-    const attempts = [profile.args, fallbackArgs(profile.args)].filter(
-      (args): args is string[] => args !== undefined,
-    );
-
-    let lastError: Error | undefined;
-    for (const args of attempts) {
-      this.lifetime.signal.throwIfAborted();
-      const profileForAttempt = { ...profile, args };
-      const target = this.options.createTarget
-        ? this.options.createTarget(this.options.agentId, profileForAttempt)
-        : spawnTarget(profileForAttempt, {
-            cwd: host.workspace.dir,
-            env: host.config.env,
-            onStderr: (text) =>
-              host.transcript.append({ type: 'agent_stderr', agentId: host.agentId, text }),
-          });
-      this.openingTarget = target;
-      try {
-        return await AgentConnection.open({ agentId: host.agentId, host, target, signal: this.lifetime.signal });
-      } catch (err) {
-        lastError = err as Error;
-        await target.close();
-      } finally {
-        if (this.openingTarget === target) this.openingTarget = undefined;
-      }
-    }
-    throw lastError ?? new Error(`Could not start ${this.options.agentId} for orchestration.`);
   }
 
   private async discard(connection: AgentConnection): Promise<void> {

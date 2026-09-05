@@ -33,17 +33,14 @@ export async function run(
   options: RunOptions,
   write: (line: string) => void,
 ): Promise<number> {
-  const seat = stdinSeat();
   const runtime = createRuntime({
     config,
-    ...(seat === undefined ? {} : { escalator: seat }),
-    ...(options.runId === undefined ? {} : { runId: options.runId }),
-    ...(options.attachTo === undefined ? {} : { attachTo: options.attachTo }),
-    ...(options.configSources === undefined ? {} : { configSources: options.configSources }),
+    escalator: stdinSeat(),
+    runId: options.runId,
+    attachTo: options.attachTo,
+    configSources: options.configSources,
+    permissionMode: options.permissionMode,
   });
-  // Set before the turn, so no request can be judged under the mode it did
-  // not start in.
-  if (options.permissionMode) runtime.policy.setMode(options.permissionMode);
 
   const onRecord = (record: TranscriptRecord) => {
     if (options.json) {

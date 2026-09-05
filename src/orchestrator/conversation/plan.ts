@@ -93,7 +93,6 @@ export async function nextStep(
   signal: AbortSignal,
   stream?: AnswerStream,
 ): Promise<ParsedStep> {
-  let last: ParsedStep = { ok: false, error: 'no reply' };
   const repairs: ChatMessage[] = [];
   const schema = toolbox.jsonSchema();
   for (;;) {
@@ -114,10 +113,10 @@ export async function nextStep(
       stream?.retract();
       throw err;
     }
-    last = toolbox.parse(reply);
-    if (last.ok) return last;
+    const parsed = toolbox.parse(reply);
+    if (parsed.ok) return parsed;
     repairs.push({ role: 'assistant', content: reply }, { role: 'user',
-      content: `That reply was unusable: ${last.error} Reply with ONLY one JSON object matching the schema.` });
+      content: `That reply was unusable: ${parsed.error} Reply with ONLY one JSON object matching the schema.` });
     // Whatever streamed came from a reply that could not be used.
     stream?.retract();
   }

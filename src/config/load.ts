@@ -156,15 +156,10 @@ function migrateLegacyPolicy(raw: Record<string, unknown>): Record<string, unkno
  * Applied per layer, before merging, so an old user file and a new project file
  * meet each other already speaking the same shape.
  */
-function migrateLegacyLlm(raw: unknown): unknown {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return raw;
-  const record = raw as Record<string, unknown>;
-  const legacy = record['llm'];
-  if (record['orchestration'] !== undefined) return raw;
-  if (typeof legacy !== 'object' || legacy === null || Array.isArray(legacy)) return raw;
-
-  const local = legacy as Record<string, unknown>;
-  const { llm: _llm, ...rest } = record;
+function migrateLegacyLlm(raw: Record<string, unknown>): Record<string, unknown> {
+  const local = raw['llm'];
+  if (raw['orchestration'] !== undefined || !isRecord(local)) return raw;
+  const { llm: _llm, ...rest } = raw;
   return {
     ...rest,
     orchestration: {
@@ -176,10 +171,6 @@ function migrateLegacyLlm(raw: unknown): unknown {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return isRecord(value) ? value : {};
 }
 
 function formatIssues(error: { issues: { path: PropertyKey[]; message: string }[] }): string {

@@ -1,10 +1,11 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import type { CallToolResult, PrimitiveSchemaDefinition } from '@modelcontextprotocol/sdk/types.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { TaskRequestSchema, TaskResultSchema, BatchRequestSchema } from '../contracts/task.js';
 import { createRuntime, type Runtime, type RuntimeOptions } from '../runtime.js';
 import { VERSION } from '../version.js';
+import { formAnswer, formSchema } from './elicitation.js';
 
 function failure(error: unknown): CallToolResult {
   return { isError: true, content: [{ type: 'text', text: error instanceof Error ? error.message : String(error) }] };
@@ -65,26 +66,9 @@ export function createMcpServer(runtime: Runtime): McpServer {
     },
     async input(question) {
       if (!server.server.getClientCapabilities()?.elicitation) return { action: 'cancel' };
-      const properties: Record<string, PrimitiveSchemaDefinition> = {};
-      for (const field of question.fields) {
-        const base = { title: field.label, ...(field.description ? { description: field.description } : {}) };
-        switch (field.kind) {
-          case 'boolean': properties[field.key] = { type: 'boolean', ...base }; break;
-          case 'number': case 'integer': properties[field.key] = { type: field.kind, ...base }; break;
-          case 'enum': properties[field.key] = { type: 'string', ...base, enum: (field.options ?? []).map((option) => option.value) }; break;
-          case 'multiselect': properties[field.key] = { type: 'array', ...base, items: { type: 'string', enum: (field.options ?? []).map((option) => option.value) } }; break;
-          default: properties[field.key] = { type: 'string', ...base };
-        }
-      }
       const answer = await server.server.elicitInput({ mode: 'form', message: question.summary,
-        requestedSchema: { type: 'object', properties, required: question.fields.filter((field) => field.required).map((field) => field.key) } }, { signal: question.signal });
-      if (answer.action !== 'accept') return { action: answer.action === 'decline' ? 'decline' : 'cancel' };
-      const content: Record<string, string | number | boolean | string[]> = {};
-      for (const field of question.fields) {
-        const value = answer.content?.[field.key];
-        if (value !== undefined) content[field.key] = value;
-      }
-      return { action: 'accept', content };
+        requestedSchema: formSchema(question.fields) }, { signal: question.signal });
+      return formAnswer(question.fields, answer);
     },
   });
   return server;

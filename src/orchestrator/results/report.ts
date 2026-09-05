@@ -40,13 +40,7 @@ const FENCE = /^\s*```/;
 
 export function parseReport(message: string): Report {
   const lines = message.split(/\r?\n/);
-  let start = -1;
-  for (let at = lines.length - 1; at >= 0; at--) {
-    if (HEADING.test(lines[at]!)) {
-      start = at;
-      break;
-    }
-  }
+  const start = lines.findLastIndex((line) => HEADING.test(line));
   if (start === -1) return fallback(message);
 
   const fields = new Map<Key, string[]>();
@@ -97,20 +91,17 @@ export function parseReport(message: string): Report {
  */
 export function stripReport(message: string): string {
   const lines = message.split(/\r?\n/);
-  for (let at = lines.length - 1; at >= 0; at--) {
-    if (!HEADING.test(lines[at]!)) continue;
-    // A fence opened just above the heading closes below it; it goes too.
-    const from = at > 0 && FENCE.test(lines[at - 1]!) ? at - 1 : at;
-    return lines.slice(0, from).join('\n').trimEnd();
-  }
-  return message;
+  const start = lines.findLastIndex((line) => HEADING.test(line));
+  if (start === -1) return message;
+  // A fence opened just above the heading closes below it; it goes too.
+  const from = start > 0 && FENCE.test(lines[start - 1]!) ? start - 1 : start;
+  return lines.slice(0, from).join('\n').trimEnd();
 }
 
 function fallback(message: string): Report {
-  const flat = message.replace(/\s+/g, ' ').trim();
   return {
     outcome: undefined,
-    summary: flat,
+    summary: oneLine(message),
     changed: [],
     decided: [],
     open: [],

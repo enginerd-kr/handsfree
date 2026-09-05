@@ -10,14 +10,14 @@ src/
 ├── runtime.ts                      Service construction and run lifecycle
 ├── debug.ts, version.ts            Diagnostics and application version
 ├── commands/                       CLI commands: run, task, doctor and TUI
-├── servers/                        ACP and MCP server adapters
+├── servers/                        ACP/MCP adapters and shared elicitation forms
 ├── config/                         Configuration schemas and layered loading
 ├── contracts/                      Shared task, review, context and usage shapes
 ├── policy/                         Permissions, human input and path boundaries
 ├── workspace/                      Run directories, transcript and session storage
 ├── host/
 │   ├── connection.ts, session.ts   ACP worker connections and sessions
-│   ├── pool.ts, launch.ts          Worker reuse and process lifecycle
+│   ├── pool.ts, open.ts, launch.ts Worker reuse, connection retries and processes
 │   ├── models.ts, mediation.ts     Model rosters and adapter capabilities
 │   └── capabilities/              Host filesystem, terminal and input handlers
 ├── models/                         API/ACP chat clients and streamed JSON parsing

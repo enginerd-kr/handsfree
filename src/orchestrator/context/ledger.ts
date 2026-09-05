@@ -123,17 +123,6 @@ export interface AgentRecord {
 }
 
 /**
- * The session an agent is on now, as the record has it: the one its most
- * recent task ran in. What an earlier session read is not what this one holds.
- */
-function currentSession(tasks: readonly LedgerTask[], agentId: string): string | undefined {
-  for (let at = tasks.length - 1; at >= 0; at--) {
-    if (tasks[at]!.outcome.agentId === agentId) return tasks[at]!.sessionId;
-  }
-  return undefined;
-}
-
-/**
  * The run so far, per agent. This is what makes a role actionable at the moment
  * of choosing: the role says what an agent is for, and this says what it
  * already has loaded — and an agent that has the files a task concerns is the
@@ -141,12 +130,12 @@ function currentSession(tasks: readonly LedgerTask[], agentId: string): string |
  */
 export function agentRecords(tasks: readonly LedgerTask[]): Map<string, AgentRecord> {
   const records = new Map<string, AgentRecord>();
-  const live = new Map<string, string | undefined>();
+  // Later tasks overwrite earlier sessions for the same agent.
+  const live = new Map(tasks.map(({ outcome, sessionId }) => [outcome.agentId, sessionId]));
   for (const { outcome, sessionId } of tasks) {
     const record = records.get(outcome.agentId) ?? { tasks: 0, files: [], trouble: false };
     record.tasks++;
     if (outcome.status !== 'done') record.trouble = true;
-    if (!live.has(outcome.agentId)) live.set(outcome.agentId, currentSession(tasks, outcome.agentId));
     // Only what the session it is on has seen. A session that had to be
     // replaced took its context with it, and a roster line claiming the new
     // one already has those files open would send work to an agent that would

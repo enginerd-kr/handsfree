@@ -8,7 +8,6 @@ import {
   type AgentContext,
   type ClientCapabilities,
   type CreateElicitationResponse,
-  type ElicitationPropertySchema,
   type RequestPermissionResponse,
   RequestError,
 } from '@agentclientprotocol/sdk';
@@ -16,7 +15,8 @@ import type { Config } from '../config/schema.js';
 import type { ConfigLocation } from '../config/load.js';
 import { createRuntime, type Runtime, type RuntimeOptions } from '../runtime.js';
 import { MODE_DESCRIPTION, MODE_LABEL, MODES, parsePermissionMode } from '../policy/mode.js';
-import type { Escalator, InputField, InputValue } from '../policy/types.js';
+import type { Escalator, InputValue } from '../policy/types.js';
+import { formAnswer, formSchema } from './elicitation.js';
 import { agentText, type TranscriptRecord } from '../workspace/transcript.js';
 import { stripReport } from '../orchestrator/results/report.js';
 import { VERSION } from '../version.js';
@@ -210,67 +210,22 @@ function upstreamEscalator(
   // question it will drop on the floor.
   if (upstream.elicitation?.form) {
     escalator.input = async (question) => {
-      const properties: Record<string, ElicitationPropertySchema> = {};
-      for (const field of question.fields) properties[field.key] = propertyOf(field);
-
       const response = await client.request<CreateElicitationResponse>(
         methods.client.elicitation.create,
         {
           sessionId,
           mode: 'form',
           message: `${question.context.agentId}: ${question.summary}`,
-          requestedSchema: {
-            type: 'object',
-            properties,
-            required: question.fields.filter((field) => field.required).map((field) => field.key),
-          },
+          requestedSchema: formSchema(question.fields),
         },
       );
 
-      if (response.action !== 'accept') {
-        return { action: response.action === 'decline' ? 'decline' : 'cancel' };
-      }
-      // The editor answers in the schema's own terms; anything it invented is
-      // dropped, because the agent is only expecting what it asked for.
-      // `action: "accept"` narrows to the accepting variant, but the union
-      // carries an open-ended one too, so the content arrives untyped.
-      const answered =
-        (response as { content?: Record<string, InputValue> | null }).content ?? {};
-      const content: Record<string, InputValue> = {};
-      for (const field of question.fields) {
-        const value = answered[field.key];
-        if (value !== undefined) content[field.key] = value;
-      }
-      return { action: 'accept', content };
+      // ACP also carries an open-ended response variant with untyped content.
+      return formAnswer(question.fields, response as { action: string; content?: Record<string, InputValue> | null });
     };
   }
 
   return escalator;
-}
-
-/** One field, back in the JSON Schema the editor is going to render. */
-function propertyOf(field: InputField): ElicitationPropertySchema {
-  const base = {
-    title: field.label,
-    ...(field.description ? { description: field.description } : {}),
-  };
-  switch (field.kind) {
-    case 'boolean':
-      return { type: 'boolean', ...base };
-    case 'number':
-    case 'integer':
-      return { type: field.kind, ...base };
-    case 'enum':
-      return { type: 'string', ...base, enum: (field.options ?? []).map((option) => option.value) };
-    case 'multiselect':
-      return {
-        type: 'array',
-        ...base,
-        items: { type: 'string', enum: (field.options ?? []).map((option) => option.value) },
-      };
-    default:
-      return { type: 'string', ...base };
-  }
 }
 
 /** Our transcript, re-expressed in the vocabulary the editor already renders. */

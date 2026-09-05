@@ -1,16 +1,17 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import type { CreateElicitationResponse } from '@agentclientprotocol/sdk';
 import { createMcpServer } from '../src/servers/mcp.js';
 import { harness, type Harness } from './harness.js';
 import { fakeAgent } from './fake-agent.js';
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const dispose of cleanup.splice(0).reverse()) await dispose(); });
-async function connect(h: Harness) {
+async function connect(h: Harness, client = new Client({ name: 'test', version: '1' })) {
   cleanup.push(() => h.dispose());
   const server = createMcpServer(h.runtime);
-  const client = new Client({ name: 'test', version: '1' });
   const [left, right] = InMemoryTransport.createLinkedPair();
   await server.connect(right); await client.connect(left);
   cleanup.push(async () => { await client.close(); await server.close(); });
@@ -18,6 +19,36 @@ async function connect(h: Harness) {
 }
 
 describe('MCP tools', () => {
+  it('relays worker forms and preserves false, zero and empty answers', async () => {
+    const schema = {
+      type: 'object' as const,
+      properties: {
+        enabled: { type: 'boolean' as const, title: 'Enabled' },
+        count: { type: 'integer' as const, title: 'Count' },
+        ratio: { type: 'number' as const, title: 'Ratio' },
+        name: { type: 'string' as const, title: 'Name' },
+        approach: { type: 'string' as const, title: 'Approach', enum: ['patch', 'rewrite'] },
+        files: { type: 'array' as const, title: 'Files', items: { type: 'string' as const, enum: ['a', 'b'] } },
+      },
+      required: ['enabled', 'count', 'approach'],
+    };
+    const answers: CreateElicitationResponse[] = [];
+    const a = fakeAgent({ script: () => [
+      { do: 'elicit', message: 'Choose settings', schema, onAnswer: (answer) => answers.push(answer) },
+      { do: 'say', text: 'REPORT\noutcome: done\nsummary: Settings received' },
+    ] });
+    const content = { enabled: false, count: 0, ratio: 0.5, name: '', approach: 'patch', files: [] };
+    const client = new Client({ name: 'forms', version: '1' }, { capabilities: { elicitation: { form: {} } } });
+    client.setRequestHandler(ElicitRequestSchema, async (request) => {
+      expect(request.params).toMatchObject({ mode: 'form', message: 'Choose settings', requestedSchema: schema });
+      return { action: 'accept', content: { ...content, unexpected: 'discard this' } };
+    });
+    await connect(harness({ agents: { a } }), client);
+    const result = await client.callTool({ name: 'delegate', arguments: { task: 'Configure', agent: 'a' } });
+    expect(result.isError).toBe(false);
+    expect(answers).toEqual([{ action: 'accept', content }]);
+  });
+
   it('exposes typed delegation and returns a reference to the complete answer', async () => {
     const a = fakeAgent({ script: () => [{ do: 'say', text: 'ESSENTIAL DETAIL: preserve ordering.\nREPORT\noutcome: done\nsummary: Reviewed ordering' }] });
     const h = harness({ agents: { a } });

@@ -99,13 +99,9 @@ class AssistantStream implements AnswerStream {
   }
 
   end(text: string, ledger = false): void {
-    const flag = ledger ? { ledger: true } : {};
-    if (this.open) {
-      this.open = false;
-      this.transcript.append({ type: 'assistant', stream: this.id, text, ...flag });
-    } else {
-      this.transcript.append({ type: 'assistant', text, ...flag });
-    }
+    const stream = this.open ? { stream: this.id } : {};
+    this.open = false;
+    this.transcript.append({ type: 'assistant', ...stream, text, ...(ledger ? { ledger: true } : {}) });
   }
 }
 
@@ -201,8 +197,8 @@ export class Conversation {
     // `/help` and `/config` are wanted most on exactly the machine where
     // nothing is configured yet.
     const invoked = this.invoked(text);
+    transcript.append(said);
     if (invoked === 'unknown') {
-      transcript.append(said);
       transcript.append({
         type: 'note',
         level: 'error',
@@ -210,8 +206,6 @@ export class Conversation {
       });
       return;
     }
-
-    transcript.append(said);
 
     if (invoked && invoked.command.kind === 'local') {
       this.local(invoked.command, invoked.args);
@@ -249,7 +243,6 @@ export class Conversation {
      * work or a final answer, including calls to a group of agents.
      */
     let ledgerOnly = false;
-    let calls = 0;
     /**
      * The turn as the planner will remember it: the line the user typed and
      * the reply that closed it. Everything between — the steps, the task
@@ -299,7 +292,6 @@ export class Conversation {
       const mention = invoked ? undefined : parseMention(prompt, agents);
       if (mention) {
         ledgerOnly = true;
-        calls++;
         const routed = this.toolbox.parse(
           JSON.stringify({
             action: 'call',
@@ -355,7 +347,7 @@ export class Conversation {
           stream.end(message);
           answered = true;
           completion = 'reported';
-          closing = JSON.stringify({ action: 'answer', message });
+          closing = message;
           break;
         }
         // The step is a call; anything its JSON streamed was not a reply.
@@ -370,7 +362,6 @@ export class Conversation {
         }
         const result = await call.run({ signal: turn.signal, turnId });
         if (call.name === 'task_result' || call.name === 'context' && !result.completedWork) this.context.retainEvidence(turnId, call.json, result.text);
-        calls += result.callsUsed ?? 0;
         if (result.outcome) outcomes.push(result.outcome);
         if (result.outcomes) outcomes.push(...result.outcomes);
         const completed = result.outcomes ?? (result.outcome ? [result.outcome] : []);
@@ -411,14 +402,11 @@ export class Conversation {
                 (piece) => stream.delta(piece),
               )
             : { text: 'Nothing to do.', ledger: false };
-        // Kept in the shape of every other reply of the planner's, so the
-        // history it reads back is JSON all the way down: a prose turn among
-        // JSON ones is the example a small model imitates next.
-        closing = JSON.stringify({ action: 'answer', message: summary.text });
+        closing = summary.text;
         stream.end(summary.text, summary.ledger);
       }
       if (turnId !== undefined) this.context.finish(turnId, turn.signal.aborted ? 'cancelled' : completion,
-        closing ? (JSON.parse(closing) as { message: string }).message : '');
+        closing ?? '');
       if (sent && opening) this.settle(epoch, history, sent, opening, closing);
       this.turn = undefined;
     }
@@ -456,7 +444,8 @@ export class Conversation {
     if (epoch !== this.epoch) return;
     const at = history.indexOf(sent);
     if (at === -1) return;
-    const reply = closing ?? JSON.stringify({ action: 'answer', message: '(stopped before finishing)' });
+    // Keep every historical reply in the same JSON shape the planner emits.
+    const reply = JSON.stringify({ action: 'answer', message: closing ?? '(stopped before finishing)' });
     // A new array rather than a splice: the one being replaced was handed to
     // the planner on every step of this turn, and a client that kept it —
     // anything queueing, retrying or recording — must keep what it was sent.

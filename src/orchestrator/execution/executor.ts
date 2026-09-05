@@ -144,10 +144,10 @@ export class Executor {
 
   async batch(input: BatchRequest, signal?: AbortSignal): Promise<Record<string, TaskResult | { status: 'blocked' | 'error'; summary: string }>> {
     const { tasks } = BatchRequestSchema.parse(input);
-    const ids = new Set(tasks.map((t) => t.id));
-    if (ids.size !== tasks.length) throw new Error('Duplicate batch task id');
-    for (const task of tasks) for (const dependency of task.dependsOn) if (!ids.has(dependency)) throw new Error(`Unknown dependency ${dependency}`);
-    const pending = new Set(ids), complete = new Set<string>();
+    const byId = new Map(tasks.map((task) => [task.id, task]));
+    if (byId.size !== tasks.length) throw new Error('Duplicate batch task id');
+    for (const task of tasks) for (const dependency of task.dependsOn) if (!byId.has(dependency)) throw new Error(`Unknown dependency ${dependency}`);
+    const pending = new Set(byId.keys()), complete = new Set<string>();
     while (pending.size) {
       const ready = tasks.filter((t) => pending.has(t.id) && t.dependsOn.every((id) => complete.has(id)));
       if (!ready.length) throw new Error('Cyclic batch dependencies');
@@ -159,7 +159,7 @@ export class Executor {
     const start = (id: string): Promise<void> => {
       const existing = promises.get(id);
       if (existing) return existing;
-      const task = tasks.find((t) => t.id === id)!;
+      const task = byId.get(id)!;
       const work = (async () => {
         await Promise.all(task.dependsOn.map(start));
         if (task.dependsOn.some((dep) => results[dep]?.status !== 'done')) {
