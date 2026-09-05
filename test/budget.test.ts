@@ -103,7 +103,9 @@ describe('planner context budget', () => {
       `planner input across the run: ${total} chars over ${llm.seen.length} calls; ` +
         `${system.length} of each is the fixed system prompt, ${beyond} chars in all came after it`,
     );
-    expect(beyond).toBeLessThan(6_000);
+    // Fresh state now includes source addresses on each step, while full
+    // reports and old tool exchanges remain outside the working window.
+    expect(beyond).toBeLessThan(7_000);
     // The agents said this much; none of it reached the planner verbatim.
     expect(JSON.stringify(llm.seen)).not.toContain('I looked through the parser');
   });

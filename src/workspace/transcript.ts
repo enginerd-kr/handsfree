@@ -6,8 +6,10 @@ import type { TurnUsage } from '../host/session.js';
 import type { BudgetUsage } from '../orchestrator/budget.js';
 import type { TaskStatus } from '../orchestrator/outcome.js';
 import type { TaskResult } from '../orchestrator/contract.js';
+import type { ContextEntry } from '../orchestrator/context.js';
 
 export type TranscriptBody =
+  | { type: 'context'; entry: ContextEntry }
   | { type: 'budget_usage'; usage: BudgetUsage }
   | { type: 'memory'; agentId: string; sessionId: string; files: { path: string; version: string }[]; topic: string }
   | { type: 'task_result'; taskId: number; result: TaskResult }

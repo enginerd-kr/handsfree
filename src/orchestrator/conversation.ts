@@ -32,12 +32,15 @@ import {
 } from '../slash/command.js';
 import { parseMention, parseOrchestration } from '../mention/mention.js';
 import { Delegator } from './delegate.js';
-import { agentRecords, floorOf, LEDGER_TASKS, renderAgentRecord, renderRunState, tasksSince } from './ledger.js';
+import { agentRecords, LEDGER_TASKS, renderAgentRecord, renderRunState } from './ledger.js';
 import type { TaskOutcome } from './outcome.js';
 import { metered } from './usage.js';
 import type { Executor } from './executor.js';
 import type { BudgetManager } from './budget.js';
 import { ResultTool } from '../tools/result.js';
+import { ContextTool } from '../tools/context.js';
+import { RunContext } from './context.js';
+import { nextItem } from './review.js';
 
 /**
  * How much of the planner's budget the system prompt, the run state and the
@@ -124,6 +127,7 @@ export class Conversation {
   private readonly delegator: Delegator;
   /** What the planner can call: the agent tool, and whatever else was handed in. */
   private readonly toolbox: Toolbox;
+  private readonly context: RunContext;
   /**
    * Which conversation this is. `/clear` does not queue behind a turn — it is
    * over the moment it runs — so a turn can outlive the history it was
@@ -142,6 +146,8 @@ export class Conversation {
       }
     }
     this.delegator = deps.executor?.delegator ?? new Delegator(deps);
+    this.context = new RunContext(deps.transcript);
+    this.messages = this.context.history(deps.config.orchestration.maxHistoryMessages);
     this.toolbox = new Toolbox([
       new AgentTool({
         roster: () => this.roster(),
@@ -150,8 +156,10 @@ export class Conversation {
         transcript: deps.transcript,
         workspace: deps.workspace,
         onOutcome: (outcome) => deps.executor?.store(outcome),
+        workingContext: () => this.context.required(),
       }),
       ...(deps.executor ? [new ResultTool(deps.executor, deps.config.limits.maxResultChars)] : []),
+      new ContextTool(this.context, deps.config.limits.maxResultChars),
       ...(deps.tools ?? []),
     ]);
   }
@@ -221,10 +229,6 @@ export class Conversation {
     }
 
     const agents = this.deps.pool.available();
-    if (agents.length === 0) {
-      transcript.append({ type: 'assistant', text: 'No agents are enabled in the configuration.' });
-      return;
-    }
 
     // What the model is actually asked. For a command file that is its
     // expanded body; the record above keeps the line the user typed, because
@@ -268,6 +272,8 @@ export class Conversation {
     let sent: ChatMessage | undefined;
     let opening: ChatMessage | undefined;
     let closing: string | undefined;
+    let turnId: number | undefined;
+    let completion: 'reported' | 'cancelled' | 'limited' | 'error' = 'limited';
     const epoch = this.epoch;
     let history: ChatMessage[] = this.messages;
 
@@ -283,6 +289,7 @@ export class Conversation {
         );
       }
       this.ensureSystemPrompt();
+      turnId = this.context.start(prompt);
       // The turn holds the history it was started against, rather than
       // reaching for `this.messages` each time it has something to add. A
       // `/clear` mid-turn puts a new array there, and a turn that followed it
@@ -290,7 +297,7 @@ export class Conversation {
       // it — the one thing it must never be asked to do.
       history = this.messages;
       opening = { role: 'user', content: prompt };
-      sent = { role: 'user', content: composeUserMessage(this.runState(agents, prompt), prompt), pinned: true, requiredContent: prompt };
+      sent = this.requestMessage(agents, prompt, turnId);
       history.push(sent);
 
       // A line that leads with "@agent" has already chosen its recipient, so
@@ -320,29 +327,46 @@ export class Conversation {
         // a bug in one of them, not a line to route.
         if (!routed.ok || routed.step.action !== 'call') throw new Error(routed.ok ? 'not a call' : routed.error);
         history.push({ role: 'assistant', content: routed.step.call.json });
-        const result = await routed.step.call.run({ signal: turn.signal });
+        this.context.step(turnId, routed.step.call.json);
+        const result = await routed.step.call.run({ signal: turn.signal, turnId });
         if (result.outcome) outcomes.push(result.outcome);
         if (result.note) notes.push(result.note);
         history.push({ role: 'user', content: this.relay(routed.step.call.name, result.text) });
+        completion = 'reported';
         return;
       }
 
       for (let step = 0; step < config.limits.maxPlanSteps; step++) {
         if (turn.signal.aborted) break;
 
+        // Rebuild from durable state after every result or self-analysis.
+        // Replace, never mutate, a message a previous model call may retain.
+        if (epoch === this.epoch) {
+          const at = history.indexOf(sent);
+          sent = this.requestMessage(agents, prompt, turnId);
+          if (at >= 0) history[at] = sent;
+          // Older step exchanges remain addressable in the run record.
+          if (at >= 0 && history.length > at + 3) history = [...history.slice(0, at + 1), ...history.slice(-2)];
+        }
+
         const stream = this.newStream();
         const planned = await this.plan(history, turn.signal, stream);
         if (!planned.ok) {
           stream.retract();
           notes.push(`The orchestration model did not produce a usable next step (${planned.error}).`);
+          completion = 'error';
           break;
         }
+        if (planned.step.review) this.context.review(turnId, planned.step.review);
 
         if (planned.step.action === 'answer') {
           history.push({ role: 'assistant', content: JSON.stringify(planned.step) });
           const message = planned.step.message;
+          this.context.step(turnId, JSON.stringify(planned.step));
+          if (planned.step.review) this.context.complete(turnId, nextItem(planned.step.review));
           stream.end(message);
           answered = true;
+          completion = 'reported';
           closing = JSON.stringify({ action: 'answer', message });
           break;
         }
@@ -350,21 +374,28 @@ export class Conversation {
         stream.retract();
         const { call } = planned.step;
         history.push({ role: 'assistant', content: call.json });
-
-        if (calls >= config.limits.maxDelegationsPerTurn) {
-          notes.push(`Stopped at the limit of ${config.limits.maxDelegationsPerTurn} tool calls per message.`);
-          break;
+        this.context.step(turnId, call.json);
+        if (call.name === 'agent' && planned.step.review && this.context.isComplete(turnId, nextItem(planned.step.review))) {
+          history.push({ role: 'user', content: this.relay(call.name,
+            `The item "${nextItem(planned.step.review)}" has already executed successfully. No worker was called. Review existing results and select remaining work or report the result.`) });
+          continue;
         }
-        const result = await call.run({ signal: turn.signal, remainingCalls: config.limits.maxDelegationsPerTurn - calls });
-        calls += result.callsUsed ?? 1;
+        const result = await call.run({ signal: turn.signal, remainingCalls: config.limits.maxDelegationsPerTurn - calls, turnId });
+        if (call.name === 'task_result' || call.name === 'context' && !result.completedWork) this.context.retainEvidence(turnId, call.json, result.text);
+        calls += result.callsUsed ?? 0;
         if (result.outcome) outcomes.push(result.outcome);
         if (result.outcomes) outcomes.push(...result.outcomes);
-        if (result.note) notes.push(result.note);
+        const completed = result.outcomes ?? (result.outcome ? [result.outcome] : []);
+        if (planned.step.review && (result.completedWork || completed.length > 0 && !result.note && completed.every((outcome) => outcome.status === 'done'))) {
+          this.context.complete(turnId, nextItem(planned.step.review));
+        }
+        if (result.note && !notes.includes(result.note)) notes.push(result.note);
         history.push({ role: 'user', content: this.relay(call.name, result.text) });
 
         if (result.halt) break;
       }
     } catch (err) {
+      completion = 'error';
       if (!turn.signal.aborted) notes.push(`The turn stopped: ${(err as Error).message}`);
     } finally {
       // A cancelled turn ends where it stood, silently: the delegation and
@@ -378,6 +409,7 @@ export class Conversation {
       // and it is on screen the moment the agent stops rather than a
       // planner call later.
       if (!answered && !turn.signal.aborted) {
+        if (completion === 'limited') notes.push(`Reached the limit of ${config.limits.maxPlanSteps} planning steps; remaining work must be reviewed before continuing.`);
         const stream = this.newStream();
         const summary = ledgerOnly
           ? {
@@ -386,7 +418,7 @@ export class Conversation {
             }
           : outcomes.length > 0 || notes.length > 0
             ? await narrate(
-                this.deps.llm && metered(this.deps.llm, 'narrate', transcript, plannerLabel(config), this.meterBudget()),
+                this.deps.llm && metered(this.deps.llm, 'narrate', transcript, plannerLabel(config), this.plannerMeter()),
                 { userMessage: prompt, outcomes, notes, workspaceDir: workspace.dir },
                 turn.signal,
                 (piece) => stream.delta(piece),
@@ -398,6 +430,8 @@ export class Conversation {
         closing = JSON.stringify({ action: 'answer', message: summary.text });
         stream.end(summary.text, summary.ledger);
       }
+      if (turnId !== undefined) this.context.finish(turnId, turn.signal.aborted ? 'cancelled' : completion,
+        closing ? (JSON.parse(closing) as { message: string }).message : '');
       if (sent && opening) this.settle(epoch, history, sent, opening, closing);
       this.turn = undefined;
     }
@@ -476,9 +510,8 @@ export class Conversation {
       return { ok: false as const, error: 'no orchestration model is configured' };
     }
     try {
-      const llm = metered(this.deps.llm, 'plan', this.deps.transcript, plannerLabel(this.deps.config), this.meterBudget());
-      // Cut to the budget on the way out, not in place: the history keeps
-      // every message a turn adds, and what is dropped is the oldest of it.
+      const llm = metered(this.deps.llm, 'plan', this.deps.transcript, plannerLabel(this.deps.config), this.plannerMeter());
+      // Fit the working view without altering the durable source records.
       const budget = contextBudgetTokens(this.deps.config.orchestration);
       return await nextStep(llm, [...history], this.toolbox, signal, stream,
         this.deps.config.orchestration.maxRepairAttempts,
@@ -492,8 +525,8 @@ export class Conversation {
     return new AssistantStream(this.deps.transcript, ++this.streamCounter);
   }
 
-  private meterBudget() {
-    return this.deps.budget ? { manager: this.deps.budget,
+  private plannerMeter() {
+    return this.deps.budget ? { manager: this.deps.budget, enforce: false,
       frontier: this.deps.config.orchestration.provider !== 'local',
       contextTokens: contextBudgetTokens(this.deps.config.orchestration),
       outputTokens: this.deps.config.orchestration.maxOutputTokens } : undefined;
@@ -587,20 +620,28 @@ export class Conversation {
    * Shortened, oldest tasks first, until it and the system prompt and the
    * line itself fit their share of the planner's budget.
    */
+  private requestMessage(agents: string[], prompt: string, turnId: number): ChatMessage {
+    const required = [`CURRENT REQUEST SOURCE: record ${turnId}`, this.context.required()].filter(Boolean).join('\n');
+    return { role: 'user', pinned: true,
+      content: composeUserMessage([required, this.runState(agents, prompt),
+        this.context.evidenceView(turnId, this.deps.config.limits.maxResultChars * 4)].filter(Boolean).join('\n\n'), prompt),
+      requiredContent: composeUserMessage(required, prompt) };
+  }
+
   private runState(agents: string[], prompt: string): string {
-    const { config, transcript, workspace } = this.deps;
-    const records = transcript.all();
-    const tasks = tasksSince(records, floorOf(records), this.delegator.ledgerOptions());
+    const { config, workspace } = this.deps;
+    const tasks = this.context.tasks(this.delegator.ledgerOptions());
     const worked = agentRecords(tasks);
     const sessions = agents.map((id) => ({
       id,
       record: renderAgentRecord(worked.get(id), workspace.dir),
     }));
-    const fixed = estimateTokens(this.messages[0]?.content ?? '') + estimateTokens(prompt);
+    const fixed = estimateTokens(this.messages[0]?.content ?? '') + estimateTokens(prompt) + estimateTokens(this.context.required());
     const budget = Math.floor(contextBudgetTokens(config.orchestration) * STATE_SHARE);
     let shown = LEDGER_TASKS;
     for (;;) {
-      const state = renderState(sessions, renderRunState(tasks, workspace.dir, shown));
+      const state = [renderState(sessions, renderRunState(tasks, workspace.dir, shown)),
+        this.context.sources(), this.context.findings()].filter(Boolean).join('\n');
       if (fixed + estimateTokens(state) <= budget || shown <= 2) return state;
       shown = Math.max(2, Math.floor(shown / 2));
     }

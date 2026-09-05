@@ -48,7 +48,8 @@ function userText(h: Harness): string[] {
 /** The last thing the model was actually asked, across every call it saw. */
 function lastPrompt(seen: { role: string; content: string }[][]): string {
   const messages = seen.at(-1) ?? [];
-  return messages.filter((message) => message.role === 'user').at(-1)?.content ?? '';
+  const content = messages.filter((message) => message.role === 'user').at(-1)?.content ?? '';
+  return content.includes('\n---\n') ? content.slice(content.indexOf('\n---\n') + 5) : content;
 }
 
 describe('slash commands', () => {

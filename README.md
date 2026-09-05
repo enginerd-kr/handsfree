@@ -4,7 +4,7 @@
 
 **A token-aware multi-agent tool for Claude Code, Gemini CLI, and Codex, with a lightweight router and reusable worker sessions.**
 
-A lightweight model selects workers when needed, while specialized agents execute the tasks. Reusable sessions and compact handoffs reduce repeated setup; the host tracks usage and stale context.
+A lightweight orchestrator analyzes requests, works directly or selects a worker, reviews the results, and continues until it can report the outcome. Source-linked working memory survives chat trimming and run restarts. Reusable worker sessions and compact handoffs reduce repeated setup.
 
 [![ci](https://github.com/enginerd-kr/handsfree/actions/workflows/ci.yml/badge.svg)](https://github.com/enginerd-kr/handsfree/actions/workflows/ci.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -55,6 +55,8 @@ See [execution contracts, budgets, and operating limits](docs/execution.md) for 
 Structured routing defaults to local/API selection and skips ACP selection calls. The [measured local 4B path](docs/execution-controls.md) includes real role-selection and worker checks. The bundled Codex profile and example configuration set `agents.codex.nativeTools: "allow"`, so Codex runs using its adapter's permissions and sandbox. These tasks run exclusively. Set it to `"deny"` to block Codex execution before prompting.
 
 In conversation, the orchestration model can select several recipients in one `agent` call, for example `"agent": ["claude", "gemini", "codex"]`. It interprets requests such as “ask everyone” from the conversation. The host executes each selected recipient independently and reports every outcome; each recipient counts toward the turn's delegation limit, and any recipients skipped at that limit are named.
+
+The conversation loop returns every result, including failures, to the orchestrator for review. It can use `context` to preserve objectives, constraints, decisions and open items, search older records, or save its own intermediate conclusions. `task_result` retrieves full worker replies. These operations do not consume worker delegation limits. See [the loop and context design](docs/agent-loop.md).
 
 ## Install
 

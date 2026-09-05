@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { JsonSchemaSpec } from '../brain/client.js';
 import { extractJsonObject } from '../brain/json.js';
 import type { TaskOutcome } from '../orchestrator/outcome.js';
+import { ReviewSchema, type LoopReview } from '../orchestrator/review.js';
 
 /**
  * A tool is one thing the planner can do besides answer. It is described to
@@ -14,6 +15,7 @@ import type { TaskOutcome } from '../orchestrator/outcome.js';
 export interface ToolContext {
   signal: AbortSignal;
   remainingCalls?: number;
+  turnId?: number;
 }
 
 export interface ToolResult {
@@ -33,6 +35,8 @@ export interface ToolResult {
   /** A grouped call reports every recipient, with no duplicate singular outcome. */
   outcomes?: TaskOutcome[];
   callsUsed?: number;
+  /** A selected self-work operation completed (a saved finding or a result-page read). */
+  completedWork?: boolean;
   /** A line for the closing account, from a tool that has no outcome to give it. */
   note?: string;
 }
@@ -62,14 +66,14 @@ export interface Invocation {
   run(ctx: ToolContext): Promise<ToolResult>;
 }
 
-export type Step = { action: 'answer'; message: string } | { action: 'call'; call: Invocation };
+export type Step = ({ action: 'answer'; message: string } | { action: 'call'; call: Invocation }) & { review?: LoopReview };
 
 export type ParsedStep = { ok: true; step: Step } | { ok: false; error: string };
 
 /** The reply's outer shape: an answer, or a call naming a tool. What the call carries is the tool's to check. */
 const Envelope = z.discriminatedUnion('action', [
-  z.object({ action: z.literal('answer'), message: z.string() }),
-  z.object({ action: z.literal('call'), tool: z.string().min(1), input: z.unknown() }),
+  z.object({ review: ReviewSchema.optional(), action: z.literal('answer'), message: z.string().trim().min(1) }),
+  z.object({ review: ReviewSchema.optional(), action: z.literal('call'), tool: z.string().min(1), input: z.unknown() }),
 ]);
 
 export class Toolbox {
@@ -102,9 +106,9 @@ export class Toolbox {
    */
   jsonSchema(): JsonSchemaSpec {
     const calls = [...this.tools.values()].map((tool) =>
-      z.object({ action: z.literal('call'), tool: z.literal(tool.name), input: tool.input }),
+      z.object({ review: ReviewSchema, action: z.literal('call'), tool: z.literal(tool.name), input: tool.input }),
     );
-    const shape = z.union([z.object({ action: z.literal('answer'), message: z.string() }), ...calls]);
+    const shape = z.union([z.object({ review: ReviewSchema, action: z.literal('answer'), message: z.string().trim().min(1) }), ...calls]);
     return { name: 'handsfree_step', schema: z.toJSONSchema(shape) as Record<string, unknown> };
   }
 
@@ -129,10 +133,22 @@ export class Toolbox {
       return { ok: false, error: `Does not match the schema: ${envelope.error.issues[0]?.message}` };
     }
     if (envelope.data.action === 'answer') {
-      return { ok: true, step: { action: 'answer', message: envelope.data.message } };
+      const review = envelope.data.review;
+      const unfinished = review?.remaining.filter((_item, index) => index !== review.next) ?? [];
+      if (review && unfinished.length > 0 && !review.blocker.trim()) {
+        return { ok: false, error: `Work remains: ${review.remaining.join('; ')}. If your answer performs the remaining synthesis or explanation, set next to that item's index and give the actual result now. Otherwise call the tool needed for unfinished work. Do not repeat completed worker tasks or promise future work in an answer. A concrete obstacle belongs in review.blocker.` };
+      }
+      return { ok: true, step: { action: 'answer', message: envelope.data.message,
+        ...(envelope.data.review ? { review: envelope.data.review } : {}) } };
     }
 
     const { tool: name } = envelope.data;
+    const review = envelope.data.review;
+    // An omitted selection means the first item of the ordered work list.
+    if (review && name === 'agent' && review.next === -1 && review.remaining.length) review.next = 0;
+    if (review && name === 'agent' && !review.remaining[review.next]) {
+      return { ok: false, error: 'For a worker call, review.next must be an index into remaining (0 selects its first item).' };
+    }
     const tool = this.tools.get(name);
     if (!tool) {
       return { ok: false, error: `"${name}" is not a tool. Tools: ${this.names().join(', ')}.` };
@@ -148,6 +164,7 @@ export class Toolbox {
       ok: true,
       step: {
         action: 'call',
+        ...(envelope.data.review ? { review: envelope.data.review } : {}),
         call: {
           name,
           json: JSON.stringify({ action: 'call', tool: name, input: checked }),

@@ -95,6 +95,12 @@ describe('AgentTool', () => {
     expect(tool().box.parse('{"action":"call","tool":"agent","input":{"agent":"claude","prompt":""}}').ok).toBe(false);
   });
 
+  it('treats default-model aliases as no override', async () => {
+    const { agent, delegated } = tool();
+    for (const model of ['default', 'none', 'null']) await agent.run({ agent: 'claude', kind: 'answer', prompt: 'Hi', model }, ctx);
+    expect(delegated.map((d) => d.model)).toEqual([undefined, undefined, undefined]);
+  });
+
   it('hands the call to the delegator as written, and relays the outcome', async () => {
     const { box, delegated, transcript } = tool();
     const parsed = box.parse(

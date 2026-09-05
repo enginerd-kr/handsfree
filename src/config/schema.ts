@@ -316,7 +316,7 @@ export const OrchestrationSchema = z.object({
   relayAnswers: z.boolean().default(false),
   /** API mode also accepts remote OpenAI-compatible small models via `local`. */
   maxOutputTokens: z.number().int().positive().default(768),
-  maxRepairAttempts: z.number().int().min(1).max(3).default(2),
+  maxRepairAttempts: z.number().int().min(1).max(3).default(3),
 });
 
 /** The planner's budget, with the provider deciding it where the config did not. */
@@ -400,10 +400,10 @@ export const ConfigSchema = z
         idleTimeoutMs: z.number().int().positive().default(180_000),
         /** How long to wait for a `cancelled` stop reason before killing the process. */
         cancelGraceMs: z.number().int().positive().default(10_000),
-        /** How many tool calls — tasks handed to agents, mostly — one message may run. */
+        /** Worker tasks per message. Context updates and result reads do not consume this. */
         maxDelegationsPerTurn: z.number().int().positive().default(3),
         /** How many replies the planner gets per message, calls and the answer together. */
-        maxPlanSteps: z.number().int().positive().default(6),
+        maxPlanSteps: z.number().int().positive().default(32),
         /**
          * Longest a task result handed to the planner is. Small, because what
          * it carries is the report's summary and open items, not the reply.

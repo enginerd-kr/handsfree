@@ -20,6 +20,8 @@ export interface BudgetUsage extends TokenCharge {
   frontierTokens: number;
   costUsd?: number;
   failed: boolean;
+  /** Counted in usage totals, but excluded from worker admission limits. */
+  budgetExempt?: boolean;
 }
 
 export class BudgetExceededError extends Error {
@@ -38,14 +40,17 @@ export interface BudgetLease {
 export class BudgetManager {
   private readonly active = new Map<string, { tokens: number; frontier: boolean; cost?: number; stop: AbortController }>();
   private readonly spent = { tokens: 0, frontierTokens: 0, costUsd: 0, unknownCostCalls: 0, estimatedCalls: 0 };
+  private readonly chargeable = { tokens: 0, frontierTokens: 0, costUsd: 0, unknownCostCalls: 0, estimatedCalls: 0 };
   private readonly record = (record: TranscriptRecord) => {
     if (record.type !== 'budget_usage') return;
     const usage = record.usage;
-    this.spent.tokens += usage.tokens;
-    this.spent.frontierTokens += usage.frontierTokens;
-    this.spent.costUsd += usage.costUsd ?? 0;
-    this.spent.unknownCostCalls += usage.costUsd === undefined && usage.tokens > 0 ? 1 : 0;
-    this.spent.estimatedCalls += usage.estimated ? 1 : 0;
+    for (const total of usage.budgetExempt ? [this.spent] : [this.spent, this.chargeable]) {
+      total.tokens += usage.tokens;
+      total.frontierTokens += usage.frontierTokens;
+      total.costUsd += usage.costUsd ?? 0;
+      total.unknownCostCalls += usage.costUsd === undefined && usage.tokens > 0 ? 1 : 0;
+      total.estimatedCalls += usage.estimated ? 1 : 0;
+    }
   };
   constructor(private readonly config: Config, private readonly transcript: Transcript) {
     for (const record of transcript.all()) this.record(record);
@@ -56,6 +61,14 @@ export class BudgetManager {
 
   totals() {
     return { ...this.spent };
+  }
+
+  recordExempt(source: string, model: string, frontier: boolean, charge: TokenCharge, failed: boolean): BudgetUsage {
+    const costUsd = !frontier || charge.tokens === 0 ? 0 : this.price(source, model, charge);
+    const usage: BudgetUsage = { ...charge, id: randomUUID(), source, model, frontierTokens: frontier ? charge.tokens : 0,
+      failed, budgetExempt: true, ...(costUsd === undefined ? {} : { costUsd }) };
+    this.transcript.append({ type: 'budget_usage', usage });
+    return usage;
   }
 
   price(source: string, model: string, charge: TokenCharge): number | undefined {
@@ -78,7 +91,7 @@ export class BudgetManager {
   }
 
   private reason(tokens: number, frontier: boolean, cost?: number): string | undefined {
-    const total = this.totals();
+    const total = this.chargeable;
     const pending = [...this.active.values()];
     const used = total.tokens + pending.reduce((n, p) => n + p.tokens, 0);
     const remote = total.frontierTokens + pending.reduce((n, p) => n + (p.frontier ? p.tokens : 0), 0);

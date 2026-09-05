@@ -17,7 +17,7 @@ export function metered(
   transcript: Transcript,
   /** The planner as the roll call spells it, read when the call is made. */
   model?: string,
-  budget?: { manager: BudgetManager; frontier: boolean; outputTokens: number; contextTokens?: number; limits?: TokenBudget; onCharge?: (usage: BudgetUsage) => void },
+  budget?: { manager: BudgetManager; frontier: boolean; outputTokens: number; contextTokens?: number; limits?: TokenBudget; enforce?: boolean; onCharge?: (usage: BudgetUsage) => void },
 ): ChatClient {
   return {
     async chat(messages, options = {}) {
@@ -28,8 +28,8 @@ export function metered(
       let usage: Usage | undefined;
       let reply = '';
       let failed = true;
-      const lease = budget?.manager.begin('orchestrator', model ?? 'orchestrator', budget.frontier,
-        inputEstimate + (options.maxOutputTokens ?? budget.outputTokens), budget.limits);
+      const lease = budget && budget.enforce !== false ? budget.manager.begin('orchestrator', model ?? 'orchestrator', budget.frontier,
+        inputEstimate + (options.maxOutputTokens ?? budget.outputTokens), budget.limits) : undefined;
       try {
         reply = await llm.chat(messages, {
           ...options,
@@ -49,11 +49,13 @@ export function metered(
         return reply;
       } finally {
         const estimatedTokens = inputEstimate + countTokens(reply);
-        const charge = lease?.finish({ tokens: usage ? usage.promptTokens + usage.completionTokens : estimatedTokens,
+        const measured = { tokens: usage ? usage.promptTokens + usage.completionTokens : estimatedTokens,
           inputTokens: usage ? Math.max(0, usage.promptTokens - (usage.cachedTokens ?? 0) - (usage.cachedWriteTokens ?? 0)) : inputEstimate,
           outputTokens: usage?.completionTokens ?? countTokens(reply), cachedReadTokens: usage?.cachedTokens,
           cachedWriteTokens: usage?.cachedWriteTokens,
-          estimated: usage === undefined }, failed);
+          estimated: usage === undefined };
+        const charge = lease?.finish(measured, failed) ?? (budget?.enforce === false
+          ? budget.manager.recordExempt('orchestrator', model ?? 'orchestrator', budget.frontier, measured, failed) : undefined);
         if (charge) budget?.onCharge?.(charge);
         transcript.append({
           type: 'usage',

@@ -2,7 +2,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { fakeAgent } from './fake-agent.js';
 import { harness, scriptedModel, type Harness } from './harness.js';
-import type { ChatClient } from '../src/brain/client.js';
+import { estimateTokens, type ChatClient } from '../src/brain/client.js';
 import { buildView, describeRecord } from '../src/ui/view-model.js';
 
 let open: Harness | undefined;
@@ -741,7 +741,7 @@ describe('Conversation', () => {
 
     // The planner was consulted, and saw the line as it was typed.
     expect(llm.seen).toHaveLength(1);
-    expect(llm.seen[0]?.some((message) => message.content === '@nobody do something')).toBe(true);
+    expect(llm.seen[0]?.some((message) => message.content.endsWith('\n---\n@nobody do something'))).toBe(true);
     expect(assistantText(h)).toEqual(['nobody here goes by that name.']);
   });
 
@@ -1033,16 +1033,23 @@ describe('Conversation', () => {
 
   it('drops the oldest turns first when the planner is over budget', async () => {
     const claude = fakeAgent({ script: () => [] });
-    const llm = scriptedModel([answer('one'), answer('two'), answer('three'), answer('four')]);
+    const llm = scriptedModel([answer('warmup'), answer('one'), answer('two'), answer('three'), answer('four')]);
+    let fixed = 0;
+    const measured: ChatClient = { async chat(messages, options) {
+      fixed = estimateTokens(messages[0]?.content ?? '') + estimateTokens(JSON.stringify(options?.schema?.schema ?? {}));
+      return llm.chat(messages, options);
+    } };
     // Room for the instructions and current request, but not all four turns.
     const h = harness({
       agents: { claude },
-      llm,
-      config: { orchestration: { contextBudgetTokens: 2_000, maxOutputTokens: 128 } },
+      llm: measured,
+      config: { orchestration: { maxOutputTokens: 128 } },
     });
     open = h;
 
-    const line = 'a line of conversation that takes up room '.repeat(40);
+    const line = 'a line of conversation that takes up room '.repeat(100);
+    await h.runtime.conversation.send('warmup');
+    h.runtime.config.orchestration.contextBudgetTokens = fixed + estimateTokens(line) + 400;
     await h.runtime.conversation.send(`${line}1`);
     await h.runtime.conversation.send(`${line}2`);
     await h.runtime.conversation.send(`${line}3`);
@@ -1126,7 +1133,9 @@ describe('Conversation', () => {
     // The cleared conversation is a system prompt and one line, not the
     // wreckage of a turn that outlived it — and never two users in a row.
     expect(after.map((message) => message.role)).toEqual(['system', 'user']);
-    expect(after[1]?.content).toBe('hello again');
+    expect(after[1]?.content.endsWith('\n---\nhello again')).toBe(true);
+    expect(after[1]?.content).not.toContain('task 1');
+    expect(after[1]?.content).not.toContain('Task 1');
   });
 
   it('briefs an agent from scratch after a clear that landed mid-task', async () => {

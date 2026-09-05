@@ -25,6 +25,19 @@ describe('Toolbox', () => {
     expect(parsed).toEqual({ ok: true, step: { action: 'answer', message: 'hi' } });
   });
 
+  it('requires a nonempty final report', () => {
+    const box = new Toolbox([]);
+    expect(box.parse('{"action":"answer","message":"   "}').ok).toBe(false);
+  });
+
+  it('permits a blocker report while retaining explicit unfinished work', () => {
+    const review = { objective: 'Review the code', constraints: [], completed: [], remaining: ['Run review'], next: -1, blocker: 'Worker budget exhausted.' };
+    const box = new Toolbox([]);
+    const parsed = box.parse(JSON.stringify({ review, action: 'answer', message: 'The review could not run because its budget is exhausted.' }));
+    expect(parsed.ok).toBe(true);
+    expect(JSON.stringify(box.jsonSchema().schema)).toContain('"review"');
+  });
+
   it('reads a call wrapped in a code fence and hands it to the tool, input checked', async () => {
     const echo = echoTool();
     const parsed = new Toolbox([echo]).parse(

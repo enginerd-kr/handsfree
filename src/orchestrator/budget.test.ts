@@ -5,6 +5,24 @@ import { BudgetManager } from './budget.js';
 import { metered } from './usage.js';
 
 describe('execution budgets', () => {
+  it('records unlimited orchestration usage without consuming worker limits, including on replay', async () => {
+    const transcript = new Transcript();
+    const config = ConfigSchema.parse({ budget: { maxTokens: 10, maxFrontierTokens: 10, maxCostUsd: 1 } });
+    const manager = new BudgetManager(config, transcript);
+    const llm = metered({ async chat(_messages, options) {
+      options?.onUsage?.({ promptTokens: 1000, completionTokens: 50 });
+      return 'review complete';
+    } }, 'plan', transcript, 'small', { manager, frontier: true, outputTokens: 100, enforce: false });
+    await llm.chat([{ role: 'user', content: 'Review the outcome.' }]);
+    expect(manager.totals()).toMatchObject({ tokens: 1050, unknownCostCalls: 1 });
+    expect(manager.canStart(10, true, 0)).toBe(true);
+    manager.close();
+    const resumed = new BudgetManager(config, transcript);
+    expect(resumed.totals().tokens).toBe(1050);
+    expect(resumed.canStart(10, true, 0)).toBe(true);
+    resumed.close();
+  });
+
   it('permits measured ACP input overhead but separately stops excessive generated output', () => {
     const manager = new BudgetManager(ConfigSchema.parse({}), new Transcript());
     const cached = manager.begin('a', 'a', true, 50_000);

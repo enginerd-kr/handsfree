@@ -497,7 +497,7 @@ describe('terminal UI', () => {
 
       await press('\r');
       await waitFor(() => app.lastFrame(), 'got it.');
-      expect(llm.seen[0]?.some((message) => message.content === 'one\n-two\nthree')).toBe(true);
+      expect(llm.seen[0]?.some((message) => message.content.endsWith('\n---\none\n-two\nthree'))).toBe(true);
       // Sent, the prompt is empty and back to one line — the lines above it
       // now are the transcript's copy of what went.
       const promptAt = plain().split('\n').findIndex((line) => line.includes(PROMPT_CHAR));
@@ -558,7 +558,7 @@ describe('terminal UI', () => {
       await press('\r');
       await waitFor(() => app.lastFrame(), 'seen.');
       const sent = `see ${pages} and\nthen [Image #1: ${picture}]`;
-      expect(llm.seen[0]?.some((message) => message.content === sent)).toBe(true);
+      expect(llm.seen[0]?.some((message) => message.content.endsWith(`\n---\n${sent}`))).toBe(true);
       // The transcript shows the line as it was seen, folded.
       expect(plain()).toContain('see [Pasted text #1 +4 lines] and');
       expect(plain()).not.toContain('gamma');

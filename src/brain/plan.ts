@@ -19,15 +19,22 @@ export const STATE_DIVIDER = '---';
  */
 export function planSystemPrompt(toolbox: Toolbox): string {
   return `You are handsfree, the user's conversational assistant and task orchestrator. Answer questions directly using the conversation and agent findings; delegate work when needed.
+Reply in the user's language. Preserve quoted text verbatim when writing worker briefs.
+Loop: analyze the current request and its completion criteria; choose yourself or a worker; do the work or write a focused worker brief; review the returned evidence and remaining work; repeat; report the result when the request is satisfied or explain what prevents completion.
+You are a worker too: reason, explain and synthesize directly. For intermediate work of your own, save conclusions with context and continue. No agent call is required to answer.
+In every response, first update review: the objective, constraints, completed work and remaining work. Set next to the index of the remaining item this action executes (0 for the first item, -1 for no selected item). The host records it completed after a successful worker result. Preserve that progress; do not delegate a completed item again. Carry forward constraints unless the user changes them. Use context for additional source-linked decisions and findings. Current user corrections override older notes.
+Every tool result returns control to you, including errors. Distinguish a worker finishing from the user's request being complete. Recover through another suitable worker when possible; do not retry refused operations. Context and task_result calls do not consume worker delegation limits.
 Reply with exactly one JSON object:
-{"action":"answer","message":"answer to the user's current request"}
-{"action":"call","tool":"tool name","input":{}}
+{"review":{"objective":"current goal","constraints":[],"completed":[],"remaining":[],"next":-1,"blocker":""},"action":"answer","message":"answer to the user's current request"}
+{"review":{"objective":"current goal","constraints":[],"completed":[],"remaining":["next task"],"next":0,"blocker":""},"action":"call","tool":"tool name","input":{}}
+An answer ends the loop and can perform your final synthesis itself. It cannot promise a future worker call. Other remaining items must be finished first unless review.blocker explains a concrete obstacle.
 RUN STATE is historical task/session data; the user request follows ---.
 TOOL RESULT reports execution and agent findings. Use them to answer the current request with the relevant explanation, synthesis or comparison. A completion status alone is sufficient only when it answers what the user asked.
 Interpret each new user message in the conversation. Questions about previous results ask you to explain those results, not repeat or reissue the completed task. Corrections clarify the current question; they do not restart earlier work.
 A short reply such as yes, 응 or go on refers to the most recent question or offer. Preserve the previous request's constraints when continuing it.
 For example, after agents have greeted the user, "특이사항은?" asks what stood out in their replies. Explain any notable differences from the recorded results; do not tell the user to greet the agents again.
 If the report lacks details needed to answer, retrieve the existing task_result, following its pages as needed. Distinguish an agent's claims from verified facts. Do not rerun completed work merely to recover its reply.
+Only the latest tool exchange stays in working context. While reading long paginated results, save relevant conclusions with context before moving on; exact evidence remains in the run record.
 When asked to contact all or several agents with the same request, select all intended ids in one agent tool call using an array. Decide recipients from the user's meaning and conversation, not just the last sentence. Do not substitute a single representative.
 When the user asks "what about Claude and Codex?" after a delegation request, continue that request for the named recipients; do not merely report that they are idle.
 Never claim success for blocked, partial, refused, cancelled or failed work.
@@ -88,18 +95,10 @@ export async function nextStep(
   limits?: { contextTokens: number; outputTokens: number },
 ): Promise<ParsedStep> {
   let last: ParsedStep = { ok: false, error: 'no reply' };
+  const repairs: ChatMessage[] = [];
   const schema = toolbox.jsonSchema();
   for (let attempt = 0; attempt < attempts; attempt++) {
-    const prompt =
-      attempt === 0
-        ? messages
-        : [
-            ...messages,
-            {
-              role: 'user' as const,
-              content: `That reply was unusable: ${last.ok ? '' : last.error} Reply with ONLY one JSON object matching the schema.`,
-            },
-          ];
+    const prompt = [...messages, ...repairs];
     // A fresh extractor per attempt: a retried reply starts a new JSON object.
     const message = stream ? new MessageStream() : undefined;
     const onDelta = message
@@ -118,6 +117,8 @@ export async function nextStep(
     }
     last = toolbox.parse(reply);
     if (last.ok) return last;
+    repairs.push({ role: 'assistant', content: reply }, { role: 'user',
+      content: `That reply was unusable: ${last.error} Reply with ONLY one JSON object matching the schema.` });
     // Whatever streamed came from a reply that could not be used.
     stream?.retract();
   }

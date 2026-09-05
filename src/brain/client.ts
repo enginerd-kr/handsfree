@@ -206,9 +206,10 @@ function isRequestRejection(err: unknown): boolean {
 
 /** Keeps the system prompt and the most recent window. */
 export function trimHistory(messages: ChatMessage[], max: number): ChatMessage[] {
-  if (messages.length <= max + 1) return messages;
-  const [system, ...rest] = messages;
-  return system ? [system, ...rest.slice(rest.length - max)] : messages.slice(-max);
+  const system = messages[0]?.role === 'system' ? messages[0] : undefined;
+  const body = (system ? messages.slice(1) : messages).slice(-max);
+  while (body[0]?.role === 'assistant') body.shift();
+  return [...(system ? [system] : []), ...body];
 }
 
 /**

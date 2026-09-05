@@ -151,7 +151,10 @@ export class Executor {
     if (!Number.isSafeInteger(taskId) || taskId < 1 || !Number.isSafeInteger(offset) || offset < 0) throw new Error('Invalid result address');
     if (!Number.isSafeInteger(maxChars) || maxChars < 1 || maxChars > 32_000) throw new Error('maxChars must be between 1 and 32000');
     const saved = JSON.parse(fs.readFileSync(path.join(this.deps.workspace.runDir, 'results', `${taskId}.json`), 'utf8')) as { outcome: TaskOutcome };
-    const text = JSON.stringify(saved.outcome);
+    // Put evidence before the potentially long worker brief, so the first
+    // page answers common follow-ups while later pages retain the full record.
+    const { taskId: id, agentId, status, message, report, ...rest } = saved.outcome;
+    const text = JSON.stringify({ taskId: id, agentId, status, message, report, ...rest });
     const end = offset + Math.max(1, Math.min(32_000, maxChars));
     return { text: text.slice(offset, end), ...(end < text.length ? { nextOffset: end } : {}) };
   }

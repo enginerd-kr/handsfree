@@ -9,6 +9,6 @@ export class ResultTool implements Tool<{ taskId: number; offset: number }> {
   describe(): string { return 'task_result — read a completed task\'s recorded reply and details to explain, compare or inspect previous results without contacting the agent again. Input: {"taskId":1,"offset":0}. Follow nextOffset for another page.'; }
   async run({ taskId, offset }: { taskId: number; offset: number }) {
     const page = this.executor.readResult(taskId, offset, this.maxChars - 80);
-    return { text: `${page.text}${page.nextOffset === undefined ? '' : `\nnextOffset: ${page.nextOffset}`}` };
+    return { text: `${page.text}${page.nextOffset === undefined ? '' : `\nnextOffset: ${page.nextOffset}`}`, completedWork: true };
   }
 }
