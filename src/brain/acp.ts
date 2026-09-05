@@ -3,6 +3,7 @@ import type { AgentProfile } from '../config/schema.js';
 import type { HostContext } from '../capabilities/context.js';
 import { AgentConnection, type ConnectionTarget } from '../host/connection.js';
 import { fallbackArgs, spawnTarget } from '../host/launch.js';
+import { mediationProblem } from '../host/mediation.js';
 import { SessionUnresponsiveError } from '../host/session.js';
 import { estimateTokens, type ChatClient, type ChatMessage, type ChatOptions, type JsonSchemaSpec } from './client.js';
 
@@ -45,7 +46,11 @@ export class AcpModel implements ChatClient {
   constructor(private readonly options: AcpModelOptions) {}
 
   async chat(messages: ChatMessage[], options: ChatOptions = {}): Promise<string> {
+    const problem = mediationProblem(this.options.profile);
+    if (problem) throw new Error(problem);
     const connection = await this.connect();
+    const identified = mediationProblem(this.options.profile, connection.info?.name);
+    if (identified) throw new Error(identified);
 
     let reply = '';
     const outputLimit = new AbortController();

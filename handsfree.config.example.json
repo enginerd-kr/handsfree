@@ -3,7 +3,7 @@
     "provider": "local",
     "local": {
       "baseURL": "http://localhost:1234/v1",
-      "model": "google/gemma-3-12b",
+      "model": "google/gemma-3-4b",
       "temperature": 0.1
     },
     "acp": {
@@ -37,7 +37,8 @@
       "args": [
         "-y",
         "@agentclientprotocol/codex-acp"
-      ]
+      ],
+      "nativeTools": "deny"
     }
   },
   "roles": {
@@ -94,14 +95,17 @@
   "budget": {
     "maxTokens": 200000,
     "maxFrontierTokens": 150000,
-    "maxTaskTokens": 32000,
-    "estimatedTaskTokens": 4096
+    "maxTaskTokens": 128000,
+    "estimatedTaskTokens": 4096,
+    "maxTaskOutputTokens": 4096
   },
   "execution": {
     "maxParallel": 2,
     "maxBatchTasks": 16,
     "maxCandidates": 3,
-    "rotateContextRatio": 0.85
+    "rotateContextRatio": 0.85,
+    "routing": "auto",
+    "routingContextTokens": 2048
   },
   "prices": {}
 }

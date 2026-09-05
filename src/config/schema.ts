@@ -58,6 +58,8 @@ export const AgentProfileSchema = z
     model: z.string().min(1).optional(),
     /** Local workers do not consume the frontier-token budget. */
     frontier: z.boolean().default(true),
+    /** Explicitly accept adapter-native operations outside host policy mediation. */
+    nativeTools: z.enum(['deny', 'allow']).default('deny'),
   })
   .superRefine((profile, ctx) => {
     try {
@@ -349,12 +351,17 @@ export const ConfigSchema = z
     cleanupPeriodDays: z.number().int().nonnegative().default(30),
     orchestration: OrchestrationSchema.prefault({}),
     budget: TokenBudgetSchema.extend({
-      maxTaskTokens: z.number().int().positive().default(32_000),
+      // ACP wrappers/cache reads alone can exceed 32k; output has a separate cap.
+      maxTaskTokens: z.number().int().positive().default(128_000),
+      maxTaskOutputTokens: z.number().int().positive().default(4096),
       estimatedTaskTokens: z.number().int().positive().default(4_096),
     }).prefault({}),
     /** USD per million tokens, keyed by model id or agent id. No built-in prices. */
     prices: z.record(z.string(), PriceSchema).default({}),
     execution: z.object({
+      /** Auto consults local/API selectors; ACP selection is an explicit opt-in. */
+      routing: z.enum(['auto', 'deterministic', 'model']).default('auto'),
+      routingContextTokens: z.number().int().min(256).default(2048),
       maxParallel: z.number().int().min(1).max(8).default(2),
       maxBatchTasks: z.number().int().min(1).max(64).default(16),
       maxCandidates: z.number().int().min(1).max(8).default(3),

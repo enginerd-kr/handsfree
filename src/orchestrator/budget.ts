@@ -30,7 +30,7 @@ export interface BudgetLease {
   signal: AbortSignal;
   exceeded(): boolean;
   setModel(model: string): void;
-  observe(tokens: number): void;
+  observe(tokens: number, outputTokens?: number): void;
   finish(charge: TokenCharge, failed?: boolean): BudgetUsage;
 }
 
@@ -116,17 +116,18 @@ export class BudgetManager {
           throw new BudgetExceededError('Selected model cannot fit the USD budget');
         }
       },
-      observe: (tokens) => {
+      observe: (tokens, outputTokens = 0) => {
         if (finished) return;
         state.tokens = Math.max(state.tokens, tokens);
         state.cost = this.estimateCost(source, model, state.tokens, frontier);
-        if (tokens > perTask || (limits.maxCostUsd !== undefined && (state.cost ?? Infinity) > limits.maxCostUsd) || this.reason(0, false, 0)) stop.abort();
+        if (tokens > perTask || outputTokens > this.config.budget.maxTaskOutputTokens
+          || (limits.maxCostUsd !== undefined && (state.cost ?? Infinity) > limits.maxCostUsd) || this.reason(0, false, 0)) stop.abort();
       },
       finish: (charge, failed = false) => {
         if (finished) return finished;
         this.active.delete(id);
         const actualCost = !frontier || charge.tokens === 0 ? 0 : this.price(source, model, charge);
-        const overBudget = charge.tokens > perTask
+        const overBudget = charge.tokens > perTask || charge.outputTokens > this.config.budget.maxTaskOutputTokens
           || (limits.maxCostUsd !== undefined && (actualCost ?? Infinity) > limits.maxCostUsd)
           || this.reason(charge.tokens, frontier, actualCost) !== undefined;
         if (overBudget) stop.abort();

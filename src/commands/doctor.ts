@@ -11,6 +11,8 @@ export interface AgentReport {
   loadSession?: boolean;
   promptCapabilities?: string[];
   authMethods?: string[];
+  executionAllowed?: boolean;
+  executionProblem?: string;
 }
 
 /**
@@ -62,10 +64,13 @@ export async function doctor(
           .filter(([, enabled]) => enabled === true)
           .map(([name]) => name),
         authMethods: connection.authMethods.map((method) => method.name || method.id),
+        executionAllowed: !runtime.pool.executionProblem(agentId),
+        executionProblem: runtime.pool.executionProblem(agentId),
       };
       reports.push(report);
       log(`  ok    ${agentId.padEnd(8)} ${report.detail}`);
       log(`        launch: ${launch}`);
+      if (report.executionProblem) log(`        execution blocked: ${report.executionProblem}`);
       log(`        resume: ${report.loadSession ? 'session/load' : 'not supported'}`);
       if (report.promptCapabilities && report.promptCapabilities.length > 0) {
         log(`        prompt: ${report.promptCapabilities.join(', ')}`);
@@ -87,7 +92,7 @@ export async function doctor(
   log(`  fs/write_text_file  ${caps.writeTextFile ? 'yes' : 'no'}`);
   log(
     `  terminal/*          ${caps.terminal ? 'yes' : 'no'}` +
-      (caps.terminal ? ` (${config.policy.exec.mode})` : ' — agents cannot run commands'),
+      (caps.terminal ? ` (${config.policy.exec.mode})` : ' — no host terminal; native adapter tools may differ'),
   );
   log(
     `  elicitation/create  ${caps.elicitation ? 'yes (form)' : 'no'}` +

@@ -12,7 +12,7 @@ handsfree serve --mcp --permission-mode acceptEdits
 
 Use `ask` to send permission questions to an MCP client that supports form elicitation. Without that support an unresolved permission request is denied. `acceptEdits` and `bypass` retain the existing policy-mode semantics. An `answer` or `inspect` task further restricts its session even in bypass mode.
 
-These restrictions govern operations routed through the host. Some adapters execute native tools without asking the host even when ACP terminal support is advertised; see the [live adapter findings](live-use-cases.md). They do not establish an OS sandbox or universal side-effect enforcement.
+These restrictions govern operations routed through the host. Known Codex ACP adapters are blocked before prompting by default because they execute native tools without asking the host. Detection checks both launch profiles and handshake identity. Setting `agents.<id>.nativeTools: "allow"` explicitly accepts adapter-native permissions or external isolation; those tasks always run exclusively. This opt-in does not make host restrictions enforceable on native tools. Unknown adapters are not automatically certified safe. See the [live adapter findings](live-use-cases.md) and [follow-up controls](execution-controls.md).
 
 The structured CLI returns one JSON result and a nonzero exit code for unsuccessful tasks:
 
@@ -77,19 +77,20 @@ Unknown dependencies, cycles, duplicate IDs and oversized batches are rejected b
   "budget": {
     "maxTokens": 200000,
     "maxFrontierTokens": 150000,
-    "maxTaskTokens": 32000,
+    "maxTaskTokens": 128000,
+    "maxTaskOutputTokens": 4096,
     "estimatedTaskTokens": 4096
   },
-  "execution": {"maxParallel":2,"maxBatchTasks":16,"maxCandidates":3,"rotateContextRatio":0.85},
+  "execution": {"routing":"auto","routingContextTokens":2048,"maxParallel":2,"maxBatchTasks":16,"maxCandidates":3,"rotateContextRatio":0.85},
   "prices": {}
 }
 ```
 
 `provider: local` uses the same API client and treats planning tokens as local. `provider: api` counts them toward the frontier budget. The legacy `local` configuration block holds the compatible endpoint in both cases. `provider: acp` remains supported but incurs a fresh planning session per call. Ephemeral sessions are released from host bookkeeping; workers keep their sessions.
 
-Run-wide token and USD limits are opt-in. The default per-call/task token limit is 32,000. Candidate ranking considers recent usage and failure history, relevant unchanged files, and session occupancy. The bounded selector chooses an ID from the shortlist in at most one model call; invalid replies fall back to the ranked candidate without repair calls. A single candidate, an explicit agent, or a strong context-affinity advantage skips selection. The dialogue planner retains its configurable bounded repair loop for conversational compatibility.
+Run-wide token and USD limits are opt-in. The default per-call/task total-token limit is 128,000; generated output is capped separately at 4,096 tokens. Cached reads still count toward total limits. Reported thought tokens count toward the output cap. Explicit smaller task/run limits are preserved. Raising the input ceiling accommodates ACP wrapper usage; it is not a token-saving measure. Candidate ranking considers recent usage and failure history, relevant unchanged files, and session occupancy. In `execution.routing: auto`, local/API selectors may be consulted, while ACP uses deterministic ranking without a selection call. `deterministic` always skips the selector; `model` explicitly permits it, including ACP. The selector sees neutral IDs and configured roles in a 2,048-token window. If the complete task cannot fit that small window, it is passed intact to the deterministically selected worker. The bounded selector chooses an ID from the shortlist in at most one model call; invalid replies fall back to the ranked candidate without repair calls. A single candidate, an explicit agent, or a strong context-affinity advantage skips selection. The dialogue planner retains its configurable bounded repair loop for conversational compatibility.
 
-Reservations are made synchronously before calls so parallel workers cannot all claim the same remaining budget. Streaming output and ACP context updates can trigger cooperative cancellation. Actual response usage replaces estimates; failed calls are charged too. Context occupancy is only a lower-bound signal, not cumulative billing usage. Token estimates use a character heuristic and do not guarantee a model's tokenizer count. ACP adapters may omit live usage, report hidden context only at completion, or take time to cancel, so limits can be exceeded before the host learns the actual charge. These are admission and cooperative-stop controls, not a provider-enforced spending cap.
+Worker estimates use the 90th percentile of the last eight positive usage charges and the current reported context size; cold starts use the configured estimate. Reservations are made synchronously before calls so parallel workers cannot all claim the same remaining budget. Streaming output and ACP context updates can trigger cooperative cancellation. Actual response usage replaces estimates; failed calls are charged too. Context occupancy is only a lower-bound signal, not cumulative billing usage. Token estimates use a character heuristic and do not guarantee a model's tokenizer count. ACP adapters may omit live usage, report hidden context only at completion, or take time to cancel, so limits can be exceeded before the host learns the actual charge. These are admission and cooperative-stop controls, not a provider-enforced spending cap.
 
 Cache reads and writes are counted in total tokens and priced separately. USD rates, when needed, are configured per model ID or agent ID as `input`, `output`, `cachedRead`, and `cachedWrite`, in USD per million tokens. There are no built-in model prices. A USD admission limit requires known rates; reported USD task cost is used when an adapter supplies it. Local inference has zero provider-billed cost in this accounting; hardware and electricity are not measured.
 

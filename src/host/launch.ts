@@ -39,8 +39,8 @@ export function childEnv(
 /**
  * An ACP agent is an ordinary child process that happens to speak JSON-RPC on
  * its stdio. Nothing about the launch grants it privileges: the process starts
- * in its own default permission mode and everything it wants comes back to us
- * as a request.
+ * in its own default permission mode. Known native adapters are checked before
+ * prompting; launch alone does not guarantee host mediation of every operation.
  */
 export function spawnTarget(profile: AgentProfile, options: SpawnOptions): ConnectionTarget {
   // Last gate before exec: a bypass flag must never reach an agent's argv.

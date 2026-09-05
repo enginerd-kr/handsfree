@@ -127,7 +127,7 @@ export class LocalModel implements ChatClient {
     const request = {
       model: this.config.model,
       temperature: this.config.temperature,
-      messages: messages.map(({ role, content }) => ({ role, content })),
+      messages: wireMessages(messages),
       max_tokens: maxOutputTokens ?? this.config.maxOutputTokens,
       ...(response_format ? { response_format } : {}),
     };
@@ -178,6 +178,17 @@ export class LocalModel implements ChatClient {
       throw err;
     }
   }
+}
+
+/** Small-model chat templates often require alternating roles after eviction/repair. */
+export function wireMessages(messages: readonly ChatMessage[]): { role: ChatMessage['role']; content: string }[] {
+  const result: { role: ChatMessage['role']; content: string }[] = [];
+  for (const { role, content } of messages) {
+    const last = result.at(-1);
+    if (last?.role === role) last.content += `\n\n${content}`;
+    else result.push({ role, content });
+  }
+  return result;
 }
 
 /** True when the endpoint refused the *shape* of the request, not the content. */

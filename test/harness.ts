@@ -14,7 +14,7 @@ export interface HarnessOptions {
     policy: Record<string, unknown>;
     limits: Partial<Config['limits']>;
     /** Per-agent profile fields beyond the command — the optional model override. */
-    profiles: Record<string, { model?: string }>;
+    profiles: Record<string, { model?: string; nativeTools?: 'allow' | 'deny' }>;
     /** What each agent is for, as a config file would say it. */
     roles: Record<string, string>;
     /** Which model plans, for what the status line and `/agents` say about it. */

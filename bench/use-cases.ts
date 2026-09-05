@@ -14,6 +14,9 @@ import { sessionMemory } from '../src/orchestrator/memory.js';
 // Explicit live integration suite. Never imported by the unit test runner.
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'handsfree-use-cases-'));
 const configured = loadConfig().config;
+// This suite intentionally exercises native Codex tools in a disposable fixture.
+// The opt-in is explicit because the host cannot mediate all those operations.
+if (process.argv.includes('--allow-native')) configured.agents.codex!.nativeTools = 'allow';
 const config = ConfigSchema.parse({ ...configured, workspaceRoot: root, cleanupPeriodDays: 0,
   capabilities: { ...configured.capabilities, terminal: true },
   policy: { ...configured.policy, exec: { ...configured.policy.exec, enabled: true,
@@ -91,7 +94,8 @@ try {
   const beforeRoute = planningCalls();
   const routed = await delegate({ task: 'Reply with ROUTING_OK in your final prose. No file access or commands are needed.', kind: 'answer' });
   const routedDetail = routed ? runtime.executor.readResult(routed.taskId).text : '';
-  check('bounded automatic routing', routed?.status === 'done' && routedDetail.includes('ROUTING_OK') && planningCalls() - beforeRoute === 1,
+  const expectedRoutingCalls = config.execution.routing === 'deterministic' || config.execution.routing === 'auto' && config.orchestration.provider === 'acp' ? 0 : 1;
+  check('bounded automatic routing', routed?.status === 'done' && routedDetail.includes('ROUTING_OK') && planningCalls() - beforeRoute === expectedRoutingCalls,
     { result: routed, plannerCalls: planningCalls() - beforeRoute });
 
   const beforeBatch = planningCalls();
@@ -106,8 +110,8 @@ try {
   ] });
   const results = (batch.structuredContent as { results?: Record<string, TaskResult> } | undefined)?.results ?? {};
   check('three-agent review-to-fix dependency graph', ['code-review', 'test-review', 'fix'].every((id) => results[id]?.status === 'done'), results);
-  check('Codex change and verification metadata', results.fix?.artifacts.includes(path.join(workspace, 'src/summarize.js')) === true
-    && results.fix.verification.source === 'agent_report' && results.fix.verification.detail.includes('node --test'), results.fix);
+  check('Codex change and verification metadata', results.fix?.artifacts?.includes(path.join(workspace, 'src/summarize.js')) === true
+    && results.fix.verification?.source === 'agent_report' && results.fix.verification.detail.includes('node --test'), results.fix);
   check('explicit graph skips planner', planningCalls() === beforeBatch, { plannerCalls: planningCalls() - beforeBatch });
   const records = runtime.transcript.all();
   const reviews = records.filter((r) => r.type === 'delegation' && (r.agentId === 'claude' || r.agentId === 'gemini') && r.task.includes('Read '));

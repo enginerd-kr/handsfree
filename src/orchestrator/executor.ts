@@ -1,10 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { z } from 'zod';
 import { agentRole, contextBudgetTokens, plannerLabel } from '../config/schema.js';
-import { estimateTokens, fitBudget, type ChatClient } from '../brain/client.js';
-import { extractJsonObject } from '../brain/json.js';
+import { ContextBudgetError, type ChatClient } from '../brain/client.js';
+import { routingRequest } from './router.js';
 import { Delegator, type DelegatorDeps } from './delegate.js';
 import { metered } from './usage.js';
 import { sessionMemory } from './memory.js';
@@ -26,7 +25,7 @@ export class Executor {
 
   candidates(request: TaskRequest): Candidate[] {
     const { config, pool, transcript, budget } = this.deps;
-    return pool.available().filter((id) => !request.agent || request.agent === id).map((agent) => {
+    return pool.available().filter((id) => (!request.agent || request.agent === id) && !pool.executionProblem(id)).map((agent) => {
       const model = request.model ?? pool.currentModel(agent) ?? agent;
       const memory = sessionMemory(transcript, agent, pool.sessionId(agent));
       const charges = transcript.all().filter((r) => r.type === 'budget_usage' && r.usage.source === agent).slice(-8);
@@ -81,33 +80,41 @@ export class Executor {
   private async perform(request: TaskRequest, signal: AbortSignal): Promise<TaskResult> {
     signal.throwIfAborted();
     if (request.agent && !this.deps.pool.available().includes(request.agent)) throw new Error(`Agent ${request.agent} is not enabled`);
+    if (request.agent) {
+      const problem = this.deps.pool.executionProblem(request.agent);
+      if (problem) throw new Error(problem);
+    }
     const candidates = this.candidates(request);
-    if (candidates.length === 0) throw new BudgetExceededError('No enabled agent fits the requested agent and token budget');
+    if (candidates.length === 0) {
+      const enabled = this.deps.pool.available();
+      if (enabled.length && enabled.every((id) => this.deps.pool.executionProblem(id))) throw new Error('All enabled agents are blocked by native-tool mediation requirements');
+      throw new BudgetExceededError('No enabled agent fits the requested agent and token budget');
+    }
     let selected = candidates[0]!;
     let routingUsage: BudgetUsage | undefined;
     // Explicit routing, a single candidate or strong context affinity needs no model call.
-    if (!request.agent && candidates.length > 1 && selected.score - candidates[1]!.score < 2 && this.deps.llm) {
-      const schema = z.object({ agent: z.enum(candidates.map((c) => c.agent) as [string, ...string[]]) });
+    const routing = this.deps.config.execution.routing;
+    const consult = routing === 'model' || routing === 'auto' && this.deps.config.orchestration.provider !== 'acp';
+    if (consult && !request.agent && candidates.length > 1 && selected.score - candidates[1]!.score < 2 && this.deps.llm) {
       const config = this.deps.config;
       const outputTokens = 64;
-      const spec = { name: 'handsfree_route', schema: z.toJSONSchema(schema) as Record<string, unknown> };
-      const messages = fitBudget([
-        { role: 'system', content: 'Select one candidate for this task. Return only {"agent":"id"}. Do not rewrite the task.\n' + JSON.stringify(candidates) },
-        { role: 'user', content: taskBrief(request), pinned: true },
-      ], contextBudgetTokens(config.orchestration) - outputTokens - estimateTokens(JSON.stringify(spec.schema)) - 64);
+      const routingContext = Math.min(contextBudgetTokens(config.orchestration), config.execution.routingContextTokens);
       const llm = metered(this.deps.llm, 'plan', this.deps.transcript, plannerLabel(config), this.deps.budget ? {
         manager: this.deps.budget, frontier: config.orchestration.provider !== 'local', outputTokens,
-        contextTokens: contextBudgetTokens(config.orchestration), limits: request.budget,
+        contextTokens: routingContext, limits: request.budget,
         onCharge: (usage) => { routingUsage = usage; },
       } : undefined);
       try {
-        const reply = await llm.chat(messages, { schema: spec, maxOutputTokens: outputTokens, signal });
-        const parsed = schema.safeParse(JSON.parse(extractJsonObject(reply) ?? '{}'));
-        if (parsed.success) selected = candidates.find((c) => c.agent === parsed.data.agent)!;
+        const route = routingRequest(candidates, taskBrief(request), routingContext);
+        const reply = await llm.chat(route.messages, { schema: route.schema, maxOutputTokens: outputTokens, signal });
+        const agent = route.parse(reply);
+        if (agent) selected = candidates.find((c) => c.agent === agent)!;
       } catch (error) {
         if (signal.aborted || error instanceof BudgetExceededError) throw error;
         // A malformed routing reply falls back to the deterministic candidate ranking, with no repair call.
-        this.deps.transcript.append({ type: 'note', level: 'info', text: 'Router unavailable; using the highest-ranked affordable agent.' });
+        this.deps.transcript.append({ type: 'note', level: 'info', text: error instanceof ContextBudgetError
+          ? 'Task exceeds the small routing window; forwarding its complete requirements with deterministic routing.'
+          : 'Router unavailable; using the highest-ranked affordable agent.' });
       }
     }
     const remaining = request.budget ? { ...request.budget } : undefined;

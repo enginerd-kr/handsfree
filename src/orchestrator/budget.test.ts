@@ -5,6 +5,17 @@ import { BudgetManager } from './budget.js';
 import { metered } from './usage.js';
 
 describe('execution budgets', () => {
+  it('permits measured ACP input overhead but separately stops excessive generated output', () => {
+    const manager = new BudgetManager(ConfigSchema.parse({}), new Transcript());
+    const cached = manager.begin('a', 'a', true, 50_000);
+    const charge = cached.finish({ tokens: 50_000, inputTokens: 1000, cachedReadTokens: 48_500, outputTokens: 500, estimated: false });
+    expect(charge.failed).toBe(false);
+    const verbose = manager.begin('a', 'a', true, 50_000);
+    verbose.observe(54_100, 4100);
+    expect(verbose.signal.aborted).toBe(true);
+    expect(verbose.finish({ tokens: 54_100, inputTokens: 50_000, outputTokens: 4100, estimated: false }).failed).toBe(true);
+    expect(() => manager.begin('a', 'a', true, 50_000, { maxTokens: 32_000 })).toThrow('task budget');
+  });
   it('reserves remaining tokens before concurrent admissions and reconciles actual usage', () => {
     const manager = new BudgetManager(ConfigSchema.parse({ budget: { maxTokens: 100, maxTaskTokens: 100 } }), new Transcript());
     const first = manager.begin('a', 'a', true, 60);

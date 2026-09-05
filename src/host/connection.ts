@@ -19,6 +19,7 @@ import { createPermissionHandler } from '../capabilities/permission.js';
 import { TerminalRegistry } from '../capabilities/terminal.js';
 import { VERSION } from '../version.js';
 import { HostSession, modelStateOf } from './session.js';
+import { mediationProblem } from './mediation.js';
 
 export interface ConnectionTarget {
   /** Attaches the built client app to whatever carries the protocol. */
@@ -207,6 +208,7 @@ export class AgentConnection {
 
   /** `onUpdate` sees every `session/update` for the new session, live. */
   async newSession(onUpdate?: (update: SessionUpdate) => void): Promise<HostSession> {
+    this.assertMediation();
     let response;
     try {
       response = await this.connection.agent.request(methods.agent.session.new, {
@@ -228,6 +230,7 @@ export class AgentConnection {
    * transcript gets rebuilt.
    */
   async loadSession(sessionId: string): Promise<HostSession | undefined> {
+    this.assertMediation();
     if (this.capabilities.loadSession !== true) return undefined;
     const session = this.register(sessionId);
     // What the agent replays while loading is the conversation this run
@@ -279,14 +282,16 @@ export class AgentConnection {
       this.agentId,
       sessionId,
       {
-        prompt: (request: PromptRequest, signal: AbortSignal) =>
-          this.connection.agent
+        prompt: (request: PromptRequest, signal: AbortSignal) => {
+          this.assertMediation();
+          return this.connection.agent
             .request(methods.agent.session.prompt, request, { cancellationSignal: signal })
             // The reason a turn failed — a retired model, a quota, a missing
             // login — arrives in `data.details` behind a generic message.
             .catch((err: unknown) => {
               throw this.explain(err);
-            }),
+            });
+        },
         cancel: (id: string) =>
           this.connection.agent.notify(methods.agent.session.cancel, { sessionId: id }),
         setConfigOption: async (request) => {
@@ -338,6 +343,13 @@ export class AgentConnection {
     if (details) parts.push(details);
     if (stderr) parts.push(stderr);
     return new Error(parts.join(' — '));
+  }
+
+  private assertMediation(): void {
+    const profile = this.host.config.agents[this.agentId];
+    if (!profile) return; // ACP planners validate their own source profile.
+    const problem = mediationProblem(profile, this.info?.name);
+    if (problem) throw new Error(problem);
   }
 }
 

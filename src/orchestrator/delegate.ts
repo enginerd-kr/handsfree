@@ -5,6 +5,7 @@ import { BudgetExceededError, type BudgetManager, type BudgetLease, type BudgetU
 import { tokensOf } from './usage.js';
 import type { PolicyEngine } from '../policy/engine.js';
 import { TaskScheduler } from './scheduler.js';
+import { nativeToolAdapter } from '../host/mediation.js';
 import { durableFacts, remember, sessionMemory } from './memory.js';
 import { debug } from '../debug.js';
 import { SessionUnresponsiveError, type TurnUsage } from '../host/session.js';
@@ -107,14 +108,18 @@ export class Delegator {
 
   estimate(agentId: string, task: string): number {
     const charges = this.deps.transcript.all().filter((r) => r.type === 'budget_usage' && r.usage.source === agentId && r.usage.tokens > 0).slice(-8);
-    const average = charges.length
-      ? charges.reduce((n, r) => n + (r.type === 'budget_usage' ? r.usage.tokens : 0), 0) / charges.length
+    const counts = charges.map((r) => r.type === 'budget_usage' ? r.usage.tokens : 0).sort((a, b) => a - b);
+    const expected = counts.length
+      ? counts[Math.ceil(counts.length * 0.9) - 1]!
       : this.deps.config.budget.estimatedTaskTokens;
-    return Math.ceil(Math.max(estimateTokens(task), average));
+    const context = sessionMemory(this.deps.transcript, agentId, this.deps.pool.sessionId(agentId)).context?.used ?? 0;
+    return Math.ceil(Math.max(estimateTokens(task), expected, context));
   }
 
   async delegate(delegation: Delegation, signal: AbortSignal): Promise<TaskOutcome> {
-    const release = await this.scheduler.acquire(delegation.agentId, delegation.kind === 'change', signal);
+    const profile = this.deps.config.agents[delegation.agentId];
+    const exclusive = delegation.kind === 'change' || !!profile && (profile.nativeTools === 'allow' || nativeToolAdapter(profile));
+    const release = await this.scheduler.acquire(delegation.agentId, exclusive, signal);
     try { return await this.perform(delegation, signal); }
     finally { release(); }
   }
@@ -151,6 +156,8 @@ export class Delegator {
     try {
       if (signal.aborted) return { ...failed(new Error('Cancelled before starting')), status: 'cancelled' };
       const profile = config.agents[agentId];
+      const problem = pool.executionProblem(agentId);
+      if (problem) throw new Error(problem);
       const estimate = this.estimate(agentId, task);
       lease = this.deps.budget?.begin(agentId, model ?? pool.currentModel(agentId) ?? agentId, profile?.frontier ?? true,
         estimate, delegation.budget);
@@ -243,7 +250,7 @@ export class Delegator {
         observed = Math.max(observed, record.update.used);
         if (record.update.cost?.currency === 'USD' && record.update.cost.amount >= previousCost) costUsd = record.update.cost.amount - previousCost;
       }
-      lease?.observe(Math.max(observed, estimateTokens(brief) + estimateTokens(output)));
+      lease?.observe(Math.max(observed, estimateTokens(brief) + estimateTokens(output)), estimateTokens(output));
     };
     transcript.on('record', observe);
     const releaseAccess = kind === 'change' ? undefined : this.deps.policy?.restrict({ agentId, sessionId: session.sessionId }, kind);

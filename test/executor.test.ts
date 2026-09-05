@@ -13,6 +13,43 @@ const report = (summary: string, status = 'done', extra = '') => `REPORT\noutcom
 function setup(options: Parameters<typeof harness>[0]) { const h = harness(options); open.push(h); return h; }
 
 describe('structured executor', () => {
+  it('refuses an identified native Codex adapter before creating a task or charging tokens', async () => {
+    const a = fakeAgent({ name: '@agentclientprotocol/codex-acp', script: () => [{ do: 'say', text: 'must not run' }] });
+    const h = setup({ agents: { a } });
+    await h.runtime.pool.connection('a');
+    await expect(h.runtime.executor.execute({ task: 'Run a command', agent: 'a' })).rejects.toThrow('outside host policy');
+    await expect(h.runtime.pool.session('a')).rejects.toThrow('outside host policy');
+    expect(a.prompts).toHaveLength(0);
+    expect(h.runtime.budget.totals().tokens).toBe(0);
+  });
+
+  it('allows explicit native opt-in but schedules those tasks exclusively', async () => {
+    const a = fakeAgent({ name: 'codex-acp', script: () => [{ do: 'stall', ms: 20 }, { do: 'say', text: report('A') }] });
+    const b = fakeAgent({ script: () => [{ do: 'say', text: report('B') }] });
+    const h = setup({ agents: { a, b }, config: { profiles: { a: { nativeTools: 'allow' } } } });
+    await h.runtime.executor.batch({ tasks: [
+      { id: 'a', request: { task: 'Inspect A', agent: 'a', kind: 'inspect' } },
+      { id: 'b', request: { task: 'Inspect B', agent: 'b', kind: 'inspect' } },
+    ] });
+    const records = h.runtime.transcript.all();
+    expect(records.find((r) => r.type === 'stop' && r.agentId === 'a')!.seq)
+      .toBeLessThan(records.find((r) => r.type === 'delegation' && r.agentId === 'b')!.seq);
+  });
+
+  it('skips an ACP selector by default and preserves a task too large for the small routing window', async () => {
+    const a = fakeAgent({ script: () => [{ do: 'say', text: report('A') }] });
+    const b = fakeAgent({ script: () => [{ do: 'say', text: report('B') }] });
+    const llm = scriptedModel([]);
+    const h = setup({ agents: { a, b }, llm, config: { orchestration: { provider: 'acp', acp: { agent: 'a' } } } });
+    await h.runtime.executor.execute({ task: 'Choose a worker', kind: 'answer' });
+    expect(llm.seen).toHaveLength(0);
+    h.runtime.config.orchestration.provider = 'local';
+    const task = 'Exact requirement: ' + 'keep this constraint. '.repeat(400);
+    const result = await h.runtime.executor.execute({ task, kind: 'answer' });
+    expect(result.status).toBe('done');
+    expect([...a.prompts, ...b.prompts].some((prompt) => prompt.includes(task.trim()))).toBe(true);
+    expect(llm.seen).toHaveLength(0);
+  });
   it('preserves exact constraints, returns a compact result and retrieves the full answer without a planner', async () => {
     const detail = 'IMPORTANT_DETAIL: retain retry ordering. ' + 'Explanation. '.repeat(200);
     const agent = fakeAgent({ script: () => [{ do: 'say', text: detail + '\n' + report('Reviewed retry ordering') }] });
