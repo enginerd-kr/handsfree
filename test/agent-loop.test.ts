@@ -122,15 +122,17 @@ describe('analyze, execute, review loop', () => {
     expect(replies(resumed).at(-1)).toBe('네, 이전 요청을 기억합니다.');
   });
 
-  it('keeps analysis available when the worker token budget is exhausted', async () => {
-    const worker = fakeAgent({ script: () => [] });
-    const llm = scriptedModel([delegate('claude', 'Review the code.'), answer('The worker budget prevented the review.')]);
-    const h = harness({ agents: { claude: worker }, llm, config: { budget: { maxTokens: 1 } } });
+  it('continues planning after a worker reports high token usage', async () => {
+    const worker = fakeAgent({ script: () => [{ do: 'say', text: 'Review complete.' },
+      { do: 'stop', reason: 'end_turn', usage: { inputTokens: 200_000, outputTokens: 10_000, totalTokens: 210_000 } }] });
+    const llm = scriptedModel([delegate('claude', 'Review the code.'), answer('The review is complete.')]);
+    const h = harness({ agents: { claude: worker }, llm });
     opened.push(h);
     await h.runtime.conversation.send('Review the code.');
-    expect(worker.prompts).toHaveLength(0);
+    expect(worker.prompts).toHaveLength(1);
     expect(llm.seen).toHaveLength(2);
-    expect(llm.seen[1]?.at(-1)?.content).toContain('budget_exceeded');
-    expect(replies(h).at(-1)).toBe('The worker budget prevented the review.');
+    expect(h.runtime.usage.totals().tokens).toBeGreaterThanOrEqual(210_000);
+    expect(llm.seen[1]?.at(-1)?.content).toContain('done');
+    expect(replies(h).at(-1)).toBe('The review is complete.');
   });
 });

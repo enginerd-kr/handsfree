@@ -1,5 +1,7 @@
 # Three-agent live integration check — 2026-09-05
 
+This historical run predates removal of host token/spending limits; its budget probe is no longer part of the live suite.
+
 The actual installed CLI adapters ran through the MCP tool server and shared executor. No worker or selector was mocked. MCP used an in-process transport; this run does not independently validate an external client's stdio configuration.
 
 ## Setup
@@ -13,7 +15,7 @@ The actual installed CLI adapters ran through the MCP tool server and shared exe
 
 `auto` is the Gemini session's reported selection, not proof of a specific underlying model. Each worker used its configured CLI default; the router used the separate small-model setting.
 
-Fixtures lived in a fresh temporary workspace. The suite enabled the terminal capability with a restricted command allowlist and used `acceptEdits`. Functional-test budgets were 240,000 tokens per task and 1,200,000 per run; project defaults were preserved. The project configuration currently disables host terminal execution, and its default 32,000-token task limit is smaller than the reported usage of four worker calls in this run.
+Fixtures lived in a fresh temporary workspace. The suite enabled the terminal capability with a restricted command allowlist and used `acceptEdits`. The historical suite used 240,000 tokens per task and 1,200,000 per run; four worker calls exceeded the then-default 32,000-token task limit. Current execution no longer imposes these limits.
 
 ## Observed behavior
 

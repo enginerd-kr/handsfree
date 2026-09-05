@@ -1,7 +1,7 @@
 import type { StopReason } from '@agentclientprotocol/sdk';
-import { agentRole, type Config, type TokenBudget } from '../config/schema.js';
+import { agentRole, type Config } from '../config/schema.js';
 import { estimateTokens } from '../brain/client.js';
-import { BudgetExceededError, type BudgetManager, type BudgetLease, type BudgetUsage } from './budget.js';
+import type { UsageTracker } from './meter.js';
 import { tokensOf } from './usage.js';
 import type { PolicyEngine } from '../policy/engine.js';
 import { TaskScheduler } from './scheduler.js';
@@ -37,7 +37,7 @@ export interface DelegatorDeps {
   pool: AgentPool;
   transcript: Transcript;
   workspace: Workspace;
-  budget?: BudgetManager;
+  usage?: UsageTracker;
   policy?: PolicyEngine;
   scheduler?: TaskScheduler;
 }
@@ -53,7 +53,6 @@ export interface Delegation {
   title?: string | undefined;
   /** The model the work should run on, as a mention or the planner named it. */
   model?: string | undefined;
-  budget?: TokenBudget;
   sessionId?: string;
 }
 
@@ -111,7 +110,7 @@ export class Delegator {
     const counts = charges.map((r) => r.type === 'budget_usage' ? r.usage.tokens : 0).sort((a, b) => a - b);
     const expected = counts.length
       ? counts[Math.ceil(counts.length * 0.9) - 1]!
-      : this.deps.config.budget.estimatedTaskTokens;
+      : this.deps.config.execution.estimatedTaskTokens;
     const context = sessionMemory(this.deps.transcript, agentId, this.deps.pool.sessionId(agentId)).context?.used ?? 0;
     return Math.ceil(Math.max(estimateTokens(task), expected, context));
   }
@@ -152,25 +151,18 @@ export class Delegator {
     // the next task rides the same choice until another mention moves it.
     let session;
     let chosen: ModelChoice | undefined;
-    let lease: BudgetLease | undefined;
     try {
       if (signal.aborted) return { ...failed(new Error('Cancelled before starting')), status: 'cancelled' };
-      const profile = config.agents[agentId];
       const problem = pool.executionProblem(agentId);
       if (problem) throw new Error(problem);
-      const estimate = this.estimate(agentId, task);
-      lease = this.deps.budget?.begin(agentId, model ?? pool.currentModel(agentId) ?? agentId, profile?.frontier ?? true,
-        estimate, delegation.budget);
       session = await pool.session(agentId);
       if (delegation.sessionId !== undefined && session.sessionId !== delegation.sessionId) throw new Error(`Session ${delegation.sessionId} is no longer active for ${agentId}`);
       const memory = sessionMemory(transcript, agentId, session.sessionId);
       if (!delegation.sessionId && memory.context && memory.context.size > 0
         && memory.context.used / memory.context.size >= config.execution.rotateContextRatio) session = await pool.rotate(agentId);
       if (model !== undefined) chosen = await session.selectModel(model);
-      lease?.setModel(session.currentModel() ?? agentId);
     } catch (err) {
-      lease?.finish({ tokens: 0, inputTokens: 0, outputTokens: 0, estimated: true }, true);
-      return { ...failed(err), ...(err instanceof BudgetExceededError ? { status: 'budget_exceeded' as const } : {}) };
+      return failed(err);
     }
 
     transcript.append({
@@ -250,7 +242,6 @@ export class Delegator {
         observed = Math.max(observed, record.update.used);
         if (record.update.cost?.currency === 'USD' && record.update.cost.amount >= previousCost) costUsd = record.update.cost.amount - previousCost;
       }
-      lease?.observe(Math.max(observed, estimateTokens(brief) + estimateTokens(output)), estimateTokens(output));
     };
     transcript.on('record', observe);
     try {
@@ -258,7 +249,7 @@ export class Delegator {
         turnTimeoutMs: config.limits.turnTimeoutMs,
         idleTimeoutMs: config.limits.idleTimeoutMs,
         cancelGraceMs: config.limits.cancelGraceMs,
-        signal: lease ? AbortSignal.any([signal, lease.signal]) : signal,
+        signal,
       });
       stopReason = end.stopReason;
       usage = end.usage;
@@ -279,7 +270,7 @@ export class Delegator {
     }
 
     const outcome = summarise(taskId, agentId, task, stopReason, transcript.forTask(taskId), Date.now() - startedAt, options);
-    const charged = lease?.finish({
+    const charged = this.deps.usage?.record(agentId, session.currentModel() ?? agentId, config.agents[agentId]?.frontier ?? true, {
       tokens: usage ? tokensOf(usage) : Math.max(observed, estimateTokens(brief) + estimateTokens(output)),
       inputTokens: usage?.inputTokens ?? Math.max(observed - estimateTokens(output), estimateTokens(brief)),
       outputTokens: usage ? usage.outputTokens + (usage.thoughtTokens ?? 0) : estimateTokens(output),
@@ -288,7 +279,6 @@ export class Delegator {
       estimated: usage === undefined,
       ...(costUsd === undefined ? {} : { costUsd }),
     }, outcome.status !== 'done');
-    if (lease?.exceeded()) outcome.status = 'budget_exceeded';
     remember(transcript, outcome, session.sessionId);
 
     const stopped = transcript.append({

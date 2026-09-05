@@ -21,14 +21,12 @@ const config = ConfigSchema.parse({ ...configured, workspaceRoot: root, cleanupP
   capabilities: { ...configured.capabilities, terminal: true },
   policy: { ...configured.policy, exec: { ...configured.policy.exec, enabled: true,
     allow: ['node --test', 'ls', 'cat', 'pwd', 'rg'], otherwise: 'deny' } },
-  budget: { maxTokens: 1_200_000, maxTaskTokens: 240_000, estimatedTaskTokens: 20_000 },
   limits: { ...configured.limits, turnTimeoutMs: 180_000, idleTimeoutMs: 90_000, cancelGraceMs: 5000 },
 });
 const runtime = createRuntime({ config, permissionMode: 'bypass' });
 const workspace = runtime.workspace.dir;
 const report: Record<string, unknown> = { date: new Date().toISOString(), root, workspace, runId: runtime.workspace.id,
-  limits: config.budget, originalLimits: configured.budget,
-  configurationChanges: ['isolated workspace', 'terminal enabled with restricted command allowlist', 'finite larger functional-test token budget'],
+  configurationChanges: ['isolated workspace', 'terminal enabled with restricted command allowlist'],
   agents: {}, cases: [], completed: false };
 const cases = report.cases as { name: string; ok: boolean; detail: unknown }[];
 function save() { fs.writeFileSync(path.join(root, 'report.json'), JSON.stringify(report, null, 2)); }
@@ -166,13 +164,10 @@ try {
     const result = JSON.parse(full) as { taskId: number; message: string };
     check('MCP full-result pagination', result.taskId === exported.taskId && !!result.message && pages > 1, { pages, chars: full.length });
   }
-  const beforeRefusal = workerCalls();
-  const limited = await call('delegate', { task: 'Reply budget probe', agent: 'codex', kind: 'answer', budget: { maxTokens: 1 } });
-  check('insufficient budget prevents worker call', limited.isError === true && workerCalls() === beforeRefusal, limited.content);
   report.completed = true;
 } catch (error) { check('suite completed', false, String(error)); }
 finally {
-  report.usage = runtime.budget.totals();
+  report.usage = runtime.usage.totals();
   report.charges = runtime.transcript.all().flatMap((r) => r.type === 'budget_usage' ? [r.usage] : []);
   report.denials = runtime.transcript.all().flatMap((r) => r.type === 'decision' && r.entry.verdict === 'deny' ? [{ agent: r.agentId, rule: r.entry.rule, summary: r.entry.summary, reason: r.entry.reason }] : []);
   save();

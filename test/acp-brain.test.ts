@@ -12,7 +12,7 @@ import { fakeAgent } from './fake-agent.js';
  * answer the way a planner should.
  */
 describe('acp orchestration', () => {
-  it('plans and answers through an agent instead of a local endpoint', async () => {
+  it('accepts an ACP reply exceeding the requested output size without cancelling', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'handsfree-acp-brain-'));
     const brain = fakeAgent({
       script: () => [
@@ -24,7 +24,7 @@ describe('acp orchestration', () => {
     });
     const config = ConfigSchema.parse({
       workspaceRoot: root,
-      orchestration: { provider: 'acp', acp: { agent: 'claude', timeoutMs: 5_000 } },
+      orchestration: { provider: 'acp', maxOutputTokens: 1, acp: { agent: 'claude', timeoutMs: 5_000 } },
       agents: { claude: { command: 'unused', args: [] } },
       limits: { turnTimeoutMs: 5_000, idleTimeoutMs: 5_000, cancelGraceMs: 500 },
     });

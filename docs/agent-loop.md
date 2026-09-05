@@ -53,11 +53,11 @@ Restarting the same run reconstructs recent conversation and active notes. An un
 
 ## Execution limits
 
-The conversation orchestrator's calls are usage-metered but excluded from the worker token/spend budget. Its context window, output limit, request timeout and configurable `maxPlanSteps` still apply. The default planning-step ceiling is 32; this bounds accidental loops rather than optimizing token cost. Worker calls remain subject to `maxDelegationsPerTurn` and worker token limits. A context lookup, saved conclusion or result read does not consume a worker slot.
+The conversation orchestrator and workers record token usage without token or spending limits. Context fitting, request timeouts and configurable `maxPlanSteps` still apply. Compatible HTTP planners receive an output-size parameter; ACP planners are not cancelled based on token counts. The default planning-step ceiling is 32 and bounds accidental loops. Worker calls remain subject to `maxDelegationsPerTurn`. A context lookup, saved conclusion or result read does not consume a worker slot.
 
-Worker errors and budget exhaustion return to planning, allowing another worker, an evidence lookup or a blocker report. A worker limit refuses further delegations but permits analysis. User cancellation ends the loop immediately. A step limit triggers a report with a limit note; it is stored as `limited`, not task completion. Direct `@agent` requests retain their direct routing and agent-owned reply.
+Worker errors return to planning, allowing another worker, an evidence lookup or a blocker report. A worker limit refuses further delegations but permits analysis. User cancellation ends the loop immediately. A step limit triggers a report with a limit note; it is stored as `limited`, not task completion. Direct `@agent` requests retain their direct routing and agent-owned reply.
 
-The structured MCP/CLI executor keeps its own existing routing and budgeting contract. This redesign concerns the conversational loop.
+The structured MCP/CLI executor keeps its own routing and usage-accounting contract. This redesign concerns the conversational loop.
 
 ## Validation
 

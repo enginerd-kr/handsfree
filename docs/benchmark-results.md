@@ -1,5 +1,7 @@
 # Execution benchmark — 2026-09-05
 
+These historical results predate removal of host token/spending limits. Current benchmarks record usage without budget-based admission or cancellation.
+
 Both runs used `bench/run.ts`: two order-aggregation tasks, with the input changed before the second task, in separate workspaces per mode. The host checks exact JSON artifacts. These are smoke samples, not a general coding-quality evaluation.
 
 ## Deterministic simulation
@@ -28,4 +30,4 @@ All token counts in this live run came from adapter usage reports. All modes pro
 
 The worker reported much more usage at completion than the host could estimate before admission. Cooperative cancellation cannot retroactively prevent that spend. Zero selector calls are verified for the structured path; a reliable reduction in real total tokens or USD cost is **not established** by this run. Direct execution used fewer total tokens than either orchestrated path. Prices were incomplete for direct and conversational execution, so known USD subtotals are not comparable total costs.
 
-Re-run both commands after changing the worker, planner, or budgets. A broader evaluation needs repeated tasks, independent quality checks, and a provider or adapter exposing enforceable generation limits and timely usage.
+Re-run both commands after changing the worker, planner, or routing configuration. A broader evaluation needs repeated tasks, independent quality checks, and a provider or adapter exposing accurate usage.

@@ -9,7 +9,7 @@ import { metered } from './usage.js';
 import { sessionMemory } from './memory.js';
 import { TaskRequestSchema, TaskResultSchema, BatchRequestSchema, taskBrief, type TaskRequest, type TaskRequestInput, type TaskResult, type BatchRequest } from './contract.js';
 import type { TaskOutcome } from './outcome.js';
-import { BudgetExceededError, type BudgetUsage } from './budget.js';
+import type { TokenUsage } from './meter.js';
 
 export interface ExecutorDeps extends DelegatorDeps { llm?: ChatClient }
 interface Candidate { agent: string; model: string; description: string; estimate: number; score: number; reason: string }
@@ -24,7 +24,7 @@ export class Executor {
   constructor(private readonly deps: ExecutorDeps) { this.delegator = new Delegator(deps); }
 
   candidates(request: TaskRequest): Candidate[] {
-    const { config, pool, transcript, budget } = this.deps;
+    const { config, pool, transcript } = this.deps;
     return pool.available().filter((id) => (!request.agent || request.agent === id) && !pool.executionProblem(id)).map((agent) => {
       const model = request.model ?? pool.currentModel(agent) ?? agent;
       const memory = sessionMemory(transcript, agent, pool.sessionId(agent));
@@ -32,16 +32,11 @@ export class Executor {
       const related = memory.fresh.filter((file) => request.files.some((name) => path.resolve(this.deps.workspace.dir, name) === file) || request.task.includes(path.basename(file))).length;
       const failures = charges.filter((r) => r.type === 'budget_usage' && r.usage.failed).length;
       const estimate = this.delegator.estimate(agent, taskBrief(request));
-      const cost = budget?.estimateCost(agent, model, estimate, config.agents[agent]!.frontier);
       const fullness = memory.context && memory.context.size > 0 ? memory.context.used / memory.context.size : 0;
-      return { agent, model, description: agentRole(config, agent), estimate, score: related * 4 - failures * 3 - fullness * 4 - estimate / config.budget.estimatedTaskTokens,
+      return { agent, model, description: agentRole(config, agent), estimate, score: related * 4 - failures * 3 - fullness * 4 - estimate / config.execution.estimatedTaskTokens,
         reason: `${related} relevant unchanged files; ${failures} recent failed calls; about ${estimate} tokens`,
-        affordable: (!budget || budget.canStart(estimate, config.agents[agent]!.frontier, cost))
-          && estimate <= config.budget.maxTaskTokens
-          && estimate <= (request.budget?.maxTokens ?? Infinity)
-          && (request.budget?.maxCostUsd === undefined || cost !== undefined && cost <= request.budget.maxCostUsd)
-          && (!config.agents[agent]!.frontier || estimate <= (request.budget?.maxFrontierTokens ?? Infinity)) };
-    }).filter((candidate) => candidate.affordable).sort((a, b) => b.score - a.score).slice(0, this.deps.config.execution.maxCandidates);
+      };
+    }).sort((a, b) => b.score - a.score).slice(0, this.deps.config.execution.maxCandidates);
   }
 
   async execute(input: TaskRequestInput, signal?: AbortSignal): Promise<TaskResult> {
@@ -88,10 +83,10 @@ export class Executor {
     if (candidates.length === 0) {
       const enabled = this.deps.pool.available();
       if (enabled.length && enabled.every((id) => this.deps.pool.executionProblem(id))) throw new Error('All enabled agents are blocked by native-tool mediation requirements');
-      throw new BudgetExceededError('No enabled agent fits the requested agent and token budget');
+      throw new Error('No enabled agent is available for this request');
     }
     let selected = candidates[0]!;
-    let routingUsage: BudgetUsage | undefined;
+    let routingUsage: TokenUsage | undefined;
     // Explicit routing, a single candidate or strong context affinity needs no model call.
     const routing = this.deps.config.execution.routing;
     const consult = routing === 'model' || routing === 'auto' && this.deps.config.orchestration.provider !== 'acp';
@@ -99,9 +94,9 @@ export class Executor {
       const config = this.deps.config;
       const outputTokens = 64;
       const routingContext = Math.min(contextBudgetTokens(config.orchestration), config.execution.routingContextTokens);
-      const llm = metered(this.deps.llm, 'plan', this.deps.transcript, plannerLabel(config), this.deps.budget ? {
-        manager: this.deps.budget, frontier: config.orchestration.provider !== 'local', outputTokens,
-        contextTokens: routingContext, limits: request.budget,
+      const llm = metered(this.deps.llm, 'plan', this.deps.transcript, plannerLabel(config), this.deps.usage ? {
+        manager: this.deps.usage, frontier: config.orchestration.provider !== 'local', outputTokens,
+        contextTokens: routingContext,
         onCharge: (usage) => { routingUsage = usage; },
       } : undefined);
       try {
@@ -110,29 +105,22 @@ export class Executor {
         const agent = route.parse(reply);
         if (agent) selected = candidates.find((c) => c.agent === agent)!;
       } catch (error) {
-        if (signal.aborted || error instanceof BudgetExceededError) throw error;
+        if (signal.aborted) throw error;
         // A malformed routing reply falls back to the deterministic candidate ranking, with no repair call.
         this.deps.transcript.append({ type: 'note', level: 'info', text: error instanceof ContextBudgetError
           ? 'Task exceeds the small routing window; forwarding its complete requirements with deterministic routing.'
-          : 'Router unavailable; using the highest-ranked affordable agent.' });
+          : 'Router unavailable; using the highest-ranked agent.' });
       }
     }
-    const remaining = request.budget ? { ...request.budget } : undefined;
-    if (remaining && routingUsage) {
-      if (remaining.maxTokens !== undefined) remaining.maxTokens -= routingUsage.tokens;
-      if (remaining.maxFrontierTokens !== undefined) remaining.maxFrontierTokens -= routingUsage.frontierTokens;
-      if (remaining.maxCostUsd !== undefined) remaining.maxCostUsd -= routingUsage.costUsd ?? Infinity;
-      if (Object.values(remaining).some((value) => value <= 0)) throw new BudgetExceededError('Task budget exhausted by routing');
-    }
     const outcome = await this.delegator.delegate({ agentId: selected.agent, kind: request.kind, prompt: taskBrief(request),
-      model: request.model, budget: remaining, sessionId: request.sessionId }, signal);
+      model: request.model, sessionId: request.sessionId }, signal);
     outcome.routingUsage = routingUsage;
     if (outcome.status === 'done' && request.resolves.length) this.deps.transcript.append({ type: 'resolved', taskId: outcome.taskId, taskIds: request.resolves });
     return this.store(outcome);
   }
 
   store(outcome: TaskOutcome): TaskResult {
-    const charges = [outcome.usage, outcome.routingUsage].filter((usage): usage is BudgetUsage => usage !== undefined);
+    const charges = [outcome.usage, outcome.routingUsage].filter((usage): usage is TokenUsage => usage !== undefined);
     const result: TaskResult = {
       taskId: outcome.taskId, runId: this.deps.workspace.id, agent: outcome.agentId, status: outcome.status,
       summary: outcome.report.summary, artifacts: outcome.changed.slice(0, 24),

@@ -47,7 +47,6 @@ export async function benchmark(live = false): Promise<{ mode: 'simulation' | 'l
     for (const mode of ['direct', 'conversation', 'structured'] as const) {
       const config: Config = ConfigSchema.parse({ ...structuredClone(configured), workspaceRoot: root, cleanupPeriodDays: 0,
         agents: { [agentId]: { ...profile, model } }, roles: { [agentId]: 'workspace data transformation' },
-        budget: { ...configured.budget, maxTokens: 60_000, maxTaskTokens: 24_000 },
       });
       let dir = '';
       const worker = fakeAgent({ script: (prompt) => {
@@ -90,17 +89,16 @@ export async function benchmark(live = false): Promise<{ mode: 'simulation' | 'l
           if (mode === 'direct') {
             const session = await runtime.pool.session(agentId);
             const brief = taskBrief(request);
-            const lease = runtime.budget.begin(agentId, session.currentModel() ?? agentId, profile.frontier, config.budget.estimatedTaskTokens);
             let failed = true;
             let counted: Awaited<ReturnType<typeof session.prompt>> | undefined;
             const before = runtime.transcript.all().length;
             try {
-              counted = await session.prompt(brief, { turnTimeoutMs: 120_000, idleTimeoutMs: 60_000, cancelGraceMs: 3000, signal: lease.signal });
+              counted = await session.prompt(brief, { turnTimeoutMs: 120_000, idleTimeoutMs: 60_000, cancelGraceMs: 3000 });
               failed = counted.stopReason !== 'end_turn';
             } finally {
               const chunks = runtime.transcript.all().slice(before).flatMap((record) => record.type === 'session_update'
                 && record.update.sessionUpdate === 'agent_message_chunk' && record.update.content.type === 'text' ? [record.update.content.text] : []).join('');
-              lease.finish({ tokens: counted?.usage ? tokensOf(counted.usage) : estimateTokens(brief + chunks), inputTokens: counted?.usage?.inputTokens ?? estimateTokens(brief),
+              runtime.usage.record(agentId, session.currentModel() ?? agentId, profile.frontier, { tokens: counted?.usage ? tokensOf(counted.usage) : estimateTokens(brief + chunks), inputTokens: counted?.usage?.inputTokens ?? estimateTokens(brief),
                 outputTokens: counted?.usage ? counted.usage.outputTokens + (counted.usage.thoughtTokens ?? 0) : estimateTokens(chunks), cachedReadTokens: counted?.usage?.cachedReadTokens,
                 cachedWriteTokens: counted?.usage?.cachedWriteTokens, estimated: counted?.usage === undefined }, failed);
             }
@@ -112,7 +110,7 @@ export async function benchmark(live = false): Promise<{ mode: 'simulation' | 'l
       } catch (error) {
         errors.push((error as Error).message);
       } finally {
-        const totals = runtime.budget.totals();
+        const totals = runtime.usage.totals();
         const usage = runtime.transcript.all().flatMap((r) => r.type === 'budget_usage' ? [r.usage] : []);
         rows.push({ mode, tasks: INPUTS.length, successes, totalTokens: totals.tokens, frontierTokens: totals.frontierTokens,
           plannerTokens: usage.filter((u) => u.source === 'orchestrator').reduce((n, u) => n + u.tokens, 0),

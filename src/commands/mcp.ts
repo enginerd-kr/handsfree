@@ -46,7 +46,7 @@ export function createMcpServer(runtime: Runtime): McpServer {
     } catch (error) { return failure(error); }
   });
   server.registerTool('usage', { description: 'Inspect run token usage, frontier tokens, known USD cost and estimation gaps.', annotations: { readOnlyHint: true } }, async () => {
-    const usage = runtime.budget.totals();
+    const usage = runtime.usage.totals();
     return { structuredContent: usage, content: [{ type: 'text', text: JSON.stringify(usage) }] };
   });
   server.registerResource('task-result', new ResourceTemplate('handsfree://runs/{runId}/tasks/{taskId}', { list: undefined }),

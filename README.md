@@ -43,14 +43,13 @@ Run from the project directory. MCP exposes `delegate`, `batch`, `read_result`, 
   "constraints": ["Preserve the legacy flag"],
   "acceptanceCriteria": ["Existing tests and the empty-input regression pass"],
   "files": ["src/parser.ts"],
-  "budget": { "maxTokens": 20000 },
   "requestId": "parser-empty-input-1"
 }
 ```
 
 Results include task status, a short summary, blockers, artifacts, verification provenance, token usage, and a `resultRef`. Reusing a request ID returns its recorded result. An interrupted request is not automatically rerun. Fetch full details with `read_result` when the summary is insufficient. Batch requests declare dependencies; independent inspections may overlap while changes run exclusively.
 
-See [execution contracts, budgets, and operating limits](docs/execution.md) for configuration and examples.
+See [execution contracts, token efficiency, and operating limits](docs/execution.md) for configuration and examples.
 
 Structured routing defaults to local/API selection and skips ACP selection calls. The [measured local 4B path](docs/execution-controls.md) includes real role-selection and worker checks. The bundled Codex profile and example configuration set `agents.codex.nativeTools: "allow"`, so Codex runs using its adapter's permissions and sandbox. These tasks run exclusively. Set it to `"deny"` to block Codex execution before prompting.
 
@@ -149,7 +148,7 @@ pnpm benchmark --live # same artifact checks with the configured worker/model
 pnpm screenshots     # re-shoot every picture in this README, from the real TUI
 ```
 
-The benchmark compares direct, conversational, and structured execution on identical isolated fixtures. It reports artifact success, total/frontier tokens, planning overhead, failed calls, estimation gaps, and latency. Simulation results measure the orchestration path, not real model quality or billing. Live runs enforce a 60,000-token run budget per mode and a 24,000-token per-call budget; reported CLI usage may exceed these before cancellation is possible.
+The benchmark compares direct, conversational, and structured execution on identical isolated fixtures. It reports artifact success, total/frontier tokens, planning overhead, failed calls, estimation gaps, and latency. Simulation results measure the orchestration path, not real model quality or billing. Live runs record usage without imposing host token or spending limits.
 
 ## License
 

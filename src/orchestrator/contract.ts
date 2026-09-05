@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { TokenBudgetSchema } from '../config/schema.js';
 
 export const TaskRequestSchema = z.object({
   task: z.string().trim().min(1),
@@ -12,7 +11,6 @@ export const TaskRequestSchema = z.object({
   agent: z.string().min(1).optional(),
   model: z.string().min(1).optional(),
   sessionId: z.string().min(1).optional(),
-  budget: TokenBudgetSchema.optional(),
   /** Same key + same request returns the existing result, including across restart. */
   requestId: z.string().min(1).max(128).optional(),
 }).strict().refine((request) => !request.sessionId || !!request.agent, 'sessionId requires agent');
@@ -23,7 +21,7 @@ export const TaskResultSchema = z.object({
   taskId: z.number().int().positive(),
   runId: z.string(),
   agent: z.string(),
-  status: z.enum(['done', 'blocked', 'incomplete', 'refused', 'cancelled', 'error', 'budget_exceeded']),
+  status: z.enum(['done', 'blocked', 'incomplete', 'refused', 'cancelled', 'error']),
   summary: z.string(),
   artifacts: z.array(z.string()),
   blockers: z.array(z.string()),

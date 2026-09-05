@@ -5,7 +5,7 @@ import { AgentConnection, type ConnectionTarget } from '../host/connection.js';
 import { fallbackArgs, spawnTarget } from '../host/launch.js';
 import { mediationProblem } from '../host/mediation.js';
 import { SessionUnresponsiveError } from '../host/session.js';
-import { estimateTokens, type ChatClient, type ChatMessage, type ChatOptions, type JsonSchemaSpec } from './client.js';
+import { type ChatClient, type ChatMessage, type ChatOptions, type JsonSchemaSpec } from './client.js';
 
 export interface AcpModelOptions {
   /** Which `agents` entry does the planning. Used in error messages. */
@@ -53,14 +53,12 @@ export class AcpModel implements ChatClient {
     if (identified) throw new Error(identified);
 
     let reply = '';
-    const outputLimit = new AbortController();
     let session;
     try {
       session = await connection.newSession((update: SessionUpdate) => {
         if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') {
           reply += update.content.text;
           options.onDelta?.(update.content.text);
-          if (options.maxOutputTokens !== undefined && estimateTokens(reply) > options.maxOutputTokens) outputLimit.abort();
         }
       });
     } catch (err) {
@@ -80,7 +78,7 @@ export class AcpModel implements ChatClient {
         turnTimeoutMs: this.options.timeoutMs,
         idleTimeoutMs: this.options.timeoutMs,
         cancelGraceMs: this.options.cancelGraceMs,
-        signal: options.signal ? AbortSignal.any([options.signal, outputLimit.signal]) : outputLimit.signal,
+        signal: options.signal,
       });
       stopReason = end.stopReason;
       // The agent's own count of the planning turn, in the shape every other
@@ -102,8 +100,6 @@ export class AcpModel implements ChatClient {
     } finally {
       connection.releaseSession(session.sessionId);
     }
-
-    if (outputLimit.signal.aborted) throw new Error('Planner output token limit reached');
 
     if (reply.trim() === '') {
       throw new Error(`${this.options.agentId} ended the planning turn (${stopReason}) without replying`);

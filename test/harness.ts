@@ -19,7 +19,6 @@ export interface HarnessOptions {
     roles: Record<string, string>;
     /** Which model plans, for what the status line and `/agents` say about it. */
     orchestration: Record<string, unknown>;
-    budget: Record<string, unknown>;
     execution: Record<string, unknown>;
     prices: Config['prices'];
   }>;
@@ -56,7 +55,6 @@ export function harness(options: HarnessOptions): Harness {
     ...(options.config?.roles ? { roles: options.config.roles } : {}),
     capabilities: { terminal: true, ...(options.config?.capabilities ?? {}) },
     ...(options.config?.orchestration ? { orchestration: options.config.orchestration } : {}),
-    ...(options.config?.budget ? { budget: options.config.budget } : {}),
     ...(options.config?.execution ? { execution: options.config.execution } : {}),
     ...(options.config?.prices ? { prices: options.config.prices } : {}),
     policy: options.config?.policy ?? {},

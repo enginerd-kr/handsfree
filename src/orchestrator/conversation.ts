@@ -36,7 +36,7 @@ import { agentRecords, LEDGER_TASKS, renderAgentRecord, renderRunState } from '.
 import type { TaskOutcome } from './outcome.js';
 import { metered } from './usage.js';
 import type { Executor } from './executor.js';
-import type { BudgetManager } from './budget.js';
+import type { UsageTracker } from './meter.js';
 import { ResultTool } from '../tools/result.js';
 import { ContextTool } from '../tools/context.js';
 import { RunContext } from './context.js';
@@ -51,7 +51,7 @@ const STATE_SHARE = 0.6;
 
 export interface ConversationDeps {
   executor?: Executor;
-  budget?: BudgetManager;
+  usage?: UsageTracker;
   config: Config;
   pool: AgentPool;
   transcript: Transcript;
@@ -526,7 +526,7 @@ export class Conversation {
   }
 
   private plannerMeter() {
-    return this.deps.budget ? { manager: this.deps.budget, enforce: false,
+    return this.deps.usage ? { manager: this.deps.usage,
       frontier: this.deps.config.orchestration.provider !== 'local',
       contextTokens: contextBudgetTokens(this.deps.config.orchestration),
       outputTokens: this.deps.config.orchestration.maxOutputTokens } : undefined;

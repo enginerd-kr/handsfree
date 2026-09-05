@@ -31,9 +31,9 @@ describe('Toolbox', () => {
   });
 
   it('permits a blocker report while retaining explicit unfinished work', () => {
-    const review = { objective: 'Review the code', constraints: [], completed: [], remaining: ['Run review'], next: -1, blocker: 'Worker budget exhausted.' };
+    const review = { objective: 'Review the code', constraints: [], completed: [], remaining: ['Run review'], next: -1, blocker: 'Worker unavailable.' };
     const box = new Toolbox([]);
-    const parsed = box.parse(JSON.stringify({ review, action: 'answer', message: 'The review could not run because its budget is exhausted.' }));
+    const parsed = box.parse(JSON.stringify({ review, action: 'answer', message: 'The review could not run because the worker is unavailable.' }));
     expect(parsed.ok).toBe(true);
     expect(JSON.stringify(box.jsonSchema().schema)).toContain('"review"');
   });

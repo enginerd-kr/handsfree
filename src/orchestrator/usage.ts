@@ -1,6 +1,5 @@
 import { estimateTokens as countTokens, estimateMessages, fitBudget, type ChatClient, type Usage } from '../brain/client.js';
-import { BudgetExceededError, type BudgetManager, type BudgetUsage } from './budget.js';
-import type { TokenBudget } from '../config/schema.js';
+import type { UsageTracker, TokenUsage } from './meter.js';
 import { debug } from '../debug.js';
 import type { TurnUsage } from '../host/session.js';
 import type { Transcript, TranscriptRecord } from '../workspace/transcript.js';
@@ -17,27 +16,23 @@ export function metered(
   transcript: Transcript,
   /** The planner as the roll call spells it, read when the call is made. */
   model?: string,
-  budget?: { manager: BudgetManager; frontier: boolean; outputTokens: number; contextTokens?: number; limits?: TokenBudget; enforce?: boolean; onCharge?: (usage: BudgetUsage) => void },
+  meter?: { manager: UsageTracker; frontier: boolean; outputTokens: number; contextTokens?: number; onCharge?: (usage: TokenUsage) => void },
 ): ChatClient {
   return {
     async chat(messages, options = {}) {
-      if (budget?.contextTokens) messages = fitBudget(messages, budget.contextTokens - (options.maxOutputTokens ?? budget.outputTokens)
+      if (meter?.contextTokens) messages = fitBudget(messages, meter.contextTokens - (options.maxOutputTokens ?? meter.outputTokens)
         - (options.schema ? countTokens(JSON.stringify(options.schema.schema)) : 0) - 64);
       const promptChars = messages.reduce((total, message) => total + message.content.length, 0);
       const inputEstimate = estimateMessages(messages) + (options.schema ? countTokens(JSON.stringify(options.schema.schema)) : 0);
       let usage: Usage | undefined;
       let reply = '';
       let failed = true;
-      const lease = budget && budget.enforce !== false ? budget.manager.begin('orchestrator', model ?? 'orchestrator', budget.frontier,
-        inputEstimate + (options.maxOutputTokens ?? budget.outputTokens), budget.limits) : undefined;
       try {
         reply = await llm.chat(messages, {
           ...options,
-          maxOutputTokens: options.maxOutputTokens ?? budget?.outputTokens,
-          signal: lease ? options.signal ? AbortSignal.any([options.signal, lease.signal]) : lease.signal : options.signal,
+          maxOutputTokens: options.maxOutputTokens ?? meter?.outputTokens,
           onDelta: (text) => {
             reply += text;
-            lease?.observe(inputEstimate + countTokens(reply));
             options.onDelta?.(text);
           },
           onUsage: (counted) => {
@@ -54,9 +49,8 @@ export function metered(
           outputTokens: usage?.completionTokens ?? countTokens(reply), cachedReadTokens: usage?.cachedTokens,
           cachedWriteTokens: usage?.cachedWriteTokens,
           estimated: usage === undefined };
-        const charge = lease?.finish(measured, failed) ?? (budget?.enforce === false
-          ? budget.manager.recordExempt('orchestrator', model ?? 'orchestrator', budget.frontier, measured, failed) : undefined);
-        if (charge) budget?.onCharge?.(charge);
+        const charge = meter?.manager.record('orchestrator', model ?? 'orchestrator', meter.frontier, measured, failed);
+        if (charge) meter?.onCharge?.(charge);
         transcript.append({
           type: 'usage',
           purpose,
@@ -73,7 +67,6 @@ export function metered(
           `${purpose}: ${messages.length} messages, ${promptChars} chars in, ${reply.length} out` +
             (usage ? ` (${usage.promptTokens} + ${usage.completionTokens} tokens)` : ''),
         );
-        if (!failed && lease?.exceeded()) throw new BudgetExceededError('Planner call exceeded its token or cost budget');
       }
     },
   };

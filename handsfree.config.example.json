@@ -92,14 +92,8 @@
     "reportSummaryChars": 300,
     "rebriefEveryTasks": 8
   },
-  "budget": {
-    "maxTokens": 200000,
-    "maxFrontierTokens": 150000,
-    "maxTaskTokens": 128000,
-    "estimatedTaskTokens": 4096,
-    "maxTaskOutputTokens": 4096
-  },
   "execution": {
+    "estimatedTaskTokens": 4096,
     "maxParallel": 2,
     "maxBatchTasks": 16,
     "maxCandidates": 3,

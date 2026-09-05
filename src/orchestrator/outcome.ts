@@ -2,9 +2,9 @@ import path from 'node:path';
 import type { StopReason } from '@agentclientprotocol/sdk';
 import { agentText, changedFiles, touchedFiles, type TranscriptRecord } from '../workspace/transcript.js';
 import { DEFAULT_REPORT_LIMITS, parseReport, type Report, type ReportLimits } from './report.js';
-import type { BudgetUsage } from './budget.js';
+import type { TokenUsage } from './meter.js';
 
-export type TaskStatus = 'done' | 'blocked' | 'incomplete' | 'refused' | 'cancelled' | 'error' | 'budget_exceeded';
+export type TaskStatus = 'done' | 'blocked' | 'incomplete' | 'refused' | 'cancelled' | 'error';
 
 export interface TaskOutcome {
   taskId: number;
@@ -12,8 +12,8 @@ export interface TaskOutcome {
   task: string;
   status: TaskStatus;
   stopReason?: StopReason | 'unresponsive';
-  usage?: BudgetUsage;
-  routingUsage?: BudgetUsage;
+  usage?: TokenUsage;
+  routingUsage?: TokenUsage;
   /** What the agent said at the end of the turn, whole. */
   message: string;
   /** The agent's account of itself, in the shape it was asked for — or a fallback. */

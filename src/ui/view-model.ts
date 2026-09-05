@@ -686,7 +686,7 @@ function statusTone(status: ToolCallStatus): Tone {
  * counted says nothing about tokens rather than a zero that would be false.
  */
 function stopText(
-  reason: StopReason | 'unresponsive' | 'blocked' | 'incomplete' | 'refused' | 'error' | 'budget_exceeded',
+  reason: StopReason | 'unresponsive' | 'blocked' | 'incomplete' | 'refused' | 'error',
   toolCount: number,
   seconds: number,
   tokens: number,

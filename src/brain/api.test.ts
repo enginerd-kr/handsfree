@@ -3,7 +3,7 @@ import { ConfigSchema } from '../config/schema.js';
 import { LocalModel } from './client.js';
 import { routingRequest } from '../orchestrator/router.js';
 import { metered } from '../orchestrator/usage.js';
-import { BudgetManager } from '../orchestrator/budget.js';
+import { UsageTracker } from '../orchestrator/meter.js';
 import { Transcript } from '../workspace/transcript.js';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -22,7 +22,7 @@ describe('compatible HTTP routing client', () => {
     });
     const config = ConfigSchema.parse({ orchestration: { provider: 'api' } });
     const transcript = new Transcript();
-    const manager = new BudgetManager(config, transcript);
+    const manager = new UsageTracker(config, transcript);
     const llm = metered(new LocalModel(config.orchestration.local), 'plan', transcript, 'small', { manager, frontier: true, outputTokens: 64, contextTokens: 2048 });
     const route = routingRequest([{ agent: 'a', description: 'write code' }, { agent: 'b', description: 'translate' }], 'Translate', 2048);
     const reply = await llm.chat([...route.messages, { role: 'user', content: 'Keep names', pinned: true, requiredContent: 'Keep names' }], { schema: route.schema, maxOutputTokens: 64 });

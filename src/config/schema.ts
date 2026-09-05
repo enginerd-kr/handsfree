@@ -56,7 +56,7 @@ export const AgentProfileSchema = z
      * it only to override that.
      */
     model: z.string().min(1).optional(),
-    /** Local workers do not consume the frontier-token budget. */
+    /** Track local worker usage separately from frontier tokens. */
     frontier: z.boolean().default(true),
     /** Explicitly accept adapter-native operations outside host policy mediation. */
     nativeTools: z.enum(['deny', 'allow']).default('deny'),
@@ -301,13 +301,6 @@ export function contextBudgetTokens(orchestration: Orchestration): number {
 }
 export type Orchestration = z.infer<typeof OrchestrationSchema>;
 
-export const TokenBudgetSchema = z.object({
-  maxTokens: z.number().int().positive().optional(),
-  maxFrontierTokens: z.number().int().positive().optional(),
-  maxCostUsd: z.number().positive().optional(),
-});
-export type TokenBudget = z.infer<typeof TokenBudgetSchema>;
-
 export const PriceSchema = z.object({
   input: z.number().nonnegative(),
   output: z.number().nonnegative(),
@@ -326,15 +319,11 @@ export const ConfigSchema = z
      */
     cleanupPeriodDays: z.number().int().nonnegative().default(30),
     orchestration: OrchestrationSchema.prefault({}),
-    budget: TokenBudgetSchema.extend({
-      // ACP wrappers/cache reads alone can exceed 32k; output has a separate cap.
-      maxTaskTokens: z.number().int().positive().default(128_000),
-      maxTaskOutputTokens: z.number().int().positive().default(4096),
-      estimatedTaskTokens: z.number().int().positive().default(4_096),
-    }).prefault({}),
     /** USD per million tokens, keyed by model id or agent id. No built-in prices. */
     prices: z.record(z.string(), PriceSchema).default({}),
     execution: z.object({
+      /** Cold-start token estimate used only to rank workers. */
+      estimatedTaskTokens: z.number().int().positive().default(4_096),
       /** Auto consults local/API selectors; ACP selection is an explicit opt-in. */
       routing: z.enum(['auto', 'deterministic', 'model']).default('auto'),
       routingContextTokens: z.number().int().min(256).default(2048),

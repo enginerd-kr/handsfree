@@ -20,7 +20,7 @@ describe('structured executor', () => {
     await expect(h.runtime.executor.execute({ task: 'Run a command', agent: 'a' })).rejects.toThrow('outside host policy');
     await expect(h.runtime.pool.session('a')).rejects.toThrow('outside host policy');
     expect(a.prompts).toHaveLength(0);
-    expect(h.runtime.budget.totals().tokens).toBe(0);
+    expect(h.runtime.usage.totals().tokens).toBe(0);
   });
 
   it('allows explicit native opt-in but schedules those tasks exclusively', async () => {
@@ -135,12 +135,13 @@ describe('structured executor', () => {
     expect(a.prompts).toHaveLength(1);
   });
 
-  it('uses observed task costs consistently for shortlist and execution admission', async () => {
+  it('uses observed token usage to estimate later tasks', async () => {
     const a = fakeAgent({ script: () => [{ do: 'say', text: report('Small') },
       { do: 'stop', reason: 'end_turn', usage: { inputTokens: 500, outputTokens: 100, totalTokens: 600 } }] });
-    const h = setup({ agents: { a }, config: { budget: { maxTokens: 4500 } } });
+    const h = setup({ agents: { a } });
     await h.runtime.executor.execute({ task: 'First', agent: 'a' });
-    const result = await h.runtime.executor.execute({ task: 'Second', agent: 'a', budget: { maxTokens: 1000 } });
+    expect(h.runtime.executor.delegator.estimate('a', 'Second')).toBe(600);
+    const result = await h.runtime.executor.execute({ task: 'Second', agent: 'a' });
     expect(result.status).toBe('done');
     expect(a.prompts).toHaveLength(2);
   });
@@ -195,14 +196,27 @@ describe('structured executor', () => {
     expect(b.prompts[0]).toContain('Do not modify files or run commands');
   });
 
-  it('cancels on reported context growth and refuses later work over the run budget', async () => {
-    const a = fakeAgent({ script: () => [{ do: 'update', update: { sessionUpdate: 'usage_update', used: 5000, size: 10000 } }, { do: 'stall', ms: 20 }, { do: 'say', text: report('not reached') }] });
-    const h = setup({ agents: { a }, config: { budget: { maxTokens: 4500 } } });
+  it('finishes large streamed tasks and admits later work after high reported usage', async () => {
+    const a = fakeAgent({ script: () => [
+      { do: 'update', update: { sessionUpdate: 'usage_update', used: 200_000, size: 1_000_000, cost: { amount: 100, currency: 'USD' } } },
+      { do: 'say', text: 'Detailed findings. '.repeat(2000) },
+      { do: 'stall', ms: 20 },
+      { do: 'say', text: report('Completed') },
+      { do: 'stop', reason: 'end_turn', usage: { inputTokens: 200_000, outputTokens: 10_000, totalTokens: 210_000 } },
+    ] });
+    const h = setup({ agents: { a } });
     const result = await h.runtime.executor.execute({ task: 'go', agent: 'a' });
-    expect(result.status).toBe('budget_exceeded');
-    expect(h.runtime.budget.totals().tokens).toBeGreaterThanOrEqual(5000);
-    await expect(h.runtime.executor.execute({ task: 'again', agent: 'a' })).rejects.toThrow('budget');
-    expect(a.prompts).toHaveLength(1);
+    expect(result.status).toBe('done');
+    expect(result.usage).toMatchObject({ tokens: 210_000, costUsd: 100, estimated: false });
+    const next = await h.runtime.executor.execute({ task: 'again', agent: 'a' });
+    expect(next.status).toBe('done');
+    expect(h.runtime.usage.totals().tokens).toBe(420_000);
+    expect(a.prompts).toHaveLength(2);
+    expect(h.runtime.transcript.all().filter((r) => r.type === 'budget_usage').every((r) => !r.usage.failed)).toBe(true);
+  });
+
+  it('removes spending limits from the task contract', () => {
+    expect(TaskRequestSchema.safeParse({ task: 'go', budget: { maxTokens: 1 } }).success).toBe(false);
   });
 
   it('uses a bounded selector and falls back without retries when its JSON is invalid', async () => {
