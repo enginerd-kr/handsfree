@@ -94,6 +94,8 @@ You can also explicitly address an agent using `@`, and optionally specify a tar
 > @codex:gpt-4o write a test first
 ```
 
+The `@` menu also lists workspace files and directories. Type a name or a path such as `@src/`, use the arrow keys to select an entry, and press Tab or Enter to complete a file or browse a directory. Press Space after a directory to reference the directory itself. File references use `@./src/app.ts` (quoted when the path contains spaces), and completing one leaves the prompt ready for your request without sending it. `.git`, `node_modules`, and `.handsfree` are omitted from the tree.
+
 Lines starting with `/` are interpreted as commands. `/agents` lists the active roster, `/cost` shows what the run has spent in tokens — on planning, and on each agent's turns as its CLI counted them — and how much of the agents' replies reached the planner, `/help` displays all available commands, and you can extend this by adding custom markdown-defined commands in `.handsfree/commands/*.md` within your project directory.
 
 Agent replies begin beside the speaker's name, with subsequent lines aligned to the reply. Tool calls sit one level inward with a `↳` marker and muted text. Running tools show up to 12 lines of output by default; completed or failed tools fold all their details. Finished tasks fold their working steps while keeping the final answer. `Ctrl+O` expands or collapses every task and tool result at once: the transcript is printed again from the top the new way, which also clears the terminal's scrollback.

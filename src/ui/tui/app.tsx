@@ -79,6 +79,7 @@ import { VERSION } from '../../version.js';
 import { configPath, loadConfig } from '../../config/load.js';
 import { saveModelDefaults } from '../../config/models.js';
 import { ModelSettings } from './model-settings.js';
+import { completeFile, suggestFiles, useFileEntries, type FileEntry } from './files.js';
 
 const EXPAND_HINT = 'ctrl+o to expand';
 const COLLAPSE_HINT = 'ctrl+o to collapse';
@@ -274,6 +275,7 @@ type Printed =
 
 type MenuItem =
   | { kind: 'command'; command: Command }
+  | { kind: 'file'; entry: FileEntry }
   // `planner` says the name is being filled in behind `@orchestrator:`, where
   // the row on screen is a `:segment` of an address rather than an `@` of its own.
   | { kind: 'agent'; id: string; note: string; model: string; planner?: true }
@@ -300,6 +302,7 @@ export function menuFit(kind: MenuItem['kind'], rows: number, above: number): nu
 /** What a row is filtered by and measured by: `/name`, `@name` or `:model`. */
 function menuLabel(item: MenuItem): string {
   if (item.kind === 'command') return `/${item.command.name}`;
+  if (item.kind === 'file') return `@${item.entry.path}`;
   if (item.kind === 'agent') return item.planner ? `:${item.id}` : `@${item.id}`;
   return `:${item.choice.value}`;
 }
@@ -610,8 +613,9 @@ export function App({ runtime, settingsHome }: { runtime: Runtime; settingsHome?
   // Spoken for already: the header while it is still drawn live, and the
   // spend line once there is one.
   const spoken = (settledCount === 0 ? HEADER_ROWS : 0) + (spend.models.length > 0 ? 1 : 0);
-  const budgeted = (offered: MenuItem[]): MenuItem[] =>
-    offered.length === 0 ? offered : offered.slice(0, menuFit(offered[0]!.kind, rows, spoken));
+  const visibleCount = (offered: MenuItem[]): number =>
+    offered.length === 0 ? 0 : menuFit(offered[0]!.kind, rows, spoken);
+  const fileEntries = useFileEntries(runtime.workspace.dir, draft.value, draft.cursor);
   // Who a mention can name. The roster is fixed for the life of the run, so
   // reading it once is enough.
   const agents = useMemo(() => runtime.pool.available(), [runtime]);
@@ -686,7 +690,7 @@ export function App({ runtime, settingsHome }: { runtime: Runtime; settingsHome?
       }));
     }
     const planner = plannerTokenAt(d.value, d.cursor);
-    return suggestAgents(d.value, d.cursor, agents).map((id) => ({
+    const agentItems: MenuItem[] = suggestAgents(d.value, d.cursor, agents).map((id) => ({
       kind: 'agent',
       id,
       model: id === ORCHESTRATOR ? plannerLabel(runtime.config) : currentModelLabel(id),
@@ -696,8 +700,14 @@ export function App({ runtime, settingsHome }: { runtime: Runtime; settingsHome?
           ? 'the model that routes — :agent:model moves it'
           : agentRole(runtime.config, id),
     }));
+    return [...agentItems, ...suggestFiles(d.value, d.cursor, fileEntries).map((entry): MenuItem => ({
+      kind: 'file', entry,
+    }))];
   };
-  const menu = ask || dismissed === draft.value ? [] : budgeted(offeredFor(draft));
+  const allOffered = ask || dismissed === draft.value ? [] : offeredFor(draft);
+  const menuSize = visibleCount(allOffered);
+  const menuStart = Math.max(0, Math.min(selected, allOffered.length - 1) - menuSize + 1);
+  const menu = allOffered.slice(menuStart, menuStart + menuSize);
   // What a colon says when it has no rows to show, because an empty menu and a
   // silent one are the same sight and mean different things: an agent still
   // coming up will have models in a moment, and one that answered with none
@@ -1024,10 +1034,11 @@ export function App({ runtime, settingsHome }: { runtime: Runtime; settingsHome?
     // The menu, worked out here rather than read from the memo above: several
     // keys can arrive in one chunk, and the memo still describes the draft as
     // it was before any of them were handled.
-    const offered =
+    const candidates =
       dismissedRef.current === draftRef.current.value
         ? []
-        : budgeted(offeredFor(draftRef.current));
+        : offeredFor(draftRef.current);
+    const offered = visibleCount(candidates) > 0 ? candidates : [];
     if (offered.length > 0) {
       const move = (by: number): void => {
         const next = (selectedRef.current + by + offered.length) % offered.length;
@@ -1045,6 +1056,10 @@ export function App({ runtime, settingsHome }: { runtime: Runtime; settingsHome?
       }
       if (key.tab || key.return) {
         const chosen = offered[Math.min(selectedRef.current, offered.length - 1)]!;
+        if (chosen.kind === 'file') {
+          applyDraft((d) => completeFile(d, chosen.entry));
+          return;
+        }
         // An agent is only ever filled in, never sent: the mention opens a
         // task, and the task is still to be written after the name. No space
         // follows it, so a colon can — but that leaves the finished name still
@@ -1250,7 +1265,7 @@ export function App({ runtime, settingsHome }: { runtime: Runtime; settingsHome?
         </Box>
 
         {menu.length > 0 ? (
-          <Suggestions items={menu} selected={selected} />
+          <Suggestions items={menu} selected={selected - menuStart} />
         ) : modelNote ? (
           <MenuNote text={modelNote} />
         ) : null}
@@ -2171,7 +2186,9 @@ function Suggestions({
             ? item.command.description
             : item.kind === 'agent'
               ? item.note
-              : (item.choice.description ?? '');
+              : item.kind === 'file'
+                ? (item.entry.directory ? 'directory · tab/enter to browse · space to reference' : 'file')
+                : (item.choice.description ?? '');
         return (
           <Box key={menuLabel(item)} paddingLeft={2}>
             <Text wrap="truncate">

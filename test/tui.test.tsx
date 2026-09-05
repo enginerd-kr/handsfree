@@ -847,6 +847,38 @@ describe('terminal UI', () => {
     }
   });
 
+  it('browses directories from @ and selects files beyond the first menu page without sending', async () => {
+    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
+    open = h;
+    fs.mkdirSync(path.join(h.runtime.workspace.dir, 'source files'));
+    for (let i = 0; i < 20; i++) {
+      fs.writeFileSync(path.join(h.runtime.workspace.dir, 'source files', `file${pad(i)}.ts`), '');
+    }
+    const app = render(<App runtime={h.runtime} />);
+    const plain = () => (app.lastFrame() ?? '').replace(/\[[0-9;]*m/g, '');
+    const press = async (key: string) => {
+      app.stdin.write(key);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    };
+    try {
+      await waitFor(plain, PROMPT_CHAR);
+      await press('@');
+      await waitFor(plain, '@./source files/');
+      await press('\u001B[B');
+      await press('\u001B[B');
+      await press('\t');
+      await waitFor(plain, '@./source files/file00.ts');
+      for (let i = 0; i < 19; i++) await press('\u001B[B');
+      await waitFor(plain, '@./source files/file19.ts');
+      expect(plain().split('\n').length).toBeLessThanOrEqual(29);
+      await press('\r');
+      await waitFor(plain, `${PROMPT_CHAR} @"./source files/file19.ts"`);
+      expect(h.runtime.transcript.all().filter((r) => r.type === 'user')).toHaveLength(0);
+    } finally {
+      app.unmount();
+    }
+  });
+
   it('wakes every agent at launch, so the roster is already in hand', async () => {
     const h = harness({
       agents: { claude: fakeAgent({ models: ['opus[1m]', 'sonnet'], script: () => [] }) },
