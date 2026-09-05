@@ -79,11 +79,12 @@ For the same request to multiple agents, select every intended recipient in one 
 For different tasks, make separate calls with the appropriate briefs.
 Group example: {"action":"call","tool":"agent","input":{"agent":${JSON.stringify(cards.map((card) => card.id))},"kind":"answer","prompt":"Hi? Reply briefly."}}
 answer: reply only; inspect: read files and report, no commands or edits; change: implement and verify.
+Use change for tasks requiring commands, including read-only git status or git diff; state any no-edit constraint in the brief. This still uses the host's current command policy.
 Preserve the user's exact requirements and file names. Never invent a file for a question.
 Omit model unless the user selected one; default, none and null mean no model override.
 Prefer an agent with relevant unchanged context; sessions are reused and receive relevant handoffs.
 Agent replies are visible to the user. Use their findings to answer the current question, including explanation or comparison when requested. Summarize relevant details without copying unrelated material.
-Permission refusals are final. Report blockers; an ended turn is not proof of success.
+Do not automatically retry permission refusals. When the user explicitly requests a fresh attempt, include that update in the brief; the host still checks current permissions. Report blockers; an ended turn is not proof of success.
 Example: {"action":"call","tool":"agent","input":{"agent":"${first}","kind":"change","prompt":"Create notes.txt containing exactly hello world."}}`;
   }
 

@@ -144,11 +144,6 @@ export class Toolbox {
 
     const { tool: name } = envelope.data;
     const review = envelope.data.review;
-    // An omitted selection means the first item of the ordered work list.
-    if (review && name === 'agent' && review.next === -1 && review.remaining.length) review.next = 0;
-    if (review && name === 'agent' && !review.remaining[review.next]) {
-      return { ok: false, error: 'For a worker call, review.next must be an index into remaining (0 selects its first item).' };
-    }
     const tool = this.tools.get(name);
     if (!tool) {
       return { ok: false, error: `"${name}" is not a tool. Tools: ${this.names().join(', ')}.` };
@@ -160,6 +155,20 @@ export class Toolbox {
       return { ok: false, error: `Input for "${name}" does not match: ${where}${issue?.message ?? 'invalid'}.` };
     }
     const checked = input.data;
+    if (review && name === 'agent') {
+      // A valid worker brief already specifies work. Recover missing bookkeeping
+      // from that brief, without inventing or changing the tool's input.
+      if (!review.remaining.length && checked && typeof checked === 'object'
+        && 'prompt' in checked && typeof checked.prompt === 'string' && checked.prompt.trim()) {
+        review.remaining = [checked.prompt.trim().slice(0, 300)];
+        review.next = 0;
+      }
+      // A single item is unambiguous; -1 selects the first ordered item.
+      if (review.remaining.length === 1 || review.next === -1 && review.remaining.length) review.next = 0;
+      if (!review.remaining[review.next]) {
+        return { ok: false, error: `For a worker call, review.next must select an item in review.remaining (0 selects its first item). Remaining: ${JSON.stringify(review.remaining)}. Add the worker task to remaining if it is empty; otherwise choose its zero-based index.` };
+      }
+    }
     return {
       ok: true,
       step: {

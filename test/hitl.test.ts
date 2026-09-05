@@ -116,27 +116,32 @@ describe('an agent that offers no single-use approval', () => {
     const answers: string[] = [];
     const asked: string[] = [];
     await runTurn((dir) => [sessionWide(dir, (id) => answers.push(id))], {
-      escalator: seat({ allow: true, onAsk: (summary) => asked.push(summary) }),
+      escalator: { ask: async (question) => {
+        asked.push(question.summary);
+        expect(question.approvalLabel).toBe('Always allow');
+        expect(question.detail).toContain('whole session');
+        return true;
+      } },
     });
 
     expect(asked).toHaveLength(1);
     expect(answers).toEqual(['always']);
   });
 
-  it('cancels when the person says no', async () => {
+  it('returns the offered rejection when the person says no', async () => {
     const answers: string[] = [];
     await runTurn((dir) => [sessionWide(dir, (id) => answers.push(id))], {
       escalator: seat({ allow: false }),
     });
 
-    expect(answers).toEqual(['cancelled']);
+    expect(answers).toEqual(['no']);
   });
 
-  it('cancels without asking when nobody is there', async () => {
+  it('returns the offered rejection when nobody is there', async () => {
     const answers: string[] = [];
     await runTurn((dir) => [sessionWide(dir, (id) => answers.push(id))]);
 
-    expect(answers).toEqual(['cancelled']);
+    expect(answers).toEqual(['no']);
   });
 });
 
@@ -186,13 +191,10 @@ describe('a turn under a permission mode', () => {
     expect(asked).toEqual([]);
     expect(answers).toEqual(['always']);
     expect(decisions(h).at(-1)).toMatchObject({ rule: 'tool.sessionWideOnly', mode: 'bypass' });
-    const warned = h.runtime.transcript
-      .all()
-      .some((record) => record.type === 'note' && record.level === 'warn' && /whole session|rest of/.test(record.text));
-    expect(warned).toBe(true);
+
   });
 
-  it('lets an edit through in acceptEdits, and still asks about a command', async () => {
+  it('asks about edits and commands alike', async () => {
     const answers: string[] = [];
     const asked: string[] = [];
     const h = await runTurn(
@@ -213,16 +215,16 @@ describe('a turn under a permission mode', () => {
         },
       ],
       {
-        mode: 'acceptEdits',
+        mode: 'ask',
         config: { policy: { fs: { write: 'ask' } } },
         escalator: seat({ allow: true, onAsk: (summary) => asked.push(summary) }),
       },
     );
 
     expect(answers).toEqual(['once', 'once']);
-    expect(asked).toEqual(['git commit']);
+    expect(asked).toEqual(['Edit notes.txt', 'git commit']);
     expect(decisions(h).map((entry) => [entry.rule, entry.mode, entry.escalated])).toEqual([
-      ['tool.write', 'acceptEdits', undefined],
+      ['tool.write', undefined, true],
       ['exec.otherwise', undefined, true],
     ]);
   });

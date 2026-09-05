@@ -32,304 +32,34 @@ const where = { agentId: 'claude', sessionId: 's1' };
 const inside = (file: string) => path.join(root, file);
 
 describe('PolicyEngine', () => {
-  it('allows a read inside the workspace and refuses one outside', async () => {
-    const policy = engine();
-    expect((await policy.resolve({ kind: 'fs.read', path: inside('a.ts'), ...where })).verdict).toBe(
-      'allow',
-    );
-    expect(
-      (await policy.resolve({ kind: 'fs.read', path: '/etc/passwd', ...where })).verdict,
-    ).toBe('deny');
-  });
-
-  it('runs what the default allowlist names, and nothing once execution is off', async () => {
-    const request: PolicyRequest = { kind: 'exec', command: 'git', args: ['status'], cwd: root, ...where };
-    expect((await engine().resolve(request)).verdict).toBe('allow');
-
-    const off = engine({ exec: { enabled: false } });
-    expect((await off.resolve(request)).rule).toBe('exec.disabled');
-  });
-
-  it('puts a command the allowlist does not name to the person, not to a rule', async () => {
-    const asked: string[] = [];
-    const escalator: Escalator = {
-      ask: (request) => {
-        asked.push(request.summary);
-        return Promise.resolve(true);
-      },
-    };
-    const request: PolicyRequest = {
-      kind: 'exec',
-      command: 'git',
-      args: ['commit', '-m', 'wip'],
-      cwd: root,
-      ...where,
-    };
-    const decision = await engine({}, escalator).resolve(request);
-    expect(decision).toMatchObject({ verdict: 'allow', rule: 'exec.otherwise', escalated: true });
-    expect(asked).toEqual(['run git commit -m wip']);
-
-    // The same request with nobody to ask — `handsfree run`, CI — is a denial.
-    expect((await engine().resolve(request)).verdict).toBe('deny');
-  });
-
-  it('refuses a command whose working directory is outside the workspace', async () => {
-    const policy = engine({ exec: { enabled: true, allow: ['git status'] } });
-    const decision = await policy.resolve({
-      kind: 'exec',
-      command: 'git',
-      args: ['status'],
-      cwd: '/etc',
-      ...where,
-    });
-    expect(decision).toMatchObject({ verdict: 'deny', rule: 'exec.cwd' });
-  });
-
-  it('judges a tool call by the same rules as a direct request', async () => {
-    const policy = engine({ exec: { enabled: true, allow: ['ls'] } });
-    const allowed = await policy.resolve({
-      kind: 'tool',
-      toolKind: 'execute',
-      title: 'List files',
-      locations: [],
-      rawInput: { command: 'ls -la' },
-      ...where,
-    });
-    expect(allowed.verdict).toBe('allow');
-
-    const refused = await policy.resolve({
-      kind: 'tool',
-      toolKind: 'execute',
-      title: 'Remove things',
-      locations: [],
-      rawInput: { command: 'rm -rf /' },
-      ...where,
-    });
-    expect(refused.verdict).toBe('deny');
-  });
-
-  // The four titles below are what gemini-cli 0.57 sends: no rawInput, and
-  // the command itself as the title.
-  it('judges a command an agent states only in the title, as gemini does', async () => {
-    const policy = engine({ exec: { enabled: true, allow: ['node'] } });
-    const decision = await policy.resolve({
-      kind: 'tool',
-      toolKind: 'execute',
-      title: 'node --experimental-strip-types test.mjs',
-      locations: [],
-      rawInput: null,
-      ...where,
-    });
-    expect(decision).toMatchObject({ verdict: 'allow', rule: 'exec.allow:node' });
-  });
-
-  it('allows the chain claude-code asks for, when every link is on the allowlist', async () => {
-    const policy = engine({ exec: { enabled: true, allow: ['node'] } });
-    const decision = await policy.resolve({
-      kind: 'tool',
-      toolKind: 'execute',
-      title: 'Run tokenize() on a sample input with Node',
-      locations: [],
-      rawInput: { command: `cd ${root} && node --version && node --experimental-strip-types test.mjs` },
-      ...where,
-    });
-    expect(decision).toMatchObject({ verdict: 'allow', rule: 'exec.allow:chain(cd; node; node)' });
-  });
-
-  it('puts a title-only command the allowlist does not name to the usual question', async () => {
-    const policy = engine({ exec: { enabled: true, allow: ['node'] } });
-    const decision = await policy.resolve({
-      kind: 'tool',
-      toolKind: 'execute',
-      title: 'rm -rf build',
-      locations: [],
-      rawInput: null,
-      ...where,
-    });
-    // Headless, a question is a refusal — by the exec rule, not as unreadable.
-    expect(decision).toMatchObject({ verdict: 'deny', rule: 'exec.otherwise' });
-  });
-
-  it('sees the shell operators in a title-only command', async () => {
-    const policy = engine({ exec: { enabled: true, allow: ['node'] } });
-    const decision = await policy.resolve({
-      kind: 'tool',
-      toolKind: 'execute',
-      title: 'node test.mjs && rm -rf /',
-      locations: [],
-      rawInput: null,
-      ...where,
-    });
-    expect(decision).toMatchObject({ verdict: 'deny', rule: 'exec.shellOperators' });
-  });
-
-  it('leaves an execute tool call it cannot read to a person, and refuses it without one', async () => {
-    const policy = engine({ exec: { enabled: true, allow: ['ls'] } });
-    const decision = await policy.resolve({
-      kind: 'tool',
-      toolKind: 'execute',
-      title: 'echo "an unbalanced quote',
-      locations: [],
-      rawInput: null,
-      ...where,
-    });
-    expect(decision).toMatchObject({ verdict: 'deny', rule: 'tool.opaqueCommand' });
-  });
-
-  it('refuses network and mode-switch tool calls outright', async () => {
-    const policy = engine({ exec: { enabled: true, allow: ['curl'] } });
-    for (const toolKind of ['fetch', 'switch_mode'] as const) {
-      const decision = await policy.resolve({
-        kind: 'tool',
-        toolKind,
-        title: toolKind,
-        locations: [],
-        rawInput: null,
-        ...where,
-      });
-      expect(decision.verdict).toBe('deny');
-
-      // Still their own refusal, not the allowlist's, even when an argv rides along.
-      const withArgv = await policy.resolve({
-        kind: 'tool',
-        toolKind,
-        title: toolKind,
-        locations: [],
-        rawInput: { command: ['curl', 'https://example.com'] },
-        ...where,
-      });
-      expect(withArgv).toMatchObject({ verdict: 'deny', rule: `tool.${toolKind === 'fetch' ? 'fetch' : 'switchMode'}` });
+  it.each([true, false])('forwards every request to the user and applies their answer (%s)', async (allow) => {
+    const ask = vi.fn().mockResolvedValue(allow);
+    const policy = engine({ exec: { enabled: false }, escalation: [] }, { ask });
+    const requests: PolicyRequest[] = [
+      { kind: 'fs.read', path: inside('a.ts'), ...where },
+      { kind: 'fs.write', path: '/etc/hosts', bytes: 3, ...where },
+      { kind: 'exec', command: 'git', args: ['diff'], cwd: root, ...where },
+      { kind: 'tool', toolKind: 'read', title: 'Read the file', locations: [inside('a.ts')], rawInput: { path: inside('a.ts') }, ...where },
+      { kind: 'tool', toolKind: 'execute', title: 'Show uncommitted change summary', locations: [], rawInput: { command: 'git diff' }, ...where },
+      { kind: 'tool', toolKind: 'fetch', title: 'Fetch documentation', locations: [], rawInput: {}, ...where },
+      { kind: 'tool', toolKind: 'switch_mode', title: 'Switch mode', locations: [], rawInput: {}, ...where },
+    ];
+    for (const request of requests) {
+      expect(await policy.resolve(request)).toMatchObject({ verdict: allow ? 'allow' : 'deny', escalated: true });
     }
-  });
-
-  it('refuses a tool call that touches a file outside the workspace', async () => {
-    const policy = engine();
-    const decision = await policy.resolve({
-      kind: 'tool',
-      toolKind: 'edit',
-      title: 'Edit hosts',
-      locations: ['/etc/hosts'],
-      rawInput: null,
-      ...where,
-    });
-    expect(decision).toMatchObject({ verdict: 'deny', rule: 'tool.outside' });
-  });
-
-  it('reads a permission request that arrives without a kind', async () => {
-    const policy = engine();
-    // What claude-code-acp actually sends: the file, but no kind.
-    const write = await policy.resolve({
-      kind: 'tool',
-      toolKind: null,
-      title: 'Write',
-      locations: [inside('notes.txt')],
-      rawInput: null,
-      ...where,
-    });
-    expect(write).toMatchObject({ verdict: 'allow', rule: 'tool.write' });
-
-    const outside = await policy.resolve({
-      kind: 'tool',
-      toolKind: null,
-      title: 'Write',
-      locations: ['/etc/hosts'],
-      rawInput: null,
-      ...where,
-    });
-    expect(outside.verdict).toBe('deny');
-  });
-
-  it('reads a kindless request that carries a command as a command', async () => {
-    const policy = engine({ exec: { enabled: true, allow: ['ls'] } });
-    const decision = await policy.resolve({
-      kind: 'tool',
-      toolKind: null,
-      title: 'Bash',
-      locations: [],
-      rawInput: { command: 'rm -rf /' },
-      ...where,
-    });
-    expect(decision).toMatchObject({ verdict: 'deny', rule: 'exec.otherwise' });
-  });
-
-  // The three shapes below are copied from a real codex-acp 0.16.0 turn.
-  it('judges the argv codex states as an array, not as an opaque command', async () => {
-    const policy = engine({ exec: { enabled: true, allow: ['ls'] } });
-    const decision = await policy.resolve({
-      kind: 'tool',
-      toolKind: 'execute',
-      title: 'Run ls',
-      locations: [],
-      rawInput: { call_id: 'call_1', command: ['/bin/zsh', '-lc', 'ls'], cwd: root },
-      ...where,
-    });
-    expect(decision).toMatchObject({ verdict: 'allow', rule: 'exec.allow:ls' });
-  });
-
-  it('judges a chained codex command link by link, not as a shrug', async () => {
-    const policy = engine({ exec: { enabled: true, allow: ['mkdir', 'echo'] } });
-    const chained = (script: string) =>
-      policy.resolve({
-        kind: 'tool',
-        toolKind: 'execute',
-        title: 'Run mkdir',
-        locations: [],
-        rawInput: { command: ['/bin/zsh', '-lc', script], cwd: root },
-        ...where,
-      });
-    // Two allowed commands joined are two allowed commands.
-    expect(await chained('mkdir -p /tmp/x && echo done')).toMatchObject({
-      verdict: 'allow',
-      rule: 'exec.allow:chain(mkdir; echo)',
-    });
-    // A link nobody allowed makes the verdict no — a judgement about the
-    // chain rather than an admission that we could not read the request.
-    expect(await chained('mkdir -p /tmp/x && curl x')).toMatchObject({
-      verdict: 'deny',
-      rule: 'exec.shellOperators',
+    expect(ask).toHaveBeenCalledTimes(requests.length);
+    expect(ask.mock.calls[4]?.[0]).toMatchObject({
+      summary: 'Show uncommitted change summary', detail: JSON.stringify({ command: 'git diff' }, null, 2),
     });
   });
 
-  it('judges a command by its argv even when the agent calls it a search', async () => {
-    // codex labels a shell call by what it thinks the command means: `ls`
-    // arrives as `search`, which under the read rules would never meet the
-    // allowlist at all.
-    const policy = engine({ exec: { enabled: true, allow: ['ls'] } });
-    const allowed = await policy.resolve({
-      kind: 'tool',
-      toolKind: 'search',
-      title: 'List the workspace',
-      locations: [],
-      rawInput: { command: ['/bin/zsh', '-lc', 'ls'], cwd: root },
-      ...where,
-    });
-    expect(allowed).toMatchObject({ verdict: 'allow', rule: 'exec.allow:ls' });
-
-    const refused = await policy.resolve({
-      kind: 'tool',
-      toolKind: 'search',
-      title: 'List the workspace',
-      locations: [],
-      rawInput: { command: ['/bin/zsh', '-lc', 'curl https://example.com'], cwd: root },
-      ...where,
-    });
-    expect(refused).toMatchObject({ verdict: 'deny', rule: 'exec.otherwise' });
-  });
-
-  it('applies the workspace boundary to a codex edit through its locations', async () => {
-    const policy = engine();
-    const request = (file: string) => ({
-      kind: 'tool' as const,
-      toolKind: 'edit' as const,
-      title: `Edit ${file}`,
-      locations: [file],
-      // codex names the file as a *key* under `changes`, where path extraction
-      // never looks — `locations` is what actually carries it.
-      rawInput: { changes: { [file]: { type: 'add', content: 'hello from codex.\n' } } },
-      ...where,
-    });
-    expect((await policy.resolve(request(inside('NOTES.md')))).verdict).toBe('allow');
-    expect((await policy.resolve(request('/etc/hosts'))).rule).toBe('tool.outside');
+  it('asks again for repeated calls after a one-time approval', async () => {
+    const ask = vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const policy = engine({}, { ask });
+    const request: PolicyRequest = { kind: 'fs.read', path: inside('a.ts'), ...where };
+    expect((await policy.resolve(request)).verdict).toBe('allow');
+    expect((await policy.resolve(request)).verdict).toBe('deny');
+    expect(ask).toHaveBeenCalledTimes(2);
   });
 
   it('denies an escalation when nobody is there to answer', async () => {
@@ -456,14 +186,14 @@ describe('PolicyEngine', () => {
 
   it('records every decision, allowed or refused', async () => {
     const audit: AuditEntry[] = [];
-    const policy = engine({}, undefined, audit);
+    const policy = engine({}, { ask: vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false) }, audit);
     await policy.resolve({ kind: 'fs.read', path: inside('a.ts'), ...where });
     await policy.resolve({ kind: 'fs.write', path: '/etc/passwd', bytes: 3, ...where });
     expect(audit.map((entry) => entry.verdict)).toEqual(['allow', 'deny']);
     expect(audit[0]?.summary).toBe('read a.ts');
   });
 
-  it('summarises a tool call without repeating the workspace path', async () => {
+  it('preserves the tool title verbatim', async () => {
     const audit: AuditEntry[] = [];
     const policy = engine({}, undefined, audit);
     await policy.resolve({
@@ -475,7 +205,7 @@ describe('PolicyEngine', () => {
       rawInput: null,
       ...where,
     });
-    expect(audit[0]?.summary).toBe('Write query.txt');
+    expect(audit[0]?.summary).toBe(`Write ${inside('query.txt')}`);
   });
 });
 
@@ -553,22 +283,7 @@ describe('PolicyEngine under a permission mode', () => {
     ...where,
   };
 
-  it('starts in ask, and answers a file question in acceptEdits but not a command one', async () => {
-    const policy = engine({ fs: { write: 'ask' } });
-    expect(policy.mode).toBe('ask');
-    policy.setMode('acceptEdits');
-
-    const write = await policy.resolve({ kind: 'fs.write', path: inside('a.ts'), bytes: 3, ...where });
-    expect(write).toMatchObject({ verdict: 'allow', rule: 'fs.write', mode: 'acceptEdits' });
-    expect(write.escalated).toBeUndefined();
-
-    // Still a question, and with nobody there still a denial.
-    expect(await policy.resolve(commit)).toMatchObject({ verdict: 'deny', rule: 'exec.otherwise' });
-    // A denial is not a question, and the mode answers questions.
-    expect(await policy.resolve(outside)).toMatchObject({ verdict: 'deny', rule: 'fs.write.outside' });
-  });
-
-  it('lifts every ruling in bypass, keeps the rule name, and refuses a mode switch still', async () => {
+  it('approves every request in bypass without an exception for tool kinds', async () => {
     const policy = engine({ exec: { enabled: false } });
     policy.setMode('bypass');
 
@@ -583,18 +298,17 @@ describe('PolicyEngine under a permission mode', () => {
       mode: 'bypass',
     });
     const refused = await policy.resolve(switchMode);
-    expect(refused).toMatchObject({ verdict: 'deny', rule: 'tool.switchMode' });
-    expect(refused.mode).toBeUndefined();
+    expect(refused).toMatchObject({ verdict: 'allow', rule: 'tool.switchMode', mode: 'bypass' });
   });
 
-  it('records the mode only on the decisions it changed', async () => {
+  it('records bypass on every automatic approval', async () => {
     const audit: AuditEntry[] = [];
     const policy = engine({}, undefined, audit);
     policy.setMode('bypass');
     await policy.resolve({ kind: 'fs.read', path: inside('a.ts'), ...where });
     await policy.resolve(commit);
     expect(audit.map((entry) => [entry.rule, entry.mode])).toEqual([
-      ['fs.read', undefined],
+      ['fs.read', 'bypass'],
       ['exec.otherwise', 'bypass'],
     ]);
   });
@@ -608,8 +322,8 @@ describe('PolicyEngine under a permission mode', () => {
     expect(widened.escalated).toBeUndefined();
     expect(asked).toBe(0);
 
-    // In acceptEdits a standing approval is still a person's call.
-    policy.setMode('acceptEdits');
+    // In ask a standing approval is still a person's call.
+    policy.setMode('ask');
     expect(await policy.confirm(commit, { rule: 'tool.sessionWideOnly', reason: 'whole session' })).toMatchObject({
       verdict: 'deny',
       escalated: true,
@@ -638,6 +352,21 @@ describe('PolicyEngine under a permission mode', () => {
     const byHand = await engine({}, { ask: async () => true }).resolve(commit);
     expect(byHand).toMatchObject({ verdict: 'allow', escalated: true });
     expect(byHand.mode).toBeUndefined();
+  });
+
+  it('approves pending requests when switching to bypass without relying on the UI', async () => {
+    const ask = vi.fn(() => new Promise<boolean>(() => {}));
+    const policy = engine({}, { ask });
+    const first = policy.resolve(commit);
+    const second = policy.resolve(outside);
+    expect(policy.isWaiting('claude')).toBe(true);
+    policy.setMode('bypass');
+    for (const result of await Promise.all([first, second])) {
+      expect(result).toMatchObject({ verdict: 'allow', mode: 'bypass' });
+    }
+    expect(policy.isWaiting('claude')).toBe(false);
+    policy.setMode('ask');
+    expect(ask).toHaveBeenCalledTimes(2);
   });
 
   it('leaves an agent’s own question alone in bypass', async () => {

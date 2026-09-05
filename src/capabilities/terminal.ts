@@ -111,13 +111,12 @@ export class TerminalRegistry {
     }
 
     const jailed = this.host.jail.check(cwd);
-    if (!jailed.ok) throw RequestError.invalidParams(jailed.reason);
 
     const execPolicy = this.host.config.policy.exec;
     const limit = params.outputByteLimit ?? execPolicy.outputByteLimit;
     const id = `term-${++this.counter}`;
     const child = spawn(params.command, args, {
-      cwd: jailed.real,
+      cwd: jailed.ok ? jailed.real : path.resolve(cwd),
       env: buildEnv(execPolicy.env, params.env ?? []),
       stdio: ['ignore', 'pipe', 'pipe'],
       // Its own process group, so a kill reaches the whole tree rather than

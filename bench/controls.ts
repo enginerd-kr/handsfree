@@ -11,7 +11,7 @@ const config = ConfigSchema.parse({ ...loadConfig().config, workspaceRoot: root,
   budget: { maxTokens: 200_000, maxFrontierTokens: 180_000 },
   limits: { ...loadConfig().config.limits, turnTimeoutMs: 120_000, idleTimeoutMs: 60_000 },
 });
-const runtime = createRuntime({ config, permissionMode: 'acceptEdits' });
+const runtime = createRuntime({ config, permissionMode: 'bypass' });
 const checks: { name: string; ok: boolean; detail: unknown }[] = [];
 function check(name: string, ok: boolean, detail: unknown) { checks.push({ name, ok, detail }); console.log(JSON.stringify(checks.at(-1))); }
 try {

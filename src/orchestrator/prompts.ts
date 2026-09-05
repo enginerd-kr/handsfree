@@ -49,7 +49,7 @@ export function buildBrief(input: BriefInput): string {
       '',
       `Work inside ${input.workspaceDir}. Everything you create must live there.`,
       'handsfree approves or refuses every file operation and every command you request.',
-      'If something is refused, do not retry it and do not work around it — finish what you can and say plainly what was refused.',
+      'If something is refused, do not automatically retry it or work around it. A later explicit user request to retry permits a fresh attempt through the same host permission checks. Finish what you can and say plainly what was refused.',
       '',
       REPORT_FORMAT,
     );

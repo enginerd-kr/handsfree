@@ -315,6 +315,59 @@ describe('Conversation', () => {
     expect(observations).toContain('/etc/hosts');
   });
 
+  it.each([false, true])('dispatches a retry with an empty work list using the current user decision (approved=%s)', async (enabled) => {
+    const results: { ok: boolean; detail: string }[] = [];
+    const agent = fakeAgent({ script: () => [
+      { do: 'exec', command: 'echo', args: ['checked'], onResult: (result) => results.push(result) },
+      { do: 'say', text: 'Attempt finished.' },
+    ] });
+    const task = '사용자가 다시 요청했습니다. 변경 사항을 다시 확인하고 파일은 수정하지 마세요.';
+    const summary = enabled ? '클로드가 다시 확인했습니다.' : '클로드에게 다시 요청했지만 현재 명령 실행 설정에서 거부됐습니다.';
+    const llm = scriptedModel([
+      JSON.stringify({
+        review: { objective: '변경 사항 재확인', constraints: ['파일 수정 금지'], completed: [], remaining: [], next: -1, blocker: '' },
+        action: 'call', tool: 'agent', input: { agent: 'claude', kind: 'change', prompt: task },
+      }),
+      answer(summary),
+    ]);
+    const h = harness({ agents: { claude: agent }, llm, config: { policy: { exec: { enabled: false } } } });
+    open = h;
+
+    await h.runtime.conversation.send('@claude 변경 사항 확인해');
+    h.runtime.setEscalator({ ask: async () => enabled });
+    h.runtime.config.policy.exec.allow = ['echo'];
+    await h.runtime.conversation.send('허용했어. 클로드한테 다시 요청하라고.');
+
+    expect(agent.prompts).toHaveLength(2);
+    expect(agent.prompts[1]).toContain(task);
+    expect(results).toHaveLength(2);
+    expect(results.map((result) => result.ok)).toEqual([false, enabled]);
+    expect(llm.seen).toHaveLength(2);
+    const reviews = h.runtime.transcript.all().filter((r) => r.type === 'context' && r.entry.event === 'review');
+    expect(reviews).toContainEqual(expect.objectContaining({ entry: expect.objectContaining({
+      state: expect.objectContaining({ remaining: [task], next: 0 }),
+    }) }));
+    expect(assistantText(h).at(-1)).toBe(summary);
+  });
+
+  it('records recovered work as completed and prevents duplicate execution in the same turn', async () => {
+    const agent = fakeAgent({ script: () => [{ do: 'say', text: 'Checked.' }] });
+    const task = 'Check the changes again';
+    const call = JSON.stringify({
+      review: { objective: task, constraints: [], completed: [], remaining: [], next: -1, blocker: '' },
+      action: 'call', tool: 'agent', input: { agent: 'claude', kind: 'inspect', prompt: task },
+    });
+    const llm = scriptedModel([call, call, answer('Checked.')]);
+    const h = harness({ agents: { claude: agent }, llm });
+    open = h;
+
+    await h.runtime.conversation.send('Ask Claude to check again');
+
+    expect(agent.prompts).toHaveLength(1);
+    expect(llm.seen[2]?.at(-1)?.content).toContain('has already executed successfully');
+    expect(assistantText(h).at(-1)).toBe('Checked.');
+  });
+
   it('stops at the delegation limit and still reports', async () => {
     const agent = fakeAgent({ script: () => [{ do: 'say', text: 'ok' }] });
     const llm = scriptedModel([delegate('one'), delegate('two'), delegate('three')]);

@@ -56,6 +56,7 @@ export type Act =
   | {
       do: 'exec';
       command: string;
+      cwd?: string;
       args?: string[];
       onResult: (result: { ok: boolean; detail: string; output?: string }) => void;
     }
@@ -353,6 +354,7 @@ async function perform(
           const created = await client.request(methods.client.terminal.create, {
             sessionId,
             command: act.command,
+            ...(act.cwd ? { cwd: act.cwd } : {}),
             args: act.args ?? [],
           });
           await client.request(methods.client.terminal.waitForExit, {

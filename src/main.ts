@@ -26,7 +26,7 @@ Options
   --sandbox                     work in an empty scratch workspace instead of this directory
   --json                        with run: emit the transcript as NDJSON
   --run <id>                    reuse an existing run directory
-  --permission-mode <mode>      with run, task or serve --mcp: ask (default), acceptEdits or bypass;
+  --permission-mode <mode>      with run, task or serve --mcp: ask (default) or bypass;
                                 the terminal UI always starts in ask, shift+tab moves it
   --debug                       diagnostics on stderr: launches, environment, handshakes
                                 (also HANDSFREE_DEBUG=1, or =<path> to append to a file;
@@ -253,7 +253,7 @@ async function main(): Promise<number> {
     const permissionMode = parsePermissionMode(args.permissionMode);
     if (args.permissionMode !== undefined && permissionMode === undefined) {
       process.stderr.write(
-        `--permission-mode takes ask, acceptEdits or bypass, not "${args.permissionMode}".\n`,
+        `--permission-mode takes ask or bypass, not "${args.permissionMode}".\n`,
       );
       return 2;
     }

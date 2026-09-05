@@ -74,7 +74,7 @@ export async function benchmark(live = false): Promise<{ mode: 'simulation' | 'l
           + (options?.schema ? estimateTokens(JSON.stringify(options.schema.schema)) : 0), completionTokens: estimateTokens(reply) });
         return reply;
       } };
-      const runtime = createRuntime({ config, permissionMode: 'acceptEdits', ...(live ? {} : { llm, createTarget: () => worker.target() }) });
+      const runtime = createRuntime({ config, permissionMode: 'bypass', ...(live ? {} : { llm, createTarget: () => worker.target() }) });
       dir = runtime.workspace.dir;
       const started = Date.now();
       let successes = 0;

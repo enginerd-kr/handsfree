@@ -16,18 +16,19 @@ export type PolicyRequest =
       title: string;
       locations: string[];
       rawInput: unknown;
+      /** The approval scope offered by the adapter when it cannot grant one call. */
+      approvalLabel?: string;
     } & RequestContext);
 
 export interface Decision {
   verdict: 'allow' | 'deny';
-  /** Which rule decided, e.g. `fs.write` or `exec.allow:git status`. */
+  /** Legacy audit classification, e.g. `fs.write` or `exec.allow:git status`. */
   rule: string;
   reason?: string;
-  /** True when a human (rather than a rule) made the call. */
+  /** True when the request was forwarded to an approval interface. */
   escalated?: boolean;
   /**
-   * Set only when the session's permission mode turned an ask or a denial
-   * into this allow. `rule` still names the rule that was overridden.
+   * Set on every approval made by bypass mode, including pending requests.
    */
   mode?: Exclude<PermissionMode, 'ask'>;
 }
@@ -86,6 +87,7 @@ export interface Escalator {
   ask(question: {
     summary: string;
     detail: string;
+    approvalLabel?: string;
     rule: string;
     context: RequestContext;
     signal: AbortSignal;

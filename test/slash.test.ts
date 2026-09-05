@@ -165,6 +165,7 @@ describe('expansion through the policy engine', () => {
     const h = harness({
       agents: { claude: fakeAgent({ script: () => [] }) },
       llm,
+      escalator: { ask: async () => true },
       config: { policy: allowingEcho },
       cwd: project({ 'facts.md': 'The state is:\n\n!`echo alive`\n' }),
     });
@@ -192,7 +193,7 @@ describe('expansion through the policy engine', () => {
     expect(decisions(h).at(-1)?.entry).toMatchObject({ verdict: 'deny', rule: 'exec.otherwise' });
   });
 
-  it('refuses every command when running commands is switched off', async () => {
+  it('cannot run without a user in ask mode', async () => {
     const llm = scriptedModel([answer('done')]);
     const h = harness({
       agents: { claude: fakeAgent({ script: () => [] }) },
@@ -213,6 +214,7 @@ describe('expansion through the policy engine', () => {
     const h = harness({
       agents: { claude: fakeAgent({ script: () => [] }) },
       llm,
+      escalator: { ask: async () => true },
       cwd: project({ 'look.md': 'Here it is: @notes.txt\n' }),
     });
     open = h;

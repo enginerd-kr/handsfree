@@ -199,47 +199,23 @@ export type Roles = z.infer<typeof RolesSchema>;
 
 export const PolicySchema = z
   .object({
-    /** Every path an agent touches must resolve inside the session workspace. */
+    /** Legacy audit settings, retained for existing configuration files. */
     workspaceOnly: z.boolean().default(true),
     fs: z
       .object({
         read: Rule.default('allow'),
         write: Rule.default('allow'),
-        /** Applied when a path resolves outside the workspace roots. */
         outside: Rule.default('deny'),
-        /** Refuse to follow a symlink whose target escapes the workspace. */
         followSymlinks: z.boolean().default(false),
       })
       .prefault({}),
     exec: z
       .object({
-        /**
-         * On, because an agent that cannot run the tests cannot tell you they
-         * pass — it can only tell you it thinks so. The blast radius is held by
-         * the three things below rather than by the switch: commands run in the
-         * workspace and nowhere else, the allowlist says what needs no person,
-         * and everything it does not name is shown to one.
-         */
+        /** Legacy audit settings; ask/bypass alone controls permission decisions. */
         enabled: z.boolean().default(true),
         mode: z.enum(['allowlist', 'ask', 'deny']).default('allowlist'),
-        /** Token-prefix patterns, e.g. "git status", "pnpm test". */
         allow: z.array(z.string()).default(DEV_ALLOWLIST),
-        /**
-         * A command the allowlist does not name. `ask` rather than `deny`
-         * because a coding agent legitimately reaches past any list somebody
-         * wrote in advance, and the question is who decides — not whether the
-         * list is complete. With nobody to ask, an `ask` is a denial, so
-         * `handsfree run` and CI stay exactly as tight as they were.
-         */
         otherwise: Rule.default('ask'),
-        /**
-         * A redirect, a substitution, a chain with a link the allowlist does
-         * not name — the part of the script we stop reading at. Judged by a
-         * person, who is shown the whole script, because emulating a shell
-         * well enough to decide it is not a thing we are going to do. A plain
-         * chain of allowed commands — `cd src && pnpm test`, `node a && node
-         * b` — never gets here: each link is judged as the command it is.
-         */
         shellOperators: Rule.default('ask'),
         timeoutMs: z.number().int().positive().default(120_000),
         /**
@@ -253,7 +229,7 @@ export const PolicySchema = z
         env: z.array(z.string()).default(['PATH', 'HOME', 'LANG', 'TERM', 'TMPDIR']),
       })
       .prefault({}),
-    /** What to do with an `ask` verdict, in order. An empty list means deny. */
+    /** Legacy setting; ask mode always uses the connected approval interface. */
     escalation: z.array(z.enum(['user'])).default(['user']),
     /** How long a human has to answer before the request is denied. */
     decisionTimeoutMs: z.number().int().positive().default(120_000),

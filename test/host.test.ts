@@ -15,10 +15,11 @@ afterEach(async () => {
 async function runTurn(
   script: (workspaceDir: string) => Act[],
   options: Parameters<typeof harness>[0]['config'] = {},
+  approve = false,
 ) {
   let workspaceDir = '';
   const agent = fakeAgent({ script: () => script(workspaceDir) });
-  const h = harness({ agents: { claude: agent }, config: options });
+  const h = harness({ agents: { claude: agent }, config: options, ...(approve ? { escalator: { ask: async () => true } } : {}) });
   open = h;
   workspaceDir = h.workspaceDir;
 
@@ -31,10 +32,14 @@ async function runTurn(
   return { ...h, stopReason, agent };
 }
 
+/** These fixtures explicitly approve the concrete operation under test. */
+const runApprovedTurn = (script: (workspaceDir: string) => Act[], options: Parameters<typeof harness>[0]['config'] = {}) =>
+  runTurn(script, options, true);
+
 describe('permission gate', () => {
   it('approves an in-workspace edit for this call only', async () => {
     const answers: string[] = [];
-    const { runtime, workspaceDir } = await runTurn((dir) => [
+    const { runtime, workspaceDir } = await runApprovedTurn((dir) => [
       {
         do: 'ask',
         title: 'Edit notes.txt',
@@ -50,7 +55,7 @@ describe('permission gate', () => {
     expect(workspaceDir).toBeTruthy();
   });
 
-  it('cancels rather than accepting a session-wide approval', async () => {
+  it('does not grant a session-wide approval without a user', async () => {
     const answers: string[] = [];
     await runTurn((dir) => [
       {
@@ -66,7 +71,7 @@ describe('permission gate', () => {
       },
     ]);
 
-    expect(answers).toEqual(['cancelled']);
+    expect(answers).toEqual(['no']);
   });
 
   it('refuses an edit outside the workspace', async () => {
@@ -88,7 +93,7 @@ describe('permission gate', () => {
   // a kind nor a location.
   it('approves a request that names its file only in rawInput', async () => {
     const answers: string[] = [];
-    await runTurn((dir) => [
+    await runApprovedTurn((dir) => [
       {
         do: 'ask',
         title: `Write ${path.join(dir, 'notes.txt')}`,
@@ -137,7 +142,7 @@ describe('permission gate', () => {
     // thinks the command means — here a listing. Both are taken as they come:
     // the argv is read, the label is not what decides.
     const answers: string[] = [];
-    await runTurn(
+    await runApprovedTurn(
       () => [
         {
           do: 'ask',
@@ -157,7 +162,7 @@ describe('permission gate', () => {
 describe('filesystem gate', () => {
   it('writes a file the agent asks for and records it', async () => {
     const results: { ok: boolean; detail: string }[] = [];
-    const { workspaceDir, runtime } = await runTurn((dir) => [
+    const { workspaceDir, runtime } = await runApprovedTurn((dir) => [
       {
         do: 'write',
         path: path.join(dir, 'notes.txt'),
@@ -195,7 +200,7 @@ describe('filesystem gate', () => {
   // shell instead, which is the one path handsfree cannot mediate.
   it('reads a file that does not exist yet as empty, and records that it did', async () => {
     const results: { ok: boolean; detail: string }[] = [];
-    const { runtime } = await runTurn((dir) => [
+    const { runtime } = await runApprovedTurn((dir) => [
       {
         do: 'read',
         path: path.join(dir, 'not-created-yet.txt'),
@@ -240,9 +245,9 @@ describe('filesystem gate', () => {
 });
 
 describe('terminal gate', () => {
-  it('runs an allowed command and returns its output', async () => {
+  it('runs a user-approved command even when legacy execution is disabled', async () => {
     const results: { ok: boolean; detail: string; output?: string }[] = [];
-    await runTurn(
+    await runApprovedTurn(
       () => [
         {
           do: 'exec',
@@ -251,11 +256,20 @@ describe('terminal gate', () => {
           onResult: (result) => results.push(result),
         },
       ],
-      { policy: { exec: { enabled: true, allow: ['echo'] } } },
+      { policy: { exec: { enabled: false, allow: [] } } },
     );
 
     expect(results[0]?.ok).toBe(true);
     expect(results[0]?.output).toContain('handsfree');
+  });
+
+  it('honors approval for a terminal working directory outside the default workspace', async () => {
+    const results: { ok: boolean; detail: string; output?: string }[] = [];
+    const h = await runApprovedTurn((dir) => [{
+      do: 'exec', command: 'pwd', cwd: path.dirname(dir), onResult: (result) => results.push(result),
+    }]);
+    expect(results[0]?.ok).toBe(true);
+    expect(results[0]?.output?.trim()).toBe(fs.realpathSync(path.dirname(h.workspaceDir)));
   });
 
   it('refuses a command that is not on the allowlist', async () => {
@@ -276,7 +290,7 @@ describe('terminal gate', () => {
     expect(results[0]?.detail).toContain('denied');
   });
 
-  it('refuses every command when execution is switched off', async () => {
+  it('requires a user even when the old execution setting is off', async () => {
     const results: { ok: boolean; detail: string }[] = [];
     await runTurn(
       () => [
@@ -453,7 +467,7 @@ describe('terminal output ceiling', () => {
   it('hands the agent the end of a long output and writes the whole of it under the run', async () => {
     const results: { ok: boolean; detail: string; output?: string }[] = [];
     const script = "process.stdout.write(Array.from({length: 400}, (_, i) => `line ${i} ${'x'.repeat(20)}`).join('\\n'))";
-    const { runtime } = await runTurn(
+    const { runtime } = await runApprovedTurn(
       () => [
         {
           do: 'exec',
@@ -483,7 +497,7 @@ describe('terminal output ceiling', () => {
   });
 
   it('writes nothing aside when the output fit', async () => {
-    const { runtime } = await runTurn(
+    const { runtime } = await runApprovedTurn(
       () => [{ do: 'exec', command: 'echo', args: ['short'], onResult: () => {} }],
       { policy: { exec: { enabled: true, allow: ['echo'] } } },
     );

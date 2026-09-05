@@ -205,11 +205,10 @@ describe('handsfree as an ACP agent', () => {
           cwd: project,
           mcpServers: [],
         });
-        // The same three the terminal walks with shift+tab, opening in ask.
+        // The same two the terminal walks with shift+tab, opening in ask.
         expect(session.modes?.currentModeId).toBe('ask');
         expect(session.modes?.availableModes.map((mode) => mode.id)).toEqual([
           'ask',
-          'acceptEdits',
           'bypass',
         ]);
 

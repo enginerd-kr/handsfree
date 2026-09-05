@@ -195,7 +195,7 @@ function upstreamEscalator(
             rawInput: { rule: question.rule, detail: question.detail },
           },
           options: [
-            { optionId: 'allow', name: 'Allow once', kind: 'allow_once' },
+            { optionId: 'allow', name: question.approvalLabel ?? 'Allow once', kind: question.approvalLabel ? 'allow_always' : 'allow_once' },
             { optionId: 'reject', name: 'Refuse', kind: 'reject_once' },
           ],
         },

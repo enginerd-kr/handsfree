@@ -38,10 +38,9 @@ export interface AskOptions {
 }
 
 /**
- * One place where every side effect an agent asks for is judged, whichever of
- * the three gates it arrived through. Rules run first and are deterministic;
- * anything they cannot settle is escalated, and an escalation nobody answers is
- * a denial. There is no path through this class that ends in an unrecorded yes.
+ * One approval path for all host gates. Ask forwards each request to the user;
+ * bypass approves it. Legacy rule classifications remain on the audit record
+ * for continuity, but never decide whether an operation is allowed.
  */
 export class PolicyEngine {
   private readonly policy: Policy;
@@ -52,14 +51,7 @@ export class PolicyEngine {
   private readonly now: () => number;
   /** Open questions per agent, so a turn can be told to stop its clocks. */
   private readonly waiting = new Map<string, number>();
-  private readonly access = new Map<string, 'answer' | 'inspect'>();
-
-  restrict(context: RequestContext, kind: 'answer' | 'inspect'): () => void {
-    const key = JSON.stringify([context.agentId, context.sessionId]);
-    this.access.set(key, kind);
-    return () => this.access.delete(key);
-  }
-
+  private readonly pendingApprovals = new Set<() => void>();
   constructor(options: PolicyEngineOptions) {
     this.policy = options.policy;
     this.jail = options.jail;
@@ -73,15 +65,10 @@ export class PolicyEngine {
     this.escalator = escalator;
   }
 
-  /**
-   * The session's permission mode. Runtime state and nothing more: the config
-   * is neither read for it nor written with it, and the rules go on answering
-   * exactly as configured — the mode decides what becomes of their answer.
-   * One engine serves the agents, the planner and a command file's own
-   * expansions alike, so a mode set here is the mode for all of them.
-   */
+  /** Session-only state shared by every gate; bypass also releases pending approvals. */
   setMode(mode: PermissionMode): void {
     this.currentMode = mode;
+    if (mode === 'bypass') for (const approve of [...this.pendingApprovals]) approve();
   }
 
   get mode(): PermissionMode {
@@ -92,12 +79,7 @@ export class PolicyEngine {
     return this.settle(request, this.rule(request), options.signal);
   }
 
-  /**
-   * A question the rules did not raise. The caller has judged the operation
-   * itself and still needs a person — an agent that offers no way to approve
-   * one call is the case this exists for — and the answer is recorded exactly
-   * like every other, because a yes is a yes whoever raised the question.
-   */
+  /** The same approval flow with an explicit scope, such as a session-wide grant. */
   async confirm(
     request: PolicyRequest,
     ruling: { rule: string; reason: string },
@@ -117,7 +99,7 @@ export class PolicyEngine {
     question: { summary: string; fields: InputField[] },
     options: AskOptions = {},
   ): Promise<InputAnswer> {
-    const escalator = this.policy.escalation.includes('user') ? this.escalator : undefined;
+    const escalator = this.escalator;
     if (!escalator?.input) return { action: 'cancel' };
 
     const controller = this.deadline(options.signal);
@@ -152,32 +134,21 @@ export class PolicyEngine {
     ruling: Ruling,
     signal: AbortSignal | undefined,
   ): Promise<Decision> {
-    const summary = describe(request, this.jail);
-    const access = this.access.get(JSON.stringify([request.agentId, request.sessionId]));
-    if (access && !(access === 'inspect' && (request.kind === 'fs.read' || request.kind === 'tool' && request.toolKind === 'read'))) {
-      const decision: Decision = { verdict: 'deny', rule: `task.${access}`, reason: 'This task does not allow side effects or commands' };
-      this.onDecision?.({ ...decision, at: this.now(), request, summary });
-      return decision;
-    }
-
+    const summary = request.kind === 'tool' ? request.title : describe(request, this.jail);
     // The mode has its say here, on the ruling and before anyone is asked, so
     // there is no window between the rule and the question for it to fall in.
     // The rule keeps its own name either way: a decision the mode made still
     // says which rule it overrode.
     const mode = this.currentMode;
     const ruled = applyMode(mode, ruling);
-    const lifted = ruled.outcome !== ruling.outcome;
 
     let decision: Decision;
     if (ruled.outcome === 'allow') {
       decision = {
         verdict: 'allow',
         rule: ruling.rule,
-        reason: ruling.reason,
-        ...(lifted && mode !== 'ask' ? { mode } : {}),
+        mode: 'bypass',
       };
-    } else if (ruled.outcome === 'deny') {
-      decision = { verdict: 'deny', rule: ruling.rule, reason: ruling.reason };
     } else {
       decision = await this.escalate(request, ruling, summary, signal);
     }
@@ -197,17 +168,20 @@ export class PolicyEngine {
     summary: string,
     signal: AbortSignal | undefined,
   ): Promise<Decision> {
-    const escalator = this.policy.escalation.includes('user') ? this.escalator : undefined;
+    const escalator = this.escalator;
     if (!escalator) {
       return {
         verdict: 'deny',
         rule: ruling.rule,
-        reason: `${ruling.reason ?? 'needs a decision'} (nobody available to approve)`,
+        reason: 'nobody available to approve (ask mode requires an approval interface)',
       };
     }
 
     const controller = this.deadline(signal);
     const release = this.hold(request.agentId);
+    let approve: () => void = () => {};
+    const bypassed = new Promise<boolean>((resolve) => { approve = () => resolve(true); });
+    this.pendingApprovals.add(approve);
     try {
       // The deadline is enforced here rather than inside the escalator. An
       // escalator that ignores the signal — a wedged UI, a bad implementation —
@@ -215,11 +189,16 @@ export class PolicyEngine {
       const allowed = await Promise.race([
         escalator.ask({
           summary,
-          detail: ruling.reason ?? '',
+          ...(request.kind === 'tool' && request.approvalLabel ? { approvalLabel: request.approvalLabel } : {}),
+          detail: [
+            ...(request.kind === 'tool' ? [request.rawInput == null ? '' : JSON.stringify(request.rawInput, null, 2), ...request.locations] : []),
+            ...(ruling.rule === 'tool.sessionWideOnly' ? [ruling.reason] : []),
+          ].filter(Boolean).join('\n'),
           rule: ruling.rule,
           context: { agentId: request.agentId, sessionId: request.sessionId },
           signal: controller.signal,
         }),
+        bypassed,
         aborted(controller.signal).then((): boolean => {
           throw new Error('timed out');
         }),
@@ -247,6 +226,8 @@ export class PolicyEngine {
         escalated: true,
       };
     } finally {
+      this.pendingApprovals.delete(approve);
+      controller.abort();
       controller.done();
       release();
     }
@@ -260,6 +241,7 @@ export class PolicyEngine {
   private deadline(signal: AbortSignal | undefined): {
     signal: AbortSignal;
     done: () => void;
+    abort: () => void;
   } {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.policy.decisionTimeoutMs);
@@ -268,6 +250,7 @@ export class PolicyEngine {
     else signal?.addEventListener('abort', relay);
     return {
       signal: controller.signal,
+      abort: () => controller.abort(),
       done: () => {
         clearTimeout(timer);
         signal?.removeEventListener('abort', relay);
@@ -288,6 +271,7 @@ export class PolicyEngine {
     };
   }
 
+  /** Legacy classification is retained only as audit metadata. */
   private rule(request: PolicyRequest): Ruling {
     switch (request.kind) {
       case 'fs.read':

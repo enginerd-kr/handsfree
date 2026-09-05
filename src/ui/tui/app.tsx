@@ -239,6 +239,7 @@ type Question =
       kind: 'ask';
       summary: string;
       detail: string;
+      approvalLabel?: string;
       rule: string;
       agentId: string;
       answer: (allowed: boolean) => void;
@@ -522,6 +523,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
             kind: 'ask',
             summary: question.summary,
             detail: question.detail,
+            ...(question.approvalLabel ? { approvalLabel: question.approvalLabel } : {}),
             rule: question.rule,
             agentId: question.context.agentId,
             answer,
@@ -2071,15 +2073,12 @@ const MODE_MARK = '⏵⏵';
 
 /**
  * A mode's colour, the traffic light read from the safe end: green for
- * `ask`, where nothing happens without a person, warning yellow for edits
- * going through, red for everything going through.
+ * `ask`, where permission requests go to a person, and red for `bypass`.
  */
 function modeInk(mode: PermissionMode): string {
   switch (mode) {
     case 'ask':
       return 'green';
-    case 'acceptEdits':
-      return 'yellow';
     case 'bypass':
       return 'red';
   }
@@ -2335,12 +2334,9 @@ function Ask({ ask }: { ask: Extract<Question, { kind: 'ask' }> }): React.JSX.El
         wants to {ask.summary}
       </Text>
       {ask.detail ? <Text color={INK}>{ask.detail}</Text> : null}
-      <Text color={INK}>
-        rule: {ask.rule}
-      </Text>
       <Box marginTop={1}>
         <Text>
-          <Text color="green">y</Text> <Text color={INK}>allow once</Text>
+          <Text color="green">y</Text> <Text color={INK}>{ask.approvalLabel ?? 'allow once'}</Text>
           <Text color={INK_FAINT}>{'   ·   '}</Text>
           <Text color="red">n</Text> <Text color={INK}>refuse</Text>
           <Text color={INK_FAINT}>{'   ·   '}</Text>

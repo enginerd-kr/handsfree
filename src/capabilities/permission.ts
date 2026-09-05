@@ -7,17 +7,7 @@ import { pathsFromRawInput } from '../policy/engine.js';
 import type { PolicyRequest } from '../policy/types.js';
 import type { HostContext } from './context.js';
 
-/**
- * Gate A. An agent that wants to do something through its own tools has to ask
- * here first, and this is the only place in handsfree that can say yes.
- *
- * Two invariants shape the answer:
- *   - only `allow_once` is ever selected, because a standing approval is a
- *     decision about future work we have not seen;
- *   - where the agent offers no way to say "just this once", widening it is a
- *     decision only a person may make, so the person is asked in as many words
- *     — and with nobody there the request is cancelled rather than widened.
- */
+/** Forward the adapter's permission request once, then return its selected approval scope. */
 export function createPermissionHandler(host: HostContext) {
   return async (
     params: RequestPermissionRequest,
@@ -25,8 +15,7 @@ export function createPermissionHandler(host: HostContext) {
   ): Promise<RequestPermissionResponse> => {
     const call = params.toolCall;
     // Adapters are inconsistent about `locations`: claude-code-acp sends none at
-    // all and puts the file in `rawInput`. Both are gathered, so the workspace
-    // boundary applies to every path the request actually names.
+    // all and puts the file in `rawInput`. Show both sources to the user.
     const locations = [
       ...(call.locations ?? []).map((location) => location.path),
       ...pathsFromRawInput(call.rawInput ?? null),
@@ -42,46 +31,20 @@ export function createPermissionHandler(host: HostContext) {
       rawInput: call.rawInput ?? null,
     };
     const ask = { ...(signal ? { signal } : {}) };
-    const decision = await host.policy.resolve(request, ask);
+    const once = pick(params.options, 'allow_once');
+    const approval = once ?? pick(params.options, 'allow_always');
+    if (!approval) return { outcome: { outcome: 'cancelled' } };
+    if (!once) request.approvalLabel = approval.name;
 
+    // Ask once about exactly the scope the adapter can grant.
+    const decision = once
+      ? await host.policy.resolve(request, ask)
+      : await host.policy.confirm(request, {
+          rule: 'tool.sessionWideOnly',
+          reason: `${host.agentId} offers "${approval.name}" for the whole session, with no single-use approval`,
+        }, ask);
     if (decision.verdict === 'allow') {
-      const once = pick(params.options, 'allow_once');
-      if (once) return { outcome: { outcome: 'selected', optionId: once.optionId } };
-
-      // No single-use approval on offer. The rules cleared the operation, so
-      // the only question left is whether to hand over the standing approval
-      // the agent asked for — which is a person's call, never ours.
-      const always = pick(params.options, 'allow_always');
-      if (always) {
-        const widened = await host.policy.confirm(
-          request,
-          {
-            rule: 'tool.sessionWideOnly',
-            reason: `${host.agentId} offers no single-use approval — approving means approving this for the whole session`,
-          },
-          ask,
-        );
-        if (widened.verdict === 'allow') {
-          host.transcript.append({
-            type: 'note',
-            level: 'warn',
-            text:
-              `approved "${request.title}" for the rest of ${host.agentId}'s session — ` +
-              'it offered no way to approve just this once.',
-          });
-          return { outcome: { outcome: 'selected', optionId: always.optionId } };
-        }
-        return { outcome: { outcome: 'cancelled' } };
-      }
-
-      host.transcript.append({
-        type: 'note',
-        level: 'warn',
-        text:
-          `${host.agentId} offered no way to approve "${request.title}", ` +
-          'so it was cancelled.',
-      });
-      return { outcome: { outcome: 'cancelled' } };
+      return { outcome: { outcome: 'selected', optionId: approval.optionId } };
     }
 
     const option = pick(params.options, 'reject_once');

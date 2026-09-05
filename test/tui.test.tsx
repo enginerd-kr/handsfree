@@ -1748,6 +1748,30 @@ describe('terminal UI', () => {
     }
   });
 
+  it('shows a tool permission request even when legacy command execution is disabled and continues on approval', async () => {
+    const answers: string[] = [];
+    const agent = fakeAgent({ script: () => [
+      { do: 'ask', title: 'Show uncommitted change summary', kind: 'execute',
+        rawInput: { command: 'git diff --stat' }, onAnswer: (id) => answers.push(id) },
+      { do: 'say', text: 'Inspection continued.' },
+    ] });
+    const h = harness({ agents: { claude: agent }, config: { policy: { exec: { enabled: false } } } });
+    open = h;
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      const turn = h.runtime.conversation.send('@claude 너 뭐하고있어?');
+      const frame = await waitFor(() => app.lastFrame(), 'allow once');
+      expect(frame).toContain('Show uncommitted change summary');
+      expect(frame).toContain('git diff --stat');
+      expect(answers).toEqual([]);
+      app.stdin.write('y');
+      await turn;
+      expect(answers).toEqual(['once']);
+      await waitFor(() => app.lastFrame(), 'Inspection continued.');
+    } finally { app.unmount(); }
+  });
+
   it('cycles the permission mode on shift+tab, and says so under the prompt', async () => {
     const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
     open = h;
@@ -1759,17 +1783,12 @@ describe('terminal UI', () => {
       expect(h.runtime.policy.mode).toBe('ask');
 
       app.stdin.write('\u001B[Z'); // shift+tab
-      const edits = await waitFor(() => app.lastFrame(), '⏵⏵ accept edits');
-      expect(h.runtime.policy.mode).toBe('acceptEdits');
-      // A row of its own, under the hints, which stay where they were.
-      const lines = edits.split('\n');
+      const bypass = await waitFor(() => app.lastFrame(), '⏵⏵ bypass permissions');
+      expect(h.runtime.policy.mode).toBe('bypass');
+      const lines = bypass.split('\n');
       const hints = lines.findIndex((line) => line.includes('/ for commands'));
       expect(hints).toBeGreaterThan(-1);
-      expect(lines[hints + 1]).toContain('⏵⏵ accept edits');
-
-      app.stdin.write('\u001B[Z');
-      await waitFor(() => app.lastFrame(), '⏵⏵ bypass permissions');
-      expect(h.runtime.policy.mode).toBe('bypass');
+      expect(lines[hints + 1]).toContain('⏵⏵ bypass permissions');
 
       // Round again, and the row says the default again, where it was.
       app.stdin.write('\u001B[Z');
@@ -1800,12 +1819,6 @@ describe('terminal UI', () => {
       const asked = await waitFor(() => app.lastFrame(), 'allow once');
       expect(asked).toContain('shift+tab');
 
-      // A command is still a question in acceptEdits: the box stays.
-      app.stdin.write('\u001B[Z');
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(app.lastFrame()).toContain('allow once');
-      expect(h.runtime.policy.mode).toBe('acceptEdits');
-
       // In bypass it is not, and the switch is the answer.
       app.stdin.write('\u001B[Z');
       expect(await decision).toMatchObject({
@@ -1820,7 +1833,7 @@ describe('terminal UI', () => {
     }
   });
 
-  it('answers only the file question when the mode moves to acceptEdits', async () => {
+  it('approves every queued permission when the mode moves to bypass', async () => {
     const h = harness({
       agents: { claude: fakeAgent({ script: () => [] }) },
       config: { policy: { fs: { write: 'ask' } } },
@@ -1848,13 +1861,9 @@ describe('terminal UI', () => {
       });
 
       app.stdin.write('\u001B[Z');
-      expect(await write).toMatchObject({ verdict: 'allow', rule: 'fs.write', mode: 'acceptEdits' });
-      // The command question was next in line, and now it is up.
-      const next = await waitFor(() => app.lastFrame(), 'git commit');
-      expect(next).toContain('allow once');
-
-      app.stdin.write('n');
-      expect(await commit).toMatchObject({ verdict: 'deny', escalated: true });
+      expect(await write).toMatchObject({ verdict: 'allow', rule: 'fs.write', mode: 'bypass' });
+      expect(await commit).toMatchObject({ verdict: 'allow', escalated: true, mode: 'bypass' });
+      await waitFor(() => app.lastFrame(), '⏵⏵ bypass permissions');
     } finally {
       app.unmount();
     }

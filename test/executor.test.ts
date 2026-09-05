@@ -177,7 +177,7 @@ describe('structured executor', () => {
     for (const task of tasksSince(records, 0)) expect(task.outcome.message).not.toContain(task.outcome.agentId === 'a' ? 'Only B' : 'Only A');
   });
 
-  it('serializes changes and enforces read-only tasks even in bypass mode', async () => {
+  it('serializes changes and lets bypass approve requests regardless of task kind', async () => {
     let target = '';
     const attempted: boolean[] = [];
     const a = fakeAgent({ script: () => [{ do: 'stall', ms: 20 }, { do: 'say', text: report('A') }] });
@@ -190,8 +190,9 @@ describe('structured executor', () => {
     ] });
     const records = h.runtime.transcript.all();
     expect(records.find((r) => r.type === 'stop' && r.agentId === 'a')!.seq).toBeLessThan(records.find((r) => r.type === 'delegation' && r.agentId === 'b')!.seq);
-    expect(attempted).toEqual([false]);
-    expect(fs.existsSync(target)).toBe(false);
+    expect(attempted).toEqual([true]);
+    expect(fs.readFileSync(target, 'utf8')).toBe('bad');
+    expect(b.prompts[0]).toContain('Do not modify files or run commands');
   });
 
   it('cancels on reported context growth and refuses later work over the run budget', async () => {

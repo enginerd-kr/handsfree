@@ -18,8 +18,8 @@ export function stdinSeat(): Escalator | undefined {
     async ask(question) {
       const answer = await line(
         `\n${question.context.agentId} wants to ${question.summary}` +
-          `${question.detail ? `\n  ${question.detail}` : ''}\n  rule: ${question.rule}` +
-          '\n  allow once? [y/N] ',
+          `${question.detail ? `\n  ${question.detail}` : ''}` +
+          `\n  ${question.approvalLabel ?? 'allow once'}? [y/N] `,
         question.signal,
       );
       const said = (answer ?? '').trim().toLowerCase();

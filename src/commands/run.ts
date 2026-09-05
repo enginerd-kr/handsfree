@@ -16,8 +16,7 @@ export interface RunOptions {
   configSources?: readonly ConfigLocation[];
   /**
    * The mode to start in; `ask` when unset. Piped or in CI there is no seat,
-   * so `acceptEdits` lets the file questions through and denies the rest,
-   * and `bypass` needs no seat at all.
+   * so `ask` cannot approve requests; `bypass` needs no seat at all.
    */
   permissionMode?: PermissionMode;
 }

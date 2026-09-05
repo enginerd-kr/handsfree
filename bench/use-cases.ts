@@ -24,7 +24,7 @@ const config = ConfigSchema.parse({ ...configured, workspaceRoot: root, cleanupP
   budget: { maxTokens: 1_200_000, maxTaskTokens: 240_000, estimatedTaskTokens: 20_000 },
   limits: { ...configured.limits, turnTimeoutMs: 180_000, idleTimeoutMs: 90_000, cancelGraceMs: 5000 },
 });
-const runtime = createRuntime({ config, permissionMode: 'acceptEdits' });
+const runtime = createRuntime({ config, permissionMode: 'bypass' });
 const workspace = runtime.workspace.dir;
 const report: Record<string, unknown> = { date: new Date().toISOString(), root, workspace, runId: runtime.workspace.id,
   limits: config.budget, originalLimits: configured.budget,

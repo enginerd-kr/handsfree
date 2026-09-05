@@ -59,8 +59,8 @@ export function createMcpServer(runtime: Runtime): McpServer {
   runtime.setEscalator({
     async ask(question) {
       if (!server.server.getClientCapabilities()?.elicitation) return false;
-      const answer = await server.server.elicitInput({ mode: 'form', message: `${question.context.agentId}: ${question.summary}`,
-        requestedSchema: { type: 'object', properties: { allow: { type: 'boolean', title: 'Allow this operation once?' } }, required: ['allow'] } }, { signal: question.signal });
+      const answer = await server.server.elicitInput({ mode: 'form', message: `${question.context.agentId}: ${question.summary}\n${question.detail}${question.approvalLabel ? `\n${question.approvalLabel}` : ''}`,
+        requestedSchema: { type: 'object', properties: { allow: { type: 'boolean', title: question.approvalLabel ?? 'Allow this operation once?' } }, required: ['allow'] } }, { signal: question.signal });
       return answer.action === 'accept' && answer.content?.allow === true;
     },
     async input(question) {

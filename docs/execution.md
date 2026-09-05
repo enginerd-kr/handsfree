@@ -7,17 +7,17 @@ The execution core is `src/orchestrator/executor.ts`. It owns deterministic requ
 Start MCP in the project directory:
 
 ```sh
-handsfree serve --mcp --permission-mode acceptEdits
+handsfree serve --mcp --permission-mode bypass
 ```
 
-Use `ask` to send permission questions to an MCP client that supports form elicitation. Without that support an unresolved permission request is denied. `acceptEdits` and `bypass` retain the existing policy-mode semantics. An `answer` or `inspect` task further restricts its session even in bypass mode.
+Use `ask` to send permission questions to an MCP client that supports form elicitation. Every permission request is forwarded, including requests that legacy policy settings would allow or deny. Without that support the request cannot be approved. `bypass` approves every permission request, including pending requests when the mode changes. Task kinds describe the requested scope in the worker brief; they do not override the user’s permission decision. General questions still require user input in either mode.
 
-These restrictions govern operations routed through the host. The bundled Codex profile and example configuration set `nativeTools: "allow"`: Codex runs using adapter-native permissions and sandboxing, and its tasks always run exclusively. Host restrictions do not govern its native tools. Setting `agents.<id>.nativeTools: "deny"` blocks known Codex ACP adapters before prompting; detection checks both launch profiles and handshake identity. Custom profiles that omit this setting still default to `"deny"`. Unknown adapters are not automatically certified safe. See the [live adapter findings](live-use-cases.md) and [follow-up controls](execution-controls.md).
+These permission modes govern operations routed through the host. The bundled Codex profile and example configuration set `nativeTools: "allow"`: Codex runs using adapter-native permissions and sandboxing, and its tasks always run exclusively. Host approval prompts do not govern its native tools. Setting `agents.<id>.nativeTools: "deny"` blocks known Codex ACP adapters before prompting; detection checks both launch profiles and handshake identity. Custom profiles that omit this setting still default to `"deny"`. Unknown adapters are not automatically certified safe. See the [live adapter findings](live-use-cases.md) and [follow-up controls](execution-controls.md).
 
 The structured CLI returns one JSON result and a nonzero exit code for unsuccessful tasks:
 
 ```sh
-handsfree task --permission-mode acceptEdits '{"task":"Inspect src/parser.ts","kind":"inspect","agent":"claude"}'
+handsfree task --permission-mode bypass '{"task":"Inspect src/parser.ts","kind":"inspect","agent":"claude"}'
 ```
 
 `--run <id>` reopens a run's sessions, usage, results, and request-ID journal. Use one persistent host for a run; this is not a distributed scheduler across multiple handsfree processes.

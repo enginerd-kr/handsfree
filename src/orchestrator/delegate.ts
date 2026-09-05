@@ -253,7 +253,6 @@ export class Delegator {
       lease?.observe(Math.max(observed, estimateTokens(brief) + estimateTokens(output)), estimateTokens(output));
     };
     transcript.on('record', observe);
-    const releaseAccess = kind === 'change' ? undefined : this.deps.policy?.restrict({ agentId, sessionId: session.sessionId }, kind);
     try {
       const end = await session.prompt(brief, {
         turnTimeoutMs: config.limits.turnTimeoutMs,
@@ -277,7 +276,6 @@ export class Delegator {
       }
     } finally {
       transcript.off('record', observe);
-      releaseAccess?.();
     }
 
     const outcome = summarise(taskId, agentId, task, stopReason, transcript.forTask(taskId), Date.now() - startedAt, options);

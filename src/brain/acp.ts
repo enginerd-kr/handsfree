@@ -74,7 +74,6 @@ export class AcpModel implements ChatClient {
     // the agent will not take fails the turn naming its roster — the
     // connection is fine, it is the name that is wrong, so it is not discarded.
     let stopReason;
-    const release = this.options.host.policy.restrict({ agentId: this.options.host.agentId, sessionId: session.sessionId }, 'answer');
     try {
       if (this.options.model !== undefined) await session.selectModel(this.options.model);
       const end = await session.prompt(render(messages, options.schema), {
@@ -101,7 +100,6 @@ export class AcpModel implements ChatClient {
       if (err instanceof SessionUnresponsiveError) await this.discard(connection);
       throw err;
     } finally {
-      release();
       connection.releaseSession(session.sessionId);
     }
 

@@ -165,11 +165,9 @@ function help(host: CommandHost): string[] {
     lines.push(`${source} commands: ${tildify(dir)}/*.md`);
   }
   lines.push(
-    'shift+tab cycles the permission mode — ask, acceptEdits, bypass; /config shows the current one',
+    'shift+tab cycles the permission mode — ask, bypass; /config shows the current one',
     'a command file can carry !`cmd` and @file; both are judged like an agent’s own,',
-    host.config.policy.exec.enabled
-      ? `and commands run in the workspace — ${tildify(host.workspace.dir)}`
-      : 'and running commands is switched off, so every !`cmd` will be refused',
+    `and commands run in the workspace — ${tildify(host.workspace.dir)}`,
   );
   return lines;
 }
@@ -201,11 +199,7 @@ function configuration(host: CommandHost): string[] {
     `workspace:  ${tildify(host.workspace.dir)}`,
     `transcript: ${tildify(host.workspace.transcriptFile)}`,
     '',
-    `fs:   read ${policy.fs.read}, write ${policy.fs.write}, outside ${policy.fs.outside}`,
-    policy.exec.enabled
-      ? `exec: ${policy.exec.mode}, shell operators ${policy.exec.shellOperators}, allowing ${policy.exec.allow.join(', ') || 'nothing'}`
-      : 'exec: off — no command runs, whoever asks',
-    `ask:  ${policy.escalation.join(', ') || 'nobody'}, within ${Math.round(policy.decisionTimeoutMs / 1000)}s`,
+    `approval timeout: ${Math.round(policy.decisionTimeoutMs / 1000)}s`,
     modeLine(host.policy.mode),
     host.config.capabilities.elicitation
       ? 'q&a:  agents may stop and ask you a question of their own'
@@ -223,10 +217,8 @@ function modeLine(mode: PermissionMode): string {
   switch (mode) {
     case 'ask':
       return `mode: ask — every question comes to you (${how})`;
-    case 'acceptEdits':
-      return `mode: acceptEdits — files in the workspace go through, commands still ask (${how})`;
     case 'bypass':
-      return `mode: bypass — everything is allowed, whatever the rules above say (${how})`;
+      return `mode: bypass — every permission request is allowed (${how})`;
   }
 }
 
