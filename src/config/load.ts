@@ -1,9 +1,14 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ConfigSchema, type Config } from './schema.js';
+import { ConfigSchema, RolesSchema, type Config } from './schema.js';
 
 export const CONFIG_FILENAME = 'handsfree.config.json';
+
+/** A standalone agent-id → role map, shared by all projects. */
+export function agentsConfigPath(home = os.homedir()): string {
+  return path.join(home, '.handsfree', 'agents.json');
+}
 
 export type ConfigScope = 'project' | 'user';
 
@@ -14,7 +19,8 @@ export interface ConfigLocation {
 
 /**
  * Where settings are read from, in the order they win — the project directory
- * first, the user's config home second. Both are read: a project file is a
+ * first, the standalone agent roles second, the user's general config last.
+ * All existing files are read: a project file is a
  * layer *over* the user's, not a replacement for it, so a checkout can pin the
  * one thing it cares about (the agent it wants, a terminal timeout) without
  * having to restate the endpoint, the proxy and the timeouts you set once for
@@ -26,7 +32,8 @@ export interface ConfigLocation {
 export function configSearchPaths(cwd = process.cwd(), home = os.homedir()): ConfigLocation[] {
   return [
     { file: path.join(cwd, CONFIG_FILENAME), scope: 'project' },
-    { file: path.join(home, '.config', 'handsfree', 'config.json'), scope: 'user' },
+    { file: agentsConfigPath(home), scope: 'user' },
+    { file: path.join(home, '.handsfree', 'config.json'), scope: 'user' },
   ];
 }
 
@@ -53,7 +60,15 @@ export function loadConfig(cwd = process.cwd(), home = os.homedir()): LoadedConf
     if (!isRecord(parsed)) {
       throw new Error(`${location.file} must hold a JSON object.`);
     }
-    raw = mergeLayer(raw, migrateLegacyPolicy(asRecord(migrateLegacyLlm(parsed))));
+    if (location.file === agentsConfigPath(home)) {
+      const roles = RolesSchema.safeParse(parsed);
+      if (!roles.success) {
+        throw new Error(`Invalid agent roles in ${location.file}:\n${formatIssues(roles.error)}`);
+      }
+      raw = mergeLayer(raw, { roles: roles.data });
+    } else {
+      raw = mergeLayer(raw, migrateLegacyPolicy(asRecord(migrateLegacyLlm(parsed))));
+    }
     sources.unshift(location);
   }
 

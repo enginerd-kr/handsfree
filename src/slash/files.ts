@@ -17,7 +17,7 @@ import type { Command, CommandSource } from './command.js';
 export function commandSearchPaths(cwd = process.cwd()): { dir: string; source: CommandSource }[] {
   return [
     { dir: path.join(cwd, '.handsfree', 'commands'), source: 'project' },
-    { dir: path.join(os.homedir(), '.config', 'handsfree', 'commands'), source: 'user' },
+    { dir: path.join(os.homedir(), '.handsfree', 'commands'), source: 'user' },
   ];
 }
 

@@ -1,9 +1,11 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { fakeAgent } from './fake-agent.js';
 import { harness, scriptedModel, type Harness } from './harness.js';
 import { estimateTokens, type ChatClient } from '../src/brain/client.js';
 import { buildView, describeRecord } from '../src/ui/view-model.js';
+import { agentsConfigPath, loadConfig } from '../src/config/load.js';
 
 let open: Harness | undefined;
 
@@ -39,6 +41,23 @@ function streamingModel(replies: string[]): ChatClient {
 }
 
 describe('Conversation', () => {
+  it('shows standalone agent roles in /agents and gives them to the planner', async () => {
+    const llm = scriptedModel([answer('Ready.')]);
+    const h = harness({ agents: { codex: fakeAgent({ script: () => [] }) }, llm });
+    open = h;
+    const role = '테스트 작성, 버그 수정, 리팩터링';
+    const home = path.join(h.root, 'home');
+    fs.mkdirSync(path.dirname(agentsConfigPath(home)), { recursive: true });
+    fs.writeFileSync(agentsConfigPath(home), JSON.stringify({ codex: role }));
+    h.runtime.config.roles = loadConfig(h.workspaceDir, home).config.roles;
+
+    await h.runtime.conversation.send('/agents');
+    const listing = h.runtime.transcript.all().filter((record) => record.type === 'note').at(-1);
+    expect(listing?.lines?.join('\n')).toContain(role);
+    await h.runtime.conversation.send('What can codex do?');
+    expect(llm.seen[0]?.[0]?.content).toContain(`"codex": ${role}`);
+  });
+
   it('executes every recipient selected by the planner before accepting its answer', async () => {
     const agents = Object.fromEntries(['claude', 'gemini', 'codex'].map((id) => [id,
       fakeAgent({ script: () => [{ do: 'say', text: `Hello from ${id}` }] }),

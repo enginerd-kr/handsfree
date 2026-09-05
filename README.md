@@ -112,12 +112,31 @@ Any other agent that speaks ACP works the same way — add it under `agents` in 
 
 ## Settings
 
-Configuration is loaded from two locations and layered, with project-specific settings taking precedence over user-level configurations:
+Configuration is loaded from the following locations, in order of precedence:
 
 ```
 ./handsfree.config.json                 Project-level configuration (committed/specific to workspace)
-~/.config/handsfree/config.json         User-level global configuration (specific to your machine)
+~/.handsfree/agents.json                Agent roles shared across projects
+~/.handsfree/config.json                User-level global configuration (specific to your machine)
 ```
+
+All user configuration lives under `~/.handsfree`: general settings in `config.json`, agent roles in `agents.json`, and custom commands in `commands/*.md`. Project commands live in `./.handsfree/commands/*.md` and take precedence over user commands with the same name.
+
+If you used the previous paths, move `~/.config/handsfree/config.json` and `~/.config/handsfree/commands/` into `~/.handsfree/`, and `~/.handsoff/agents.json` to `~/.handsfree/agents.json`. The previous locations are no longer read.
+
+Create `~/.handsfree/agents.json` to describe what each agent can do. It contains agent names mapped directly to role descriptions:
+
+```json
+{
+  "claude": "기능 구현, 여러 파일에 걸친 변경, 설계 검토",
+  "gemini": "문서 작성, 긴 텍스트 분석, 번역",
+  "codex": "테스트 작성, 버그 수정, 리팩터링"
+}
+```
+
+These descriptions are passed to the planner and model-based worker selector and shown by `/agents`. They guide task assignment; they do not enforce tool permissions. Restart handsfree after editing the file. `/config` shows the loaded file paths.
+
+Roles merge by agent name: project `roles` override this file, which overrides `roles` in the global config. Unmentioned agents keep their existing roles or profile notes. Names must refer to configured agents and descriptions must be nonempty strings. Add custom agents and their launch commands in a general configuration file:
 
 ```json
 "agents": { "codex": { "command": "npx", "args": ["-y", "@agentclientprotocol/codex-acp"] } },

@@ -69,7 +69,7 @@ describe('commandSearchPaths', () => {
   it('looks in the project before the user, the way the config does', () => {
     const paths = commandSearchPaths('/work');
     expect(paths[0]).toEqual({ dir: path.join('/work', '.handsfree', 'commands'), source: 'project' });
-    expect(paths[1]?.source).toBe('user');
+    expect(paths[1]).toEqual({ dir: path.join(os.homedir(), '.handsfree', 'commands'), source: 'user' });
   });
 });
 

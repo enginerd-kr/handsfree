@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { CONFIG_FILENAME, loadConfig } from './load.js';
+import { agentsConfigPath, CONFIG_FILENAME, loadConfig } from './load.js';
+import { agentRole } from './schema.js';
 
 const made: string[] = [];
 
@@ -11,24 +12,88 @@ afterEach(() => {
 });
 
 /** A project directory and a home directory, neither of them the machine's own. */
-function layout(files: { project?: unknown; user?: unknown }): { cwd: string; home: string } {
+function layout(files: { project?: unknown; user?: unknown; agentRoles?: unknown }): { cwd: string; home: string } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'handsfree-config-'));
   made.push(root);
   const cwd = path.join(root, 'project');
   const home = path.join(root, 'home');
   fs.mkdirSync(cwd);
-  fs.mkdirSync(path.join(home, '.config', 'handsfree'), { recursive: true });
+  fs.mkdirSync(path.join(home, '.handsfree'), { recursive: true });
   if (files.project !== undefined) {
     fs.writeFileSync(path.join(cwd, CONFIG_FILENAME), JSON.stringify(files.project));
   }
   if (files.user !== undefined) {
     fs.writeFileSync(
-      path.join(home, '.config', 'handsfree', 'config.json'),
+      path.join(home, '.handsfree', 'config.json'),
       JSON.stringify(files.user),
     );
   }
+  if (files.agentRoles !== undefined) {
+    fs.mkdirSync(path.dirname(agentsConfigPath(home)), { recursive: true });
+    fs.writeFileSync(agentsConfigPath(home), JSON.stringify(files.agentRoles));
+  }
   return { cwd, home };
 }
+
+describe('standalone agent roles', () => {
+  it('loads ~/.handsfree/agents.json without requiring launch profiles', () => {
+    const { cwd, home } = layout({ agentRoles: { codex: '테스트 작성, 버그 수정, 리팩터링' } });
+    const { config, sources } = loadConfig(cwd, home);
+    expect(agentRole(config, 'codex')).toBe('테스트 작성, 버그 수정, 리팩터링');
+    expect(config.agents.codex?.command).toBe('npx');
+    expect(agentRole(config, 'gemini')).toBe('fast, good at bulk text and single-file work');
+    expect(sources).toEqual([{ file: path.join(home, '.handsfree', 'agents.json'), scope: 'user' }]);
+  });
+
+  it('layers project roles over standalone roles over global roles by agent name', () => {
+    const { cwd, home } = layout({
+      user: { roles: { claude: 'global claude', codex: 'global codex', gemini: 'global gemini' } },
+      agentRoles: { claude: 'personal claude', codex: 'personal codex' },
+      project: { roles: { claude: 'project claude' } },
+    });
+    const { config, sources } = loadConfig(cwd, home);
+    expect(config.roles).toEqual({ claude: 'project claude', codex: 'personal codex', gemini: 'global gemini' });
+    expect(sources.map((source) => source.file)).toEqual([
+      path.join(cwd, CONFIG_FILENAME), agentsConfigPath(home),
+      path.join(home, '.handsfree', 'config.json'),
+    ]);
+  });
+
+  it('can describe a custom agent configured in the project', () => {
+    const { cwd, home } = layout({
+      agentRoles: { reviewer: 'Code review and test analysis' },
+      project: { agents: { reviewer: { command: 'review-agent', args: ['--acp'] } } },
+    });
+    const { config } = loadConfig(cwd, home);
+    expect(agentRole(config, 'reviewer')).toBe('Code review and test analysis');
+    expect(config.agents.reviewer?.args).toEqual(['--acp']);
+  });
+
+  it('reports an unknown agent with the source file', () => {
+    const { cwd, home } = layout({ agentRoles: { typo: 'Review' } });
+    expect(() => loadConfig(cwd, home)).toThrow(/agents\.json:[\s\S]*no such agent is configured/);
+  });
+
+  it.each([null, [], { codex: '' }, { codex: 42 }, { codex: { role: 'Review' } }])(
+    'rejects malformed role maps: %j', (agentRoles) => {
+      const { cwd, home } = layout({ agentRoles });
+      expect(() => loadConfig(cwd, home)).toThrow(/agents\.json/);
+    },
+  );
+
+  it('reports invalid JSON in the standalone file', () => {
+    const { cwd, home } = layout({ agentRoles: {} });
+    fs.writeFileSync(agentsConfigPath(home), '{ nope');
+    expect(() => loadConfig(cwd, home)).toThrow(/agents\.json is not valid JSON/);
+  });
+
+  it('keeps defaults when the standalone file is empty', () => {
+    const { cwd, home } = layout({ agentRoles: {} });
+    expect(agentRole(loadConfig(cwd, home).config, 'codex')).toBe(
+      'methodical coding agent, good at tests and refactors',
+    );
+  });
+});
 
 describe('layering', () => {
   it.each(['user', 'project'] as const)('allows native tools in existing %s profiles that omit the setting', (scope) => {
