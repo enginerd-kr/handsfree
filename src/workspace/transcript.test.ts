@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionUpdate } from '@agentclientprotocol/sdk';
-import { changedFiles, touchedFiles, Transcript } from './transcript.js';
+import { agentText, changedFiles, touchedFiles, Transcript } from './transcript.js';
+import { parseReport } from '../orchestrator/report.js';
 
 function updates(...list: SessionUpdate[]): Transcript {
   const transcript = new Transcript();
@@ -11,6 +12,18 @@ function updates(...list: SessionUpdate[]): Transcript {
 }
 
 describe('changedFiles', () => {
+  it('reads Codex diff paths even when locations are omitted', () => {
+    const transcript = updates(
+      { sessionUpdate: 'tool_call', toolCallId: 'patch', title: 'Editing files', kind: 'edit', status: 'in_progress',
+        content: [{ type: 'diff', path: '/ws/summarize.js', oldText: 'old', newText: 'new' }] },
+      { sessionUpdate: 'tool_call_update', toolCallId: 'patch', status: 'completed' },
+    );
+    expect(changedFiles(transcript.all())).toEqual(['/ws/summarize.js']);
+    expect(touchedFiles(transcript.all())).toEqual(['/ws/summarize.js']);
+    transcript.append({ type: 'session_update', agentId: 'claude', sessionId: 's',
+      update: { sessionUpdate: 'tool_call_update', toolCallId: 'patch', status: 'failed' } });
+    expect(changedFiles(transcript.all())).toEqual([]);
+  });
   it('assembles one tool call from every record that carries its id', () => {
     // The usual shape: the opening call names the kind, and the update that
     // follows names the paths. Every field of an update but the id is
@@ -66,6 +79,21 @@ describe('changedFiles', () => {
     );
 
     expect(changedFiles(transcript.all())).toEqual(['/ws/old.ts', '/ws/new.ts']);
+  });
+});
+
+describe('agent message assembly', () => {
+  it('preserves report boundaries after tool exchanges without splitting streamed words', () => {
+    const transcript = updates(
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'I will run the tests.' } },
+      { sessionUpdate: 'tool_call', toolCallId: 'test', title: 'node --test', kind: 'execute', status: 'in_progress' },
+      { sessionUpdate: 'tool_call_update', toolCallId: 'test', status: 'completed' },
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'REP' } },
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ORT\noutcome: blocked\nsummary: Need input\nopen: - missing schema\nverify: node --test' } },
+    );
+    const text = agentText(transcript.all());
+    expect(text).toContain('tests.\n\nREPORT\n');
+    expect(parseReport(text)).toMatchObject({ structured: true, outcome: 'blocked', open: ['missing schema'], verify: 'node --test' });
   });
 });
 

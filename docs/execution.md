@@ -12,6 +12,8 @@ handsfree serve --mcp --permission-mode acceptEdits
 
 Use `ask` to send permission questions to an MCP client that supports form elicitation. Without that support an unresolved permission request is denied. `acceptEdits` and `bypass` retain the existing policy-mode semantics. An `answer` or `inspect` task further restricts its session even in bypass mode.
 
+These restrictions govern operations routed through the host. Some adapters execute native tools without asking the host even when ACP terminal support is advertised; see the [live adapter findings](live-use-cases.md). They do not establish an OS sandbox or universal side-effect enforcement.
+
 The structured CLI returns one JSON result and a nonzero exit code for unsuccessful tasks:
 
 ```sh
@@ -114,3 +116,5 @@ The benchmark uses fresh isolated workspaces and identical artifact checks for d
 Coverage includes goal retention under pressure, schema/output reserves, blocked reports, result paging, ACP embedded context and full answers, MCP cancellation, concurrent isolation, read-only enforcement, dependency failures, idempotency, session freshness, and usage reconciliation.
 
 See [recorded simulation and live results](benchmark-results.md) for the measured overhead and the live run's budget-exhaustion limits.
+
+See [three-agent live use cases](live-use-cases.md) for actual Claude/Gemini/Codex coordination, independent artifact checks, and adapter compatibility limits.

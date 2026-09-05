@@ -268,11 +268,22 @@ function isRecord(value: unknown): value is TranscriptRecord {
 /** Plain text of an agent message, assembled from its streamed chunks. */
 export function agentText(records: readonly TranscriptRecord[]): string {
   let text = '';
+  let afterTool = false;
   for (const record of records) {
     if (record.type !== 'session_update') continue;
     const update = record.update;
+    // ACP has no required message ID. A tool exchange separates commentary
+    // from the next message; concatenating them can swallow a REPORT heading.
+    if (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') {
+      afterTool = text.length > 0;
+      continue;
+    }
     if (update.sessionUpdate !== 'agent_message_chunk') continue;
-    if (update.content.type === 'text') text += update.content.text;
+    if (update.content.type === 'text' && update.content.text) {
+      if (afterTool && !text.endsWith('\n') && !update.content.text.startsWith('\n')) text += '\n\n';
+      text += update.content.text;
+      afterTool = false;
+    }
   }
   return text.trim();
 }
@@ -282,6 +293,11 @@ interface ToolCallState {
   kind: ToolKind | undefined;
   status: ToolCallStatus | undefined;
   paths: string[];
+}
+
+function toolPaths(update: Extract<SessionUpdate, { sessionUpdate: 'tool_call' | 'tool_call_update' }>): string[] {
+  return [...(update.locations ?? []).map((location) => location.path),
+    ...(update.content ?? []).flatMap((content) => content.type === 'diff' ? [content.path] : [])].filter(Boolean);
 }
 
 /**
@@ -313,8 +329,8 @@ export function changedFiles(records: readonly TranscriptRecord[]): string[] {
     const state = calls.get(update.toolCallId) ?? { kind: undefined, status: undefined, paths: [] };
     if (update.kind) state.kind = update.kind;
     if (update.status) state.status = update.status;
-    for (const location of update.locations ?? []) {
-      if (location?.path && !state.paths.includes(location.path)) state.paths.push(location.path);
+    for (const file of toolPaths(update)) {
+      if (!state.paths.includes(file)) state.paths.push(file);
     }
     calls.set(update.toolCallId, state);
   }
@@ -335,9 +351,7 @@ export function touchedFiles(records: readonly TranscriptRecord[]): string[] {
     if (record.type !== 'session_update') continue;
     const update = record.update;
     if (update.sessionUpdate !== 'tool_call' && update.sessionUpdate !== 'tool_call_update') continue;
-    for (const location of update.locations ?? []) {
-      if (location?.path) seen.add(location.path);
-    }
+    for (const file of toolPaths(update)) seen.add(file);
   }
   return [...seen];
 }
