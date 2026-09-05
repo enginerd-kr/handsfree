@@ -21,6 +21,7 @@ type OwnedClient = ChatClient & { close(): Promise<void> };
  * is still holding it.
  */
 export class Planner implements ChatClient {
+  private readonly retiring: Promise<void>[] = [];
   constructor(
     private current: ChatClient,
     private owned?: OwnedClient,
@@ -30,19 +31,30 @@ export class Planner implements ChatClient {
     return this.current.chat(messages, options);
   }
 
+  prepare(): void {
+    (this.current as ChatClient & { prepare?(): void }).prepare?.();
+  }
+
   /**
    * Plans through `next` from here on. The client it replaces is shut down
-   * after the swap, so the process it was holding goes with it — awaited, so a
-   * caller that reports the move reports it once the old one is actually gone.
+   * after the swap. Cleanup overlaps preparation of the replacement and is
+   * joined at shutdown, so teardown does not delay the next reply.
    */
   async replace(next: OwnedClient): Promise<void> {
     const previous = this.owned;
     this.current = next;
     this.owned = next;
-    if (previous && previous !== next) await previous.close();
+    this.prepare();
+    if (previous && previous !== next) {
+      const closing = previous.close();
+      void closing.catch(() => {});
+      this.retiring.push(closing);
+    }
   }
 
   async close(): Promise<void> {
-    await this.owned?.close();
+    const results = await Promise.allSettled([this.owned?.close(), ...this.retiring]);
+    const failure = results.find((result) => result.status === 'rejected');
+    if (failure?.status === 'rejected') throw failure.reason;
   }
 }

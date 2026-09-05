@@ -128,7 +128,15 @@ export function buildView(
   workspaceDir: string,
   options: ViewOptions = {},
 ): ViewItem[] {
+  const view = createView(workspaceDir, options);
+  for (const record of records) view.push(record);
+  return view.snapshot();
+}
+
+/** Consume each record once. Snapshots never mutate previously published rows. */
+export function createView(workspaceDir: string, options: ViewOptions = {}) {
   const items: ViewItem[] = [];
+  let previous = new Map<string, ViewItem>();
   const byKey = new Map<string, ViewItem>();
   const tools = new Map<string, ToolState>();
 
@@ -209,7 +217,38 @@ export function buildView(
     return true;
   };
 
-  for (const record of records) {
+  type Lane = { currentTask: number | undefined; currentAgent: string | undefined; taskStartedAt: number;
+    taskTools: number; taskStart: number; openText: ViewItem | undefined; openThought: ViewItem | undefined;
+    openTool: typeof openTool };
+  const lanes = new Map<number | undefined, Lane>();
+  const active = new Set<number>();
+  const sessionTasks = new Map<string, number>();
+  let laneId: number | undefined;
+  const sessionKey = (agent: string, session: string) => JSON.stringify([agent, session]);
+  function selectLane(id: number | undefined) {
+    if (id === laneId) return;
+    lanes.set(laneId, { currentTask, currentAgent, taskStartedAt, taskTools, taskStart, openText, openThought, openTool });
+    const lane = lanes.get(id);
+    currentTask = lane?.currentTask;
+    currentAgent = lane?.currentAgent;
+    taskStartedAt = lane?.taskStartedAt ?? 0;
+    taskTools = lane?.taskTools ?? 0;
+    taskStart = lane?.taskStart ?? -1;
+    openText = lane?.openText;
+    openThought = lane?.openThought;
+    openTool = lane?.openTool;
+    laneId = id;
+  }
+
+  function push(record: TranscriptRecord): void {
+    if (record.type === 'delegation') {
+      sessionTasks.set(sessionKey(record.agentId, record.sessionId), record.taskId);
+      active.add(record.taskId);
+      selectLane(record.taskId);
+    } else if (record.type === 'stop') selectLane(record.taskId);
+    else if (record.type === 'session_update') selectLane(sessionTasks.get(sessionKey(record.agentId, record.sessionId)));
+    else if (record.type === 'decision') selectLane(sessionTasks.get(sessionKey(record.agentId, record.entry.request.sessionId)));
+    else if (record.type === 'user' || record.type === 'assistant' || record.type === 'assistant_delta') selectLane(undefined);
     switch (record.type) {
       case 'user':
         closeBlocks();
@@ -390,8 +429,8 @@ export function buildView(
           loud.add(answer);
           answered.add(String(record.taskId));
         }
-        const foldable = foldableRows(items, loud, taskStart);
-        const hidden = unfolded(record.taskId) ? 0 : foldTask(items, byKey, loud, taskStart);
+        const foldable = items.filter((item) => item.taskId === record.taskId && !loud.has(item.key)).length;
+        const hidden = unfolded(record.taskId) ? 0 : foldTask(items, byKey, loud, record.taskId);
         // The closing line belongs to the task, so it keeps the task's indent
         // and its id; whatever comes next is handsfree talking again.
         add(
@@ -416,12 +455,15 @@ export function buildView(
         // rows carry no fold: a fold would only promise a toggle that changes
         // nothing.
         if (foldable === 0) {
-          for (const item of items.slice(taskStart)) item.taskId = undefined;
+          for (const item of items) if (item.taskId === record.taskId) item.taskId = undefined;
         } else {
-          for (const item of items.slice(taskStart)) {
+          for (const item of items) {
+            if (item.taskId !== record.taskId) continue;
             item.fold = { id: `task:${record.taskId}`, expanded: unfolded(record.taskId) };
           }
         }
+        active.delete(record.taskId);
+        sessionTasks.delete(sessionKey(record.agentId, record.sessionId));
         currentTask = undefined;
         currentAgent = undefined;
         taskStart = -1;
@@ -442,6 +484,11 @@ export function buildView(
         closeBlocks();
         closeTool();
         taskStart = currentTask !== undefined ? 0 : -1;
+        for (const lane of lanes.values()) {
+          lane.openText = lane.openThought = undefined;
+          lane.openTool = undefined;
+          lane.taskStart = lane.currentTask !== undefined ? 0 : -1;
+        }
         break;
 
       // Where each agent's session came from is the header's to say, not a
@@ -578,55 +625,75 @@ export function buildView(
     }
   }
 
-  // Decide folding after streaming has settled. Tool results own their fold,
-  // including short results and results outside a delegation. The
-  // latest answer stays whole; older prose still follows its task's cap.
-  for (const item of items) {
-    if (item.role === 'agent' && item.prose === true) item.text = stripReport(item.text);
-    item.text = item.text.trim();
-    const tool = tools.get(item.key);
-    if (tool) {
-      item.fold = undefined;
-      const full = toolLines(tool, workspaceDir);
-      if (full.length === 0) continue;
-      const detailCount = full.length - tool.notes.length;
-      const choice = options.folds?.get(item.key) ?? options.expanded ??
-        (item.taskId !== undefined && unfolded(item.taskId) ? false : undefined) ??
-        (tool.status === 'completed' || tool.status === 'failed' ? false : undefined);
-      item.lines = choice === false
-        ? [more(full.length, options.expandHint)]
-        : choice === true || detailCount <= MAX_BLOCK_LINES ? full
-        : [...full.slice(0, MAX_BLOCK_LINES), more(detailCount - MAX_BLOCK_LINES, options.expandHint), ...tool.notes];
-      const expanded = choice !== false && (choice === true || detailCount <= MAX_BLOCK_LINES);
-      item.fold = { id: item.key, expanded };
-      if (expanded && options.collapseHint) {
-        item.lines.push({ text: options.collapseHint, tone: 'muted' });
+  function snapshot(): ViewItem[] {
+    // Presentation changes are applied to copies; raw chunks must remain intact.
+    const visible = items.map((item) => ({ ...item, lines: [...item.lines] }));
+    const liveKeys = new Set([openText, openThought, openAssistant?.item, openTool?.item,
+      ...[...lanes.entries()].filter(([id]) => id !== laneId).flatMap(([, lane]) => [lane.openText, lane.openThought, lane.openTool?.item])]
+      .flatMap((item) => item ? [item.key] : []));
+    // Decide folding after streaming has settled. Tool results own their fold,
+    // including short results and results outside a delegation. The
+    // latest answer stays whole; older prose still follows its task's cap.
+    for (const item of visible) {
+      if (item.role === 'agent' && item.prose === true) item.text = stripReport(item.text);
+      item.text = item.text.trim();
+      const tool = tools.get(item.key);
+      if (tool) {
+        item.fold = undefined;
+        const full = toolLines(tool, workspaceDir);
+        if (full.length === 0) continue;
+        const detailCount = full.length - tool.notes.length;
+        const choice = options.folds?.get(item.key) ?? options.expanded ??
+          (item.taskId !== undefined && unfolded(item.taskId) ? false : undefined) ??
+          (tool.status === 'completed' || tool.status === 'failed' ? false : undefined);
+        item.lines = choice === false
+          ? [more(full.length, options.expandHint)]
+          : choice === true || detailCount <= MAX_BLOCK_LINES ? full
+          : [...full.slice(0, MAX_BLOCK_LINES), more(detailCount - MAX_BLOCK_LINES, options.expandHint), ...tool.notes];
+        const expanded = choice !== false && (choice === true || detailCount <= MAX_BLOCK_LINES);
+        item.fold = { id: item.key, expanded };
+        if (expanded && options.collapseHint) {
+          item.lines.push({ text: options.collapseHint, tone: 'muted' });
+        }
+        continue;
       }
-      continue;
+      if (item.taskId === undefined || answers.get(item.taskId) === item.key) continue;
+      if (item.prose === true && item.text.split('\n').length > MAX_BLOCK_LINES) {
+        const expanded = unfolded(item.taskId);
+        item.fold ??= { id: `task:${item.taskId}`, expanded };
+        if (!expanded) capText(item, options.expandHint);
+        else if (options.collapseHint) item.lines.push({ text: options.collapseHint, tone: 'muted' });
+      }
     }
-    if (item.taskId === undefined || answers.get(item.taskId) === item.key) continue;
-    if (item.prose === true && item.text.split('\n').length > MAX_BLOCK_LINES) {
-      const expanded = unfolded(item.taskId);
-      item.fold ??= { id: `task:${item.taskId}`, expanded };
-      if (!expanded) capText(item, options.expandHint);
-      else if (options.collapseHint) item.lines.push({ text: options.collapseHint, tone: 'muted' });
+    // What can still change, for a renderer that prints finished rows once:
+    // every row of the task still open, the blocks still streaming in, and the
+    // tool calls still running.
+    for (const item of visible) {
+      if (item.taskId !== undefined && active.has(item.taskId)) item.live = true;
     }
+    for (const item of visible) if (liveKeys.has(item.key)) item.live = true;
+    for (const item of visible) {
+      const status = tools.get(item.key)?.status;
+      if (status !== undefined && status !== 'completed' && status !== 'failed') item.live = true;
+    }
+    // A block that was nothing but its REPORT has nothing left to draw.
+    const result = visible.filter((item) => !(item.role === 'agent' && item.prose === true && item.text === ''))
+      .map((item) => {
+        const old = previous.get(item.key);
+        return old && sameItem(old, item) ? old : item;
+      });
+    previous = new Map(result.map((item) => [item.key, item]));
+    return result;
   }
-  // What can still change, for a renderer that prints finished rows once:
-  // every row of the task still open, the blocks still streaming in, and the
-  // tool calls still running.
-  if (currentTask !== undefined && taskStart >= 0) {
-    for (const item of items.slice(taskStart)) item.live = true;
-  }
-  for (const open of [openText, openThought, openAssistant?.item, openTool?.item]) {
-    if (open) open.live = true;
-  }
-  for (const item of items) {
-    const status = tools.get(item.key)?.status;
-    if (status !== undefined && status !== 'completed' && status !== 'failed') item.live = true;
-  }
-  // A block that was nothing but its REPORT has nothing left to draw.
-  return items.filter((item) => !(item.role === 'agent' && item.prose === true && item.text === ''));
+  return { push, snapshot };
+}
+
+function sameItem(a: ViewItem, b: ViewItem): boolean {
+  return a.key === b.key && a.role === b.role && a.depth === b.depth && a.marker === b.marker
+    && a.markerTone === b.markerTone && a.label === b.label && a.text === b.text && a.tone === b.tone
+    && a.gap === b.gap && a.agentId === b.agentId && a.prose === b.prose && a.taskId === b.taskId
+    && a.live === b.live && a.fold?.id === b.fold?.id && a.fold?.expanded === b.fold?.expanded
+    && a.lines.length === b.lines.length && a.lines.every((line, i) => line.text === b.lines[i]!.text && line.tone === b.lines[i]!.tone);
 }
 
 /**
@@ -658,35 +725,16 @@ function row(
   return { key, role, depth, marker, markerTone, text, tone, lines: [], gap };
 }
 
-/** How many of a task's rows folding would take off screen. */
-function foldableRows(items: readonly ViewItem[], loud: Set<string>, from: number): number {
-  if (from < 0 || from >= items.length) return 0;
-  return items.slice(from).filter((item) => !loud.has(item.key)).length;
-}
-
-/**
- * Drops the rows a finished task no longer needs to keep on screen, in place.
- * Returns how many went, so the closing line can offer them back.
- */
-function foldTask(
-  items: ViewItem[],
-  byKey: Map<string, ViewItem>,
-  loud: Set<string>,
-  from: number,
-): number {
-  if (from < 0 || from >= items.length) return 0;
-  const kept: ViewItem[] = [];
+/** Fold one completed task without removing another task's interleaved output. */
+function foldTask(items: ViewItem[], byKey: Map<string, ViewItem>, loud: Set<string>, taskId: number): number {
   let hidden = 0;
-  for (const item of items.slice(from)) {
-    if (loud.has(item.key)) {
-      kept.push(item);
-      continue;
-    }
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i]!;
+    if (item.taskId !== taskId || loud.has(item.key)) continue;
     byKey.delete(item.key);
+    items.splice(i, 1);
     hidden++;
   }
-  items.length = from;
-  items.push(...kept);
   return hidden;
 }
 

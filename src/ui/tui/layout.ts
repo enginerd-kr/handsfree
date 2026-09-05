@@ -64,6 +64,25 @@ export function totalHeight(items: readonly ViewItem[], columns: number): number
   return rows;
 }
 
+/** Reuse the measured prefix of immutable rows already printed to scrollback. */
+export class HeightIndex {
+  private items: readonly ViewItem[] = [];
+  private sums = [0];
+  private columns = 0;
+
+  total(items: readonly ViewItem[], columns: number): number {
+    let same = 0;
+    if (columns === this.columns) {
+      while (same < items.length && items[same] === this.items[same]) same++;
+    }
+    this.sums.length = same + 1;
+    for (let at = same; at < items.length; at++) this.sums.push(this.sums[at]! + heightOf(items[at]!, columns));
+    this.items = items;
+    this.columns = columns;
+    return this.sums[items.length]!;
+  }
+}
+
 function width(columns: number, indent: number): number {
   return Math.max(1, columns - indent - GUTTER);
 }

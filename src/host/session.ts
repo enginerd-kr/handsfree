@@ -144,6 +144,7 @@ export class HostSession {
   private turn: AbortController | undefined;
   private busy = false;
   private lastUpdateAt = 0;
+  private readonly listeners = new Set<(update: SessionUpdate) => void>();
   invalidated = false;
   /** What the agent said about models, once its opening answer has said it. */
   private state: ModelState | undefined;
@@ -198,6 +199,12 @@ export class HostSession {
       this.adoptModelState(modelStateOf({ configOptions: update.configOptions }));
     }
     this.onUpdate(update);
+    for (const listener of this.listeners) listener(update);
+  }
+
+  subscribe(listener: (update: SessionUpdate) => void): () => void {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
   }
 
   /** The models this session's agent offers, in the order it offered them. */

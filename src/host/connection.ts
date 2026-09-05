@@ -79,6 +79,7 @@ const CLIENT_INFO: Implementation = {
  */
 export class AgentConnection {
   private closing: Promise<void> | undefined;
+  private prepared: Promise<HostSession | undefined> | undefined;
 
   private constructor(
     readonly agentId: string,
@@ -207,7 +208,7 @@ export class AgentConnection {
   }
 
   /** `onUpdate` sees every `session/update` for the new session, live. */
-  async newSession(onUpdate?: (update: SessionUpdate) => void): Promise<HostSession> {
+  async newSession(onUpdate?: (update: SessionUpdate) => void, persist = true): Promise<HostSession> {
     let response;
     try {
       response = await this.connection.agent.request(methods.agent.session.new, {
@@ -217,10 +218,40 @@ export class AgentConnection {
     } catch (err) {
       throw this.explain(err);
     }
+    if (this.closing) throw new Error('Agent connection is closed');
+    if (this.sessions.has(response.sessionId)) throw new Error('Agent returned an existing id for a new session');
     const session = this.register(response.sessionId, onUpdate);
     session.adoptModelState(modelStateOf(response));
-    this.host.workspace.writeSessionId(this.agentId, response.sessionId);
+    if (persist) this.host.workspace.writeSessionId(this.agentId, response.sessionId);
     return session;
+  }
+
+  /** Keep at most one empty session ready, without replacing the saved active session. */
+  prepareSession(model?: string): void {
+    if (this.closing || this.prepared) return;
+    this.prepared = this.freshSession(model).catch((error: unknown) => {
+      debug(this.agentId, `session preparation failed: ${String(error)}`);
+      return undefined;
+    });
+  }
+
+  async takePreparedSession(model?: string): Promise<HostSession> {
+    if (this.closing) throw new Error('Agent connection is closed');
+    const pending = this.prepared;
+    this.prepared = undefined;
+    const session = (await pending) ?? await this.freshSession(model);
+    try {
+      if (model) await session.selectModel(model);
+      return session;
+    } catch (error) { this.releaseSession(session.sessionId); throw error; }
+  }
+
+  private async freshSession(model?: string): Promise<HostSession> {
+    const session = await this.newSession(undefined, false);
+    try {
+      if (model) await session.selectModel(model);
+      return session;
+    } catch (error) { this.releaseSession(session.sessionId); throw error; }
   }
 
   /**
@@ -267,6 +298,9 @@ export class AgentConnection {
       // Already down.
     }
     await this.target.close();
+    await this.prepared;
+    this.prepared = undefined;
+    this.sessions.clear();
   }
 
   /** Release local bookkeeping for a completed ephemeral or replaced session. */

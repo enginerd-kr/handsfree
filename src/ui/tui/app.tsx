@@ -20,15 +20,13 @@ import {
 } from './attachments.js';
 import {
   buildView,
-  turnPhase,
-  workingAgents,
   type Brief,
   type Tone,
   type TurnPhase,
   type ViewItem,
   type ViewOptions,
-  sessionsOf,
 } from '../view-model.js';
+import { observeView } from '../observe.js';
 import { shortTokens, spendOf, type RunSpend, type Spend } from '../../orchestrator/usage/usage.js';
 import { matchModel, type ModelChoice } from '../../host/models.js';
 import { agentRole, plannerLabel, type Config } from '../../config/schema.js';
@@ -43,7 +41,7 @@ import { completeMention, completeModel, mentionSpans, modelTokenAt, plannerToke
 import { ORCHESTRATOR } from '../../contracts/identity.js';
 import { readClipboardImage } from './clipboard.js';
 import { NOTHING_SENT, recall, remember, settle, type History } from './history.js';
-import { DETAIL_INDENT, GUTTER, entryText, heightOf, textWidth, totalHeight } from './layout.js';
+import { HeightIndex, DETAIL_INDENT, GUTTER, entryText, heightOf, textWidth, totalHeight } from './layout.js';
 import { type Highlighter, loadHighlighter, renderMarkdown } from './markdown.js';
 import { isTerminalReport } from './keys.js';
 import {
@@ -456,29 +454,13 @@ export function App({ runtime, settingsHome }: { runtime: Runtime; settingsHome?
     if (stdout?.isTTY) stdout.write(CLEAR_SCREEN);
   };
 
-  // The transcript is the model; the view is a pure function of it.
-  useEffect(() => {
-    const render = () => {
-      const records = runtime.transcript.all();
-      setItems(
-        buildView(records, runtime.workspace.dir, viewOptions),
-      );
-      setWorking(workingAgents(records));
-      setPhase(turnPhase(records));
-      setSessions(sessionsOf(records));
-      setSpend(spendOf(records));
-    };
-    // The screen starts over on a clear, and what was printed goes with it.
-    const arrived = (record: { type: string }) => {
-      if (record.type === 'clear') reprint();
-      render();
-    };
-    render();
-    runtime.transcript.on('record', arrived);
-    return () => {
-      runtime.transcript.off('record', arrived);
-    };
-  }, [runtime, viewOptions]);
+  useEffect(() => observeView(runtime.transcript, runtime.workspace.dir, viewOptions, (view) => {
+    setItems(view.items);
+    if (view.working) setWorking(view.working);
+    if (view.phase) setPhase(view.phase);
+    if (view.sessions) setSessions(view.sessions);
+    if (view.spend) setSpend(view.spend);
+  }, reprint), [runtime, viewOptions]);
 
   // Being here is what turns an `ask` verdict into a real question, and an
   // agent that stopped to ask something into a form. Without a mounted UI the
@@ -578,15 +560,19 @@ export function App({ runtime, settingsHome }: { runtime: Runtime; settingsHome?
   // An agent's own words arrive as markdown, so they are drawn as markdown.
   // This sits here rather than inside `Entry` because a row printed to the
   // scrollback is printed once: what goes out has to be the finished text.
+  const markdownRows = useMemo(() => new WeakMap<ViewItem, ViewItem>(), [highlighter, columns]);
   const drawn = useMemo(
     () =>
       items.map((item) => {
         if (item.prose !== true) return item;
-        return {
+        const cached = markdownRows.get(item);
+        if (cached) return cached;
+        const rendered = {
           ...item,
           text: renderMarkdown(item.key, item.text, {
             width: textWidth(item, columns),
             highlight: highlighter,
+            streaming: item.live === true,
             // A thought stays the quieter register, so the quiet ink is baked
             // into the styling rather than painted over it.
             dim: item.tone === 'muted',
@@ -595,8 +581,10 @@ export function App({ runtime, settingsHome }: { runtime: Runtime; settingsHome?
           // the first reset inside it.
           tone: 'normal' as Tone,
         };
+        markdownRows.set(item, rendered);
+        return rendered;
       }),
-    [items, highlighter, columns],
+    [items, highlighter, columns, markdownRows],
   );
 
   // Where the finished rows end and the live ones begin. Everything before the
@@ -635,6 +623,7 @@ export function App({ runtime, settingsHome }: { runtime: Runtime; settingsHome?
   // already awake.
   const [modelRoster, setModelRoster] = useState<Record<string, RosterState>>({});
   useEffect(() => {
+    runtime.preparePlanner();
     for (const id of agents) {
       // A session that will not open is kept apart from one that opened with
       // nothing to offer. The two look identical — no menu — and mean opposite
@@ -800,9 +789,10 @@ export function App({ runtime, settingsHome }: { runtime: Runtime; settingsHome?
   );
   // What the printing stands at now, in screen rows, and so what went out
   // with this frame — the rows the live part may give up without a gap.
+  const printedHeights = useRef(new HeightIndex());
   const printedNow = useMemo(
     () =>
-      printed.reduce((rows_, entry) => {
+      printedHeights.current.total(drawn.slice(0, settledCount), columns) + printed.reduce((rows_, entry) => {
         switch (entry.kind) {
           case 'spacer':
             return rows_ + entry.rows;
@@ -811,10 +801,10 @@ export function App({ runtime, settingsHome }: { runtime: Runtime; settingsHome?
           case 'greeting':
             return rows_ + welcomeHeight(runtime, agents, entry.rows);
           case 'item':
-            return rows_ + heightOf(entry.item, columns);
+            return rows_;
         }
       }, 0),
-    [printed, runtime, agents, columns],
+    [printed, drawn, settledCount, runtime, agents, columns],
   );
   const floor = Math.min(
     rows - 1,

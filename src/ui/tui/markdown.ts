@@ -36,6 +36,8 @@ export interface Highlighter {
 }
 
 export interface RenderOptions {
+  /** Defer highlighting the unfinished block until it settles. */
+  streaming?: boolean;
   /** Available text columns, after the transcript gutter and indent. */
   width?: number;
   /** Null until `cli-highlight` has loaded, or for good if it never does. */
@@ -416,7 +418,7 @@ export function renderMarkdown(key: string, text: string, options: RenderOptions
     dim: options.dim === true,
     width: options.width === undefined ? undefined : Math.max(1, Math.floor(options.width)),
   };
-  const signature = `${context.dim ? 'd' : ''}|${context.highlight ? 'h' : ''}|${context.width ?? ''}`;
+  const signature = `${context.dim ? 'd' : ''}|${context.highlight ? 'h' : ''}|${context.width ?? ''}|${options.streaming ? 's' : ''}`;
 
   if (!hasMarkdown(text)) return context.dim ? chalk.hex(INK)(text) : text;
   configureMarked();
@@ -448,7 +450,7 @@ export function renderMarkdown(key: string, text: string, options: RenderOptions
 
   // Trimmed before it is dimmed: chalk closes the run after the last newline,
   // which would put that newline beyond trim's reach.
-  const body = (prefixAnsi + render(tokens.slice(settled.length), context)).replace(/^\n+|\n+$/g, '');
+  const body = (prefixAnsi + render(tokens.slice(settled.length), options.streaming ? { ...context, highlight: null } : context)).replace(/^\n+|\n+$/g, '');
   const result = context.dim ? chalk.hex(INK)(body) : body;
 
   remember(key, { signature, prefix, prefixAnsi, text, result });

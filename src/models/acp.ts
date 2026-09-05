@@ -1,3 +1,5 @@
+import { performance } from 'node:perf_hooks';
+import { debug } from '../debug.js';
 import type { SessionUpdate } from '@agentclientprotocol/sdk';
 import type { AgentProfile } from '../config/schema.js';
 import type { HostContext } from '../host/capabilities/context.js';
@@ -47,6 +49,11 @@ export class AcpModel implements ChatClient {
 
   constructor(private readonly options: AcpModelOptions) {}
 
+  prepare(): void {
+    if (this.closed) return;
+    void this.connect().then((connection) => connection.prepareSession(this.options.model)).catch(() => {});
+  }
+
   async chat(messages: ChatMessage[], options: ChatOptions = {}): Promise<string> {
     await this.resetting;
     options.signal?.throwIfAborted();
@@ -57,17 +64,13 @@ export class AcpModel implements ChatClient {
   }
 
   private async reply(messages: ChatMessage[], options: ChatOptions): Promise<string> {
+    const started = performance.now();
     const connection = await this.connect();
 
     let reply = '';
     let session;
     try {
-      session = await connection.newSession((update: SessionUpdate) => {
-        if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') {
-          reply += update.content.text;
-          options.onDelta?.(update.content.text);
-        }
-      });
+      session = await connection.takePreparedSession();
     } catch (err) {
       // A connection that cannot open sessions is dead; the next chat respawns.
       await this.discard(connection);
@@ -78,12 +81,30 @@ export class AcpModel implements ChatClient {
     // new one, so each reply is planned on the model the config names. A name
     // the agent will not take fails the turn naming its roster — the
     // connection is fine, it is the name that is wrong, so it is not discarded.
+    const sessionMs = performance.now() - started;
+    let firstUpdateMs: number | undefined;
+    let firstOutputMs: number | undefined;
+    let promptAt = performance.now();
+    let prompting = false;
+    const unsubscribe = session.subscribe((update: SessionUpdate) => {
+      if (!prompting) return;
+      firstUpdateMs ??= performance.now() - promptAt;
+      if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') {
+        if (update.content.text) firstOutputMs ??= performance.now() - promptAt;
+        reply += update.content.text;
+        options.onDelta?.(update.content.text);
+      }
+    });
     let stopReason;
     try {
       if (this.options.model !== undefined) await session.selectModel(this.options.model);
-      const end = await session.prompt(render(messages, options.schema), {
-        signal: options.signal,
-      });
+      const prompt = render(messages, options.schema);
+      promptAt = performance.now();
+      prompting = true;
+      const pending = session.prompt(prompt, { signal: options.signal });
+      // Submit the active prompt first; prepare the next empty session during generation.
+      connection.prepareSession(this.options.model);
+      const end = await pending;
       stopReason = end.stopReason;
       // The agent's own count of the planning turn, in the shape every other
       // endpoint's arrives in. What was read from cache was still read, so it
@@ -102,6 +123,13 @@ export class AcpModel implements ChatClient {
       if (err instanceof SessionUnresponsiveError) await this.discard(connection);
       throw err;
     } finally {
+      unsubscribe();
+      const timing = { type: 'timing' as const, scope: 'planner' as const, agentId: this.options.agentId,
+        queueMs: 0, sessionMs, prepareMs: promptAt - started - sessionMs,
+        promptMs: performance.now() - promptAt, totalMs: performance.now() - started,
+        ...(firstUpdateMs === undefined ? {} : { firstUpdateMs }), ...(firstOutputMs === undefined ? {} : { firstOutputMs }) };
+      this.options.host.transcript.append(timing);
+      debug('latency', JSON.stringify(timing));
       connection.releaseSession(session.sessionId);
     }
 

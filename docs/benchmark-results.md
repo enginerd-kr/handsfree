@@ -1,5 +1,7 @@
 # Execution benchmark — 2026-09-05
 
+For current streaming CPU measurements, session preparation and transition timing fields, see [performance](performance.md).
+
 These historical results predate removal of host token/spending limits. Current benchmarks record usage without budget-based admission or cancellation.
 
 Both runs used `bench/run.ts`: two order-aggregation tasks, with the input changed before the second task, in separate workspaces per mode. The host checks exact JSON artifacts. These are smoke samples, not a general coding-quality evaluation.

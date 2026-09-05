@@ -31,7 +31,7 @@ export class Executor {
       const charges = transcript.all().filter((r) => r.type === 'budget_usage' && r.usage.source === agent).slice(-8);
       const related = memory.fresh.filter((file) => request.files.some((name) => path.resolve(this.deps.workspace.dir, name) === file) || request.task.includes(path.basename(file))).length;
       const failures = charges.filter((r) => r.type === 'budget_usage' && r.usage.failed).length;
-      const estimate = this.delegator.estimate(agent, taskBrief(request));
+      const estimate = this.delegator.estimate(agent, taskBrief(request), memory.context?.used ?? 0);
       const fullness = memory.context && memory.context.size > 0 ? memory.context.used / memory.context.size : 0;
       return { agent, model, description: agentRole(config, agent), estimate, score: related * 4 - failures * 3 - fullness * 4,
         reason: `${related} relevant unchanged files; ${failures} recent failed calls; about ${estimate} tokens`,

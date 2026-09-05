@@ -98,6 +98,9 @@ export type TranscriptBody =
       /** The model the session was on when the turn ended, where the agent said. */
       model?: string;
     }
+  | { type: 'timing'; scope: 'task' | 'planner'; agentId: string; taskId?: number;
+      queueMs: number; sessionMs: number; prepareMs: number; promptMs: number; totalMs: number;
+      firstUpdateMs?: number; firstOutputMs?: number }
   | { type: 'decision'; agentId: string; entry: AuditEntry }
   /**
    * What one exchange cost. For the orchestration model (`plan`, `narrate`)
@@ -114,6 +117,8 @@ export type TranscriptBody =
   | {
       type: 'usage';
       purpose: 'plan' | 'narrate' | 'task';
+      durationMs?: number;
+      firstDeltaMs?: number;
       model?: string;
       promptChars: number;
       replyChars: number;

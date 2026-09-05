@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks';
 import type { StopReason } from '@agentclientprotocol/sdk';
 import type { Config } from '../../config/schema.js';
 import { estimateTokens } from '../../models/client.js';
@@ -102,30 +103,33 @@ export class Delegator {
     };
   }
 
-  estimate(agentId: string, task: string): number {
+  estimate(agentId: string, task: string, contextUsed?: number): number {
     const charges = this.deps.transcript.all().filter((r) => r.type === 'budget_usage' && r.usage.source === agentId && r.usage.tokens > 0).slice(-8);
     const counts = charges.map((r) => r.type === 'budget_usage' ? r.usage.tokens : 0).sort((a, b) => a - b);
     const expected = counts.length
       ? counts[Math.ceil(counts.length * 0.9) - 1]!
       : estimateTokens(task);
-    const context = sessionMemory(this.deps.transcript, agentId, this.deps.pool.sessionId(agentId)).context?.used ?? 0;
+    const context = contextUsed ?? sessionMemory(this.deps.transcript, agentId, this.deps.pool.sessionId(agentId)).context?.used ?? 0;
     return Math.ceil(Math.max(estimateTokens(task), expected, context));
   }
 
   async delegate(delegation: Delegation, signal: AbortSignal): Promise<TaskOutcome> {
+    const queuedAt = performance.now();
+    if (!signal.aborted && delegation.sharedContext) this.deps.pool.prepareFresh(delegation.agentId, delegation.model);
     const exclusive = delegation.kind === 'change' || this.deps.pool.usesNativeTools(delegation.agentId);
     const release = await this.scheduler.acquire(delegation.agentId, exclusive, signal);
     const cancel = () => { void this.deps.pool.discard(delegation.agentId); };
     signal.addEventListener('abort', cancel, { once: true });
-    try { return await this.perform(delegation, signal); }
+    try { return await this.perform(delegation, signal, performance.now() - queuedAt); }
     finally { signal.removeEventListener('abort', cancel); release(); }
   }
 
-  private async perform(delegation: Delegation, signal: AbortSignal): Promise<TaskOutcome> {
+  private async perform(delegation: Delegation, signal: AbortSignal, queueMs: number): Promise<TaskOutcome> {
     const { agentId, kind, prompt: task, title, model } = delegation;
     const { config, pool, transcript, workspace } = this.deps;
     const taskId = ++this.taskCounter;
     const startedAt = Date.now();
+    const started = performance.now();
     // What is remembered about this agent belongs to the conversation this
     // task was started in. A `/clear` while it runs empties that, and writing
     // the briefing back afterwards would quietly restore a session's claim to
@@ -169,6 +173,8 @@ export class Delegator {
       return { ...failed(err), ...(signal.aborted ? { status: 'cancelled' as const } : {}) };
     }
 
+    const sessionMs = performance.now() - started;
+    if (sharedContext) pool.prepareFresh(agentId, session.currentModel());
     transcript.append({
       type: 'delegation',
       taskId,
@@ -221,8 +227,13 @@ export class Delegator {
     const previousCost = previousUsage?.type === 'session_update' && previousUsage.update.sessionUpdate === 'usage_update'
       && previousUsage.update.cost?.currency === 'USD' ? previousUsage.update.cost.amount : 0;
     let costUsd: number | undefined;
+    let firstUpdateMs: number | undefined;
+    let firstOutputMs: number | undefined;
+    const promptAt = performance.now();
     const observe = (record: TranscriptRecord) => {
       if (record.type !== 'session_update' || record.agentId !== agentId || record.sessionId !== session.sessionId) return;
+      firstUpdateMs ??= performance.now() - promptAt;
+      if (record.update.sessionUpdate === 'agent_message_chunk' && record.update.content.type === 'text' && record.update.content.text) firstOutputMs ??= performance.now() - promptAt;
       if (record.update.sessionUpdate === 'agent_message_chunk' || record.update.sessionUpdate === 'agent_thought_chunk') {
         if (record.update.content.type === 'text') output += record.update.content.text;
       }
@@ -255,6 +266,12 @@ export class Delegator {
       transcript.off('record', observe);
     }
 
+    const promptMs = performance.now() - promptAt;
+    const timing = { type: 'timing' as const, scope: 'task' as const, agentId, taskId, queueMs, sessionMs,
+      prepareMs: promptAt - started - sessionMs, promptMs, totalMs: performance.now() - started + queueMs,
+      ...(firstUpdateMs === undefined ? {} : { firstUpdateMs }), ...(firstOutputMs === undefined ? {} : { firstOutputMs }) };
+    transcript.append(timing);
+    debug('latency', JSON.stringify(timing));
     const outcome = summarise(taskId, agentId, task, stopReason, transcript.forTask(taskId), Date.now() - startedAt, options);
     const charged = lease?.finish({
       tokens: usage ? tokensOf(usage) : Math.max(observed, estimateTokens(brief) + estimateTokens(output)),

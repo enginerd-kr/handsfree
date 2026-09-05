@@ -146,21 +146,29 @@ Example: {"action":"call","tool":"agent","input":{"agent":"${first}","kind":"ans
       const notes: string[] = [];
       let callsUsed = 0;
       let uncertain = false;
-      for (const agent of recipients) {
-        if (ctx.signal.aborted) break;
+      // A group selects the same immutable sources for independent contributions.
+      // The scheduler still excludes changes and agents with native workspace tools.
+      const results = await Promise.all(recipients.map(async (agent) => {
+        if (ctx.signal.aborted) return { agent, skipped: true as const };
         callsUsed++;
-        try {
-          const result = await this.runSingle({ ...input, agent }, ctx, sources, shared);
-          if (result.outcome) outcomes.push(result.outcome);
-          replies.push(renderToolResult(result));
-        } catch (err) {
+        try { return { agent, result: await this.runSingle({ ...input, agent }, ctx, sources, shared, false) }; }
+        catch (error) { return { agent, error }; }
+      }));
+      for (const entry of results) {
+        if ('result' in entry && entry.result) {
+          if (entry.result.outcome) {
+            outcomes.push(entry.result.outcome);
+            if (shared) this.deps.shared!.publish(shared.conversation, entry.result.outcome.taskId);
+          }
+          replies.push(renderToolResult(entry.result));
+        } else if ('error' in entry) {
           uncertain = true;
-          const message = `${agent}: ${(err as Error).message}`;
+          const message = `${entry.agent}: ${String((entry.error as Error).message ?? entry.error)}`;
           replies.push(renderToolResult(toolError('tool_exception', message, null)));
           if (!ctx.signal.aborted) notes.push(message);
         }
       }
-      const skipped = recipients.slice(callsUsed);
+      const skipped = results.filter((entry) => 'skipped' in entry).map((entry) => entry.agent);
       if (skipped.length) notes.push(`Not contacted (cancelled): ${skipped.join(', ')}.`);
       return {
         text: [...replies, ...notes].join('\n\n'),
@@ -176,7 +184,7 @@ Example: {"action":"call","tool":"agent","input":{"agent":"${first}","kind":"ans
     return this.runSingle({ ...input, agent: input.agent }, ctx, sources, shared);
   }
 
-  private async runSingle(input: AgentInput & { agent: string }, ctx: ToolContext, sources: TaskOutcome[], shared?: SharedContextSnapshot): Promise<ToolResult> {
+  private async runSingle(input: AgentInput & { agent: string }, ctx: ToolContext, sources: TaskOutcome[], shared?: SharedContextSnapshot, publish = true): Promise<ToolResult> {
     const outcome = await this.deps.delegator.delegate(
       {
         agentId: input.agent,
@@ -190,7 +198,7 @@ Example: {"action":"call","tool":"agent","input":{"agent":"${first}","kind":"ans
       ctx.signal,
     );
     this.deps.onOutcome?.(outcome);
-    if (shared) this.deps.shared!.publish(shared.conversation, outcome.taskId);
+    if (shared && publish) this.deps.shared!.publish(shared.conversation, outcome.taskId);
     const result: ToolResult = {
       text: renderOutcome(outcome, this.deps.workspace.dir, { relayMessage: true }),
       receipt: { status: outcome.status === 'done' ? 'ok' : outcome.status === 'cancelled' ? 'cancelled' : 'error',

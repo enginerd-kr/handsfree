@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { entryText, heightOf, totalHeight } from './layout.js';
+import { HeightIndex, entryText, heightOf, totalHeight } from './layout.js';
 import type { ViewItem } from '../view-model.js';
 
 function item(text: string, extra: Partial<ViewItem> = {}): ViewItem {
@@ -21,6 +21,14 @@ function item(text: string, extra: Partial<ViewItem> = {}): ViewItem {
 const rows = Array.from({ length: 10 }, (_, index) => item(`row ${index}`));
 
 describe('totalHeight', () => {
+  it('invalidates prefix heights on edits, folding, clear and terminal resize', () => {
+    const index = new HeightIndex();
+    const long = item('한글 '.repeat(80));
+    for (const [items, columns] of [
+      [rows, 80], [[...rows, long], 80], [[...rows, long], 20],
+      [[rows[0]!, long], 20], [[], 20], [[long], 80],
+    ] as const) expect(index.total(items, columns)).toBe(totalHeight(items, columns));
+  });
   it('adds up what every item takes, wrapping included', () => {
     expect(totalHeight(rows, 80)).toBe(10);
     const tall = item('x'.repeat(200), { gap: true });

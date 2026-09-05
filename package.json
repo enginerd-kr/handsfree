@@ -20,6 +20,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "benchmark": "tsx bench/run.ts",
+    "benchmark:performance": "tsx bench/performance.ts",
     "doctor": "tsx src/main.ts doctor",
     "screenshots": "tsx e2e/shots.tsx"
   },

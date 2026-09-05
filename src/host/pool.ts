@@ -1,3 +1,4 @@
+import { debug } from '../debug.js';
 import type { AgentProfile, Config } from '../config/schema.js';
 import type { HostContext } from './capabilities/context.js';
 import type { AgentConnection, ConnectionTarget } from './connection.js';
@@ -78,6 +79,13 @@ export class AgentPool {
     return !!profile && nativeToolAdapter(profile, this.connections.get(agentId)?.info?.name);
   }
 
+  /** Start empty-session setup while another task or the planner is working. */
+  prepareFresh(agentId: string, model?: string): void {
+    void this.connection(agentId).then((connection) => {
+      if (!this.closed) connection.prepareSession(model ?? this.currentModel(agentId));
+    }).catch((error: unknown) => debug(agentId, `preparation unavailable: ${String(error)}`));
+  }
+
   async rotate(agentId: string): Promise<HostSession> {
     // A roster probe may still be restoring the prior session. Let it settle
     // before replacement so it cannot later overwrite this fresh selection.
@@ -87,9 +95,9 @@ export class AgentPool {
     if (previous?.isBusy) throw new Error(`Cannot rotate active session for ${agentId}`);
     const connection = await this.connection(agentId);
     const model = this.currentModel(agentId);
-    const session = await connection.newSession();
-    try { if (model) await session.selectModel(model); }
-    catch (error) { connection.releaseSession(session.sessionId); throw error; }
+    const session = await connection.takePreparedSession(model);
+    this.assertOpen();
+    this.options.workspace.writeSessionId(agentId, session.sessionId);
     if (previous) connection.releaseSession(previous.sessionId);
     this.sessions.set(agentId, session);
     this.options.transcript.append({ type: 'session', agentId, sessionId: session.sessionId, how: 'new' });

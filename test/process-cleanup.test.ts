@@ -41,9 +41,9 @@ function alive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
-async function ready(records: () => Record[], diagnostics: () => string = () => ''): Promise<void> {
+async function ready(records: () => Record[], diagnostics: () => string = () => '', count = 2): Promise<void> {
   try {
-    await expect.poll(() => records().filter((record) => record.event === 'ready').length, { timeout: 5_000 }).toBe(2);
+    await expect.poll(() => records().filter((record) => record.event === 'ready').length, { timeout: 5_000 }).toBe(count);
   } catch (error) {
     throw new Error(`Fixture did not start: ${diagnostics()}`, { cause: error });
   }
@@ -150,7 +150,7 @@ describe.skipIf(process.platform === 'win32')('ACP process cleanup', () => {
       host.once('error', reject);
       host.once('exit', resolve);
     });
-    await ready(records, () => stderr);
+    await ready(records, () => stderr, command === 'tui' ? 4 : 2);
     host.kill(signal);
     // A second termination request must still wait for the same cleanup.
     await new Promise((resolve) => setTimeout(resolve, 30));

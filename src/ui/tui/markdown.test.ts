@@ -1,5 +1,5 @@
 import chalk from 'chalk';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import wrapAnsi from 'wrap-ansi';
 import stringWidth from 'string-width';
 import type { ViewItem } from '../view-model.js';
@@ -203,6 +203,15 @@ describe('markdown', () => {
   });
 
   describe('streaming', () => {
+    it('defers unfinished code highlighting and restores the final styled result', () => {
+      const highlight = { highlight: vi.fn((text: string) => chalk.red(text)), supportsLanguage: () => true };
+      const text = '```ts\nconst answer = 42;\n```';
+      renderMarkdown('live-code', text, { highlight, streaming: true });
+      expect(highlight.highlight).not.toHaveBeenCalled();
+      const final = renderMarkdown('live-code', text, { highlight });
+      expect(highlight.highlight).toHaveBeenCalledOnce();
+      expect(final).toBe(renderMarkdown('complete-code', text, { highlight }));
+    });
     it('keeps spacing and wrapping stable while lists and tables stream', () => {
       const source = '## 결과\n- 한국어로 긴 결과를 설명합니다\n  - **중첩** 항목입니다\n\n| Agent | Result |\n| --- | --- |\n| codex | All tests passed |\n\nDone.';
       const expected = renderMarkdown('whole-width', source, { width: 24 });

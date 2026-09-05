@@ -64,6 +64,7 @@ export interface Runtime {
   /** A context for a command to act in, named after the command doing the asking. */
   commandHost(agentId: string): CommandHost;
   setEscalator(escalator: Escalator | undefined): void;
+  preparePlanner(): void;
   close(): Promise<void>;
 }
 
@@ -108,7 +109,10 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     // Notes cross over; the streamed planning JSON does not.
     const aside = new Transcript();
     aside.on('record', (record) => {
-      if (record.type === 'note') transcript.append(record);
+      if (record.type === 'note' || record.type === 'timing') {
+        const { seq: _seq, at: _at, ...body } = record;
+        transcript.append(body);
+      }
     });
     return new AcpModel({
       agentId,
@@ -246,6 +250,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
   }
 
   return {
+    preparePlanner: () => planner?.prepare(),
     config,
     workspace,
     transcript,

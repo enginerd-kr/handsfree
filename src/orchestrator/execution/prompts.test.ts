@@ -4,6 +4,19 @@ import { buildBrief } from './prompts.js';
 const base = { workspaceDir: '/ws', first: false };
 
 describe('buildBrief', () => {
+  it('preserves a shared source prefix when the selected head and assignment advance', () => {
+    const source = { record: 'record:2', source: 'record:1', role: 'user' as const, author: 'user', content: 'Exact original request.' };
+    const shared = { conversation: 'conversation:2', through: 'record:2', title: 'Review', messages: [source] };
+    const before = buildBrief({ ...base, agentId: 'a', kind: 'answer', task: 'First assignment', sharedContext: shared });
+    const after = buildBrief({ ...base, agentId: 'a', kind: 'answer', task: 'Second assignment', sharedContext: {
+      ...shared, through: 'record:3', messages: [source, { ...source, record: 'record:3', source: 'record:3', content: 'Later correction.' }],
+    } });
+    const end = before.indexOf(source.content) + source.content.length;
+    expect(after.slice(0, end)).toBe(before.slice(0, end));
+    expect(after).toContain('Later correction.');
+    expect(after).toContain('"through":"record:3"');
+    expect(after).toContain('CURRENT TASK INSTRUCTION:\nSecond assignment\nEND CURRENT TASK INSTRUCTION');
+  });
   it('tells an agent asked a question to answer rather than build', () => {
     const brief = buildBrief({ ...base, kind: 'answer', task: '안녕?' });
     expect(brief).toContain('안녕?');

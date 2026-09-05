@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks';
 import { estimateTokens as countTokens, estimateMessages, type ChatClient, type Usage } from '../../models/client.js';
 import type { UsageTracker } from './meter.js';
 import type { TokenUsage } from '../../contracts/usage.js';
@@ -21,6 +22,8 @@ export function metered(
 ): ChatClient {
   return {
     async chat(messages, options = {}) {
+      const started = performance.now();
+      let firstDeltaMs: number | undefined;
       const promptChars = messages.reduce((total, message) => total + message.content.length, 0);
       const inputEstimate = estimateMessages(messages) + (options.schema ? countTokens(JSON.stringify(options.schema.schema)) : 0);
       let usage: Usage | undefined;
@@ -31,6 +34,7 @@ export function metered(
         reply = await llm.chat(messages, {
           ...options,
           onDelta: (text) => {
+            if (text) firstDeltaMs ??= performance.now() - started;
             reply += text;
             options.onDelta?.(text);
           },
@@ -53,6 +57,8 @@ export function metered(
         transcript.append({
           type: 'usage',
           purpose,
+          durationMs: performance.now() - started,
+          ...(firstDeltaMs === undefined ? {} : { firstDeltaMs }),
           ...(model === undefined ? {} : { model }),
           promptChars,
           replyChars: reply.length,

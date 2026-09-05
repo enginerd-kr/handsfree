@@ -565,12 +565,12 @@ describe('Conversation', () => {
         throw new Error('a cancelled turn must not ask the model anything');
       },
     };
-    const gemini = fakeAgent({ script: () => [{ do: 'say', text: 'Hi' }] });
+    const gemini = fakeAgent({ script: () => [{ do: 'stall', ms: 10_000 }] });
     const h = harness({ agents: { claude: agent, gemini }, llm });
     open = h;
 
     const turn = h.runtime.conversation.send('sleep');
-    while (!h.runtime.transcript.all().some((record) => record.type === 'delegation')) {
+    while (h.runtime.transcript.all().filter((record) => record.type === 'delegation').length < (group ? 2 : 1)) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
 
@@ -581,7 +581,8 @@ describe('Conversation', () => {
     expect(calls).toBe(1);
     expect(assistantText(h)).toEqual([]);
     expect(h.runtime.transcript.all().map((record) => record.type)).toContain('stop');
-    expect(gemini.prompts).toHaveLength(0);
+    expect(gemini.prompts).toHaveLength(group ? 1 : 0);
+    expect(h.runtime.transcript.all().filter((record) => record.type === 'stop').every((record) => record.stopReason === 'cancelled')).toBe(true);
   });
 
   it('routes a leading @mention straight to its agent, planner unconsulted', async () => {
