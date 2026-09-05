@@ -1,8 +1,7 @@
 import fs from 'node:fs';
-import path from 'node:path';
 import type { Transcript } from '../../workspace/transcript.js';
 import type { TaskOutcome } from '../results/outcome.js';
-import { floorOf, tasksSince, type LedgerTask } from './ledger.js';
+import { floorOf } from './ledger.js';
 
 function version(file: string): string {
   try { const stat = fs.statSync(file); return `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`; }
@@ -42,31 +41,4 @@ export function sessionMemory(transcript: Transcript, agentId: string, sessionId
   const context = usage?.type === 'session_update' && usage.update.sessionUpdate === 'usage_update'
     ? { used: usage.update.used, size: usage.update.size } : undefined;
   return { fresh, stale, topics, sessionId: live, context };
-}
-
-export function relevance(task: LedgerTask, query: string, root: string): number {
-  const words = new Set(query.toLowerCase().match(/[\p{L}\p{N}_./-]{3,}/gu) ?? []);
-  const text = `${task.outcome.task} ${task.outcome.report.summary}`.toLowerCase();
-  let score = task.outcome.status !== 'done' ? 10 : 0;
-  for (const word of words) if (text.includes(word)) score++;
-  for (const file of [...task.outcome.files, ...task.outcome.changed]) {
-    if (query.includes(path.relative(root, file)) || query.includes(path.basename(file))) score += 5;
-  }
-  return score;
-}
-
-/** Durable decisions remain addressable even after the recent-task window is evicted. */
-export function durableFacts(transcript: Transcript, root: string, query: string): string {
-  const tasks = tasksSince(transcript.all(), floorOf(transcript.all()), { workspaceDir: root });
-  const resolved = new Set(transcript.all().flatMap((record) => record.type === 'resolved' ? record.taskIds : []));
-  const candidates = tasks.filter((t) => !resolved.has(t.outcome.taskId) && (t.outcome.report.decided.length || t.outcome.report.open.length))
-    .sort((a, b) => relevance(b, query, root) - relevance(a, query, root) || b.seq - a.seq);
-  const lines: string[] = [];
-  for (const { outcome } of candidates) {
-    for (const fact of [...outcome.report.decided.map((s) => `decision: ${s}`), ...outcome.report.open.map((s) => `open: ${s}`)]) {
-      const line = `task ${outcome.taskId}: ${fact}`;
-      if (!lines.some((s) => s.endsWith(fact))) lines.push(line);
-    }
-  }
-  return lines.length ? `Relevant recorded decisions and open items (historical; check whether resolved):\n${lines.join('\n')}` : '';
 }

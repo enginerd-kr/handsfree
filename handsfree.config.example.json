@@ -9,8 +9,7 @@
     "acp": {
       "agent": "claude",
       "model": "haiku"
-    },
-    "relayAnswers": false
+    }
   },
   "env": {},
   "agents": {
@@ -32,8 +31,7 @@
       "args": [
         "-y",
         "@agentclientprotocol/codex-acp"
-      ],
-      "nativeTools": "allow"
+      ]
     }
   },
   "roles": {

@@ -49,7 +49,7 @@ describe('MCP tools', () => {
     expect(answers).toEqual([{ action: 'accept', content }]);
   });
 
-  it('exposes typed delegation and returns a reference to the complete answer', async () => {
+  it('returns the complete answer immediately and retains a reference for later retrieval', async () => {
     const a = fakeAgent({ script: () => [{ do: 'say', text: 'ESSENTIAL DETAIL: preserve ordering.\nREPORT\noutcome: done\nsummary: Reviewed ordering' }] });
     const h = harness({ agents: { a } });
     const client = await connect(h);
@@ -58,6 +58,7 @@ describe('MCP tools', () => {
     const result = await client.callTool({ name: 'delegate', arguments: { task: 'review', agent: 'a', kind: 'inspect' } });
     expect(result.isError).toBe(false);
     expect(result.structuredContent).toMatchObject({ status: 'done', summary: 'Reviewed ordering' });
+    expect(result.structuredContent).toMatchObject({ message: expect.stringContaining('ESSENTIAL DETAIL: preserve ordering.') });
     const details = await client.callTool({ name: 'read_result', arguments: { taskId: 1 } });
     expect(JSON.stringify(details)).toContain('ESSENTIAL DETAIL');
     const data = result.structuredContent as { resultRef: string };

@@ -53,6 +53,15 @@ export function builtins(): Command[] {
     },
     {
       kind: 'local',
+      name: 'models',
+      aliases: ['model', 'settings'],
+      description: 'set default models for the orchestrator and coding agents',
+      source: 'builtin',
+      interactive: true,
+      run: () => ({ do: 'models' }),
+    },
+    {
+      kind: 'local',
       name: 'cost',
       description: 'what this run has spent, in tokens, on planning and on each agent',
       source: 'builtin',
@@ -197,6 +206,7 @@ function configuration(host: CommandHost): string[] {
     `read from:  ${readFrom(host)}`,
     `workspace:  ${tildify(host.workspace.dir)}`,
     `transcript: ${tildify(host.workspace.transcriptFile)}`,
+    'default models: /models — saved in ~/.handsfree/config.json',
     '',
     modeLine(host.policy.mode),
     host.config.capabilities.elicitation
@@ -220,17 +230,12 @@ function modeLine(mode: PermissionMode): string {
   }
 }
 
-/**
- * Where the settings came from, said so the precedence is visible: two files
- * that both had something to say are named in the order they won, because
- * "why is this setting not what my config says" is nearly always answered by
- * the other file.
- */
+/** The user settings file that supplied this run's active configuration. */
 function readFrom(host: CommandHost): string {
   if (host.configSources.length === 0) return 'nowhere — these are the defaults';
   return host.configSources
     .map((source) => `${tildify(source.file)} (${source.scope})`)
-    .join(' over ');
+    .join(', ');
 }
 
 function hint(command: Command): string {

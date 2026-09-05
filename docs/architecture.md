@@ -11,7 +11,7 @@ src/
 ├── debug.ts, version.ts            Diagnostics and application version
 ├── commands/                       CLI commands: run, task, doctor and TUI
 ├── servers/                        ACP/MCP adapters and shared elicitation forms
-├── config/                         Configuration schemas and layered loading
+├── config/                         Schemas and ~/.handsfree/config.json loading/saving
 ├── contracts/                      Shared task, review, context and usage shapes
 ├── policy/                         Permissions, human input and path boundaries
 ├── workspace/                      Run directories, transcript and session storage

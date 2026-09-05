@@ -16,13 +16,35 @@ flowchart TD
   P --> F[Report result or explain blocker]
 ```
 
-Every model-facing action schema requires a `review` containing the objective, constraints, completed items, remaining items, the selected `next` index and any blocker. Index 0 selects the first remaining item; -1 means no selected item. A worker call with -1 defaults to the first remaining item. The host checkpoints accepted reviews automatically, including their source addresses. Successful worker execution completes the selected item in the host's state; a stale model review cannot undo that execution or cause the same item to run again in that turn. Saving a finding can complete the orchestrator's own selected intermediate item. This records execution, not independent verification of a conclusion's correctness.
+Each response chooses a tool call or a final answer. The model may include a `review` containing the objective, constraints, completed items, remaining items, an item index and a blocker as a progress note. The host records it as written, including source addresses. A review is optional and does not schedule calls or decide their completion. Worker success records the outcome of that invocation. The orchestrator decides what that evidence means for the user's objective and may call the same worker or revisit the same topic as needed.
 
-`answer` is the orchestrator's final response and may itself perform a selected synthesis or explanation. If its review still lists other work and no concrete blocker, the host rejects the premature ending and asks for a next action. The model still determines what the evidence establishes; a protocol `end_turn` is not proof of correctness. The parser also accepts legacy actions without a review for direct routing and older clients.
+`answer` ends the loop. The orchestrator decides when it can provide the requested result or explain a concrete obstacle. The host validates the action and tool arguments; it does not infer completion from progress-note wording, rewrite those notes, or suppress a call because the topic appeared in an earlier successful invocation. A protocol `end_turn` reports execution termination, not verification of the user's objective.
 
 `agent` executes worker tasks. `context` supplies additional source-linked memory and lets the orchestrator record its own intermediate work. `task_result` reads saved worker output without rerunning a task. The orchestrator reviews evidence after each result and revises remaining work.
 
+## Passing results between workers
+
+`agent.context_from` selects full replies by task ID from this run. The host resolves all references before calling a worker and attaches the original replies with source agent, task ID and execution status. It preserves the full text, including failed or blocked results when the orchestrator wants help assessing them. The immediate `agent` tool result also includes the complete reply, so the final synthesis can assess the actual arguments without another retrieval call. The former `orchestration.relayAnswers` switch has been removed. Source results are data under the new brief's instructions. Missing references return an error to the orchestrator without calling a worker. Saved results remain available after restarting the same run.
+
+For example, the orchestrator can call Claude, then ask Codex to review its exact reply:
+
+```json
+{"action":"call","tool":"agent","input":{"agent":"claude","kind":"answer","prompt":"Explain the proposed design."}}
+```
+
+After receiving task 1:
+
+```json
+{"action":"call","tool":"agent","input":{"agent":"codex","kind":"answer","prompt":"Evaluate Claude's argument and identify disagreements.","context_from":[1]}}
+```
+
+The next decision can forward Codex's result back to Claude, call another worker, or produce a synthesis. For an orchestrator-written summary instead, it reads `task_result`, writes its summary into the next `agent.prompt`, and can include source references as well. No discussion mode, fixed sequence, or round count is built into the host.
+
+An agent array sends independent copies of a brief with the same selected source results; it does not pass newly produced replies or report summaries between recipients inside that call. Workers retain their own session history. Automatic cross-worker handoffs and decision injection have been removed. The orchestrator chooses all additional evidence through its prompt or `context_from`; file freshness notices remain host metadata. Multiple `@mentions` go to the orchestrator so it can decide the relationships between participants. A single leading `@agent` retains direct routing.
+
 ## Storage and retrieval
+
+The task instruction is stored separately from its `contextFrom` source IDs. Referenced replies stay in their original result records and are assembled only when sending the worker prompt. Task listings and later result reads do not copy the attachments into the instruction.
 
 The existing run directory is the persistence boundary:
 
@@ -43,13 +65,15 @@ Every planning step receives:
 
 1. Stable instructions and tool schemas.
 2. All previous user/assistant turns in the current conversation.
-3. The exact current request, latest review, and active objectives, constraints, decisions and open items.
-4. Current worker sessions, complete task reports and result source addresses.
+3. The exact current request, latest optional review, and active objectives, constraints, decisions and open items.
+4. Current worker sessions, task metadata, summaries from previous turns and result source addresses.
 5. All tool calls and results from the current turn.
 
-Tool exchanges remain in the active turn. Retrieved evidence and saved findings are retained in full, and repeated identical reads share an entry. Worker prose and reports precede briefs in result retrieval. Active notes and the latest review also accompany worker briefs, preserving saved constraints even when the model writes a short prompt.
+Tool exchanges, including full worker replies, remain in the active turn. The run-state index omits summaries of those same replies to avoid repeating them. Retrieved evidence and saved findings are retained in full, and repeated identical reads share an entry. Worker prose and reports precede briefs in result retrieval. Active notes and the latest review are provided to the orchestrator; it carries relevant constraints, requested length and format into each worker prompt. Planner notes are not injected into workers automatically.
 
 Restarting the same run reconstructs recent conversation and active notes. An unfinished turn is represented as interrupted, and its actions/results are available for inspection; workers are not automatically rerun. `/clear` creates a new context boundary. Old source IDs and late turn checkpoints cannot repopulate that context.
+
+Answer tasks ask for the requested prose or format without a `REPORT` block. Inspection and change tasks retain structured outcome and verification reports, specified for the current task even after an answer in the same session. All task kinds return the full reply to the orchestrator.
 
 ## Execution and cancellation
 
@@ -59,7 +83,7 @@ The structured MCP/CLI executor also runs without numerical limits; workspace ex
 
 ## Validation
 
-Tests cover self-only answers, intermediate self work, failed-worker recovery, constraint propagation, repeated delegation and result reads, disk replay, complete source retrieval and revisions, interrupted turns, clear boundaries, full context/history retention, large batches and explicit cancellation. Scripted models test host guarantees; live local-model checks separately assess whether the model uses the loop well.
+Tests cover self-only answers, intermediate self work, failed-worker recovery, constraint propagation, repeated delegation and result reads, disk replay, complete source retrieval and revisions, interrupted turns, clear boundaries, full context/history retention, large batches and explicit cancellation. Result-context tests verify exact worker-to-worker transfer, orchestrator-written summaries, rebuttals, missing references, failed-result forwarding, independent opening statements, final rebuttal delivery, absence of implicit summaries or planner notes, separate instruction/reference storage, and reuse after restart. Scripted models test host guarantees; live local-model checks separately assess whether the model uses the loop well.
 
 An explicit live planner smoke check uses deterministic worker replies and restarts the same run before asking about the original constraints:
 

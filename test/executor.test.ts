@@ -6,8 +6,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { harness, scriptedModel, type Harness } from './harness.js';
 import { fakeAgent } from './fake-agent.js';
 import { tasksSince } from '../src/orchestrator/context/ledger.js';
-import { sessionMemory, durableFacts } from '../src/orchestrator/context/memory.js';
+import { sessionMemory } from '../src/orchestrator/context/memory.js';
 import { TaskRequestSchema } from '../src/contracts/task.js';
+import { AgentProfileSchema } from '../src/config/schema.js';
 
 const open: Harness[] = [];
 afterEach(async () => { for (const h of open.splice(0).reverse()) await h.dispose(); });
@@ -15,20 +16,27 @@ const report = (summary: string, status = 'done', extra = '') => `REPORT\noutcom
 function setup(options: Parameters<typeof harness>[0]) { const h = harness(options); open.push(h); return h; }
 
 describe('structured executor', () => {
-  it('honors an explicit deny for an identified native Codex adapter before prompting', async () => {
-    const a = fakeAgent({ name: '@agentclientprotocol/codex-acp', script: () => [{ do: 'say', text: 'must not run' }] });
-    const h = setup({ agents: { a }, config: { profiles: { a: { nativeTools: 'deny' } } } });
-    await h.runtime.pool.connection('a');
-    await expect(h.runtime.executor.execute({ task: 'Run a command', agent: 'a' })).rejects.toThrow('outside host policy');
-    await expect(h.runtime.pool.session('a')).rejects.toThrow('outside host policy');
-    expect(a.prompts).toHaveLength(0);
-    expect(h.runtime.usage.totals().tokens).toBe(0);
+  it.each([undefined, 'deny', 'allow'])('runs Codex with legacy nativeTools=%s through routing and direct sessions', async (nativeTools) => {
+    const a = fakeAgent({ name: '@agentclientprotocol/codex-acp', loadSession: true, script: () => [{ do: 'say', text: report('Codex ran') }] });
+    const h = setup({ agents: { a } });
+    h.runtime.config.agents.a = AgentProfileSchema.parse({ ...h.runtime.config.agents.a, nativeTools });
+    const connection = await h.runtime.pool.connection('a');
+    expect(h.runtime.executor.candidates(TaskRequestSchema.parse({ task: 'Choose a worker' }))).toMatchObject([{ agent: 'a' }]);
+    expect((await h.runtime.executor.execute({ task: 'Run explicitly', agent: 'a' })).status).toBe('done');
+    expect((await h.runtime.executor.execute({ task: 'Run through automatic routing' })).status).toBe('done');
+    const direct = await connection.newSession();
+    await direct.prompt('Run directly', {});
+    const resumed = await connection.loadSession(direct.sessionId);
+    await resumed!.prompt('Resume directly', {});
+    expect(a.prompts).toHaveLength(4);
+    expect(h.runtime.config.agents.a).not.toHaveProperty('nativeTools');
   });
 
-  it('allows native execution by default but schedules those tasks exclusively', async () => {
+  it('schedules known native tasks exclusively without an opt-in setting', async () => {
     const a = fakeAgent({ name: 'codex-acp', script: () => [{ do: 'stall', ms: 20 }, { do: 'say', text: report('A') }] });
     const b = fakeAgent({ script: () => [{ do: 'say', text: report('B') }] });
     const h = setup({ agents: { a, b } });
+    await h.runtime.pool.connection('a');
     await h.runtime.executor.batch({ tasks: [
       { id: 'a', request: { task: 'Inspect A', agent: 'a', kind: 'inspect' } },
       { id: 'b', request: { task: 'Inspect B', agent: 'b', kind: 'inspect' } },
@@ -137,7 +145,8 @@ describe('structured executor', () => {
   });
 
   it('passes prerequisite findings to another worker without rewriting the requested task', async () => {
-    const a = fakeAgent({ script: () => [{ do: 'say', text: report('The parser drops empty tokens') }] });
+    const original = 'COUNTEREXAMPLE: a,,b loses the middle empty field.\n' + report('The parser drops empty tokens');
+    const a = fakeAgent({ script: () => [{ do: 'say', text: original }] });
     const b = fakeAgent({ script: () => [{ do: 'say', text: report('Fixed') }] });
     const h = setup({ agents: { a, b } });
     await h.runtime.executor.batch({ tasks: [
@@ -147,7 +156,27 @@ describe('structured executor', () => {
     expect(b.prompts[0]).toContain('Apply the findings');
     expect(b.prompts[0]).toContain('Keep the API');
     expect(b.prompts[0]).toContain('The parser drops empty tokens');
-    expect(b.prompts[0]).toContain('handsfree://runs/');
+    expect(b.prompts[0]).toContain('Task 1 (a): done');
+    expect(b.prompts[0]).toContain(original);
+    expect(h.runtime.executor.readOutcome(2)).toMatchObject({
+      task: 'Apply the findings\n\nConstraints (must preserve):\n- Keep the API', contextFrom: [1],
+    });
+  });
+
+  it('attaches only explicitly selected results and rejects missing references before starting a worker', async () => {
+    const original = ('SOURCE_ARGUMENT: validate before modifying.\n' + report('Reviewed validation')).trimEnd();
+    const a = fakeAgent({ script: () => [{ do: 'say', text: original }] });
+    const b = fakeAgent({ script: () => [{ do: 'say', text: 'Independent assessment.' }] });
+    const h = setup({ agents: { a, b } });
+    const source = await h.runtime.executor.execute({ task: 'Review', kind: 'answer', agent: 'a' });
+    expect(source.message).toBe(original);
+    await h.runtime.executor.execute({ task: 'Give an independent view', kind: 'answer', agent: 'b' });
+    expect(b.prompts[0]).not.toContain('SOURCE_ARGUMENT');
+    await expect(h.runtime.executor.execute({ task: 'Review sources', agent: 'b', contextFrom: [source.taskId, 999] })).rejects.toThrow('Task 999 has no saved result');
+    expect(b.prompts).toHaveLength(1);
+    await h.runtime.executor.execute({ task: 'Review sources', kind: 'answer', agent: 'b', contextFrom: [source.taskId, source.taskId] });
+    expect(b.prompts[1]?.split(original)).toHaveLength(2);
+    expect(h.runtime.executor.readOutcome(3)).toMatchObject({ task: 'Review sources', contextFrom: [source.taskId] });
   });
 
   it('reuses results after restart and refuses indeterminate journal entries', async () => {
@@ -251,7 +280,7 @@ describe('structured executor', () => {
     expect(llm.seen[0]!.map((m) => m.content).join('')).toContain('Do not rewrite the task');
   });
 
-  it('invalidates files changed on disk and retains older decisions beyond the recent window', async () => {
+  it('invalidates files changed on disk and keeps source decisions retrievable', async () => {
     let file = '';
     const a = fakeAgent({ script: () => [{ do: 'tool', toolCallId: 'r', title: 'Read', kind: 'read', locations: [file] }, { do: 'say', text: report('read', 'done', 'decided: - preserve the legacy flag') }] });
     const h = setup({ agents: { a } }); file = path.join(h.workspaceDir, 'parser.ts'); fs.writeFileSync(file, 'old');
@@ -259,7 +288,7 @@ describe('structured executor', () => {
     expect(sessionMemory(h.runtime.transcript, 'a').fresh).toContain(file);
     fs.writeFileSync(file, 'different content');
     expect(sessionMemory(h.runtime.transcript, 'a').stale).toContain(file);
-    expect(durableFacts(h.runtime.transcript, h.workspaceDir, 'parser')).toContain('preserve the legacy flag');
+    expect(h.runtime.executor.readOutcome(1).report.decided).toContain('preserve the legacy flag');
     const candidates = h.runtime.executor.candidates(TaskRequestSchema.parse({ task: 'parser.ts', files: ['parser.ts'] }));
     expect(candidates[0]?.reason).toContain('0 relevant unchanged files');
   });

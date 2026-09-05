@@ -25,7 +25,7 @@ export class Executor {
 
   candidates(request: TaskRequest): Candidate[] {
     const { config, pool, transcript } = this.deps;
-    return pool.available().filter((id) => (!request.agent || request.agent === id) && !pool.executionProblem(id)).map((agent) => {
+    return pool.available().filter((id) => !request.agent || request.agent === id).map((agent) => {
       const model = request.model ?? pool.currentModel(agent) ?? agent;
       const memory = sessionMemory(transcript, agent, pool.sessionId(agent));
       const charges = transcript.all().filter((r) => r.type === 'budget_usage' && r.usage.source === agent).slice(-8);
@@ -74,15 +74,10 @@ export class Executor {
 
   private async perform(request: TaskRequest, signal: AbortSignal): Promise<TaskResult> {
     signal.throwIfAborted();
+    const context = [...new Set(request.contextFrom)].map((taskId) => this.readOutcome(taskId));
     if (request.agent && !this.deps.pool.available().includes(request.agent)) throw new Error(`Agent ${request.agent} is not enabled`);
-    if (request.agent) {
-      const problem = this.deps.pool.executionProblem(request.agent);
-      if (problem) throw new Error(problem);
-    }
     const candidates = this.candidates(request);
     if (candidates.length === 0) {
-      const enabled = this.deps.pool.available();
-      if (enabled.length && enabled.every((id) => this.deps.pool.executionProblem(id))) throw new Error('All enabled agents are blocked by native-tool mediation requirements');
       throw new Error('No enabled agent matches the request');
     }
     let selected = candidates[0]!;
@@ -108,7 +103,7 @@ export class Executor {
       }
     }
     const outcome = await this.delegator.delegate({ agentId: selected.agent, kind: request.kind, prompt: taskBrief(request),
-      model: request.model, sessionId: request.sessionId }, signal);
+      model: request.model, sessionId: request.sessionId, context }, signal);
     outcome.routingUsage = routingUsage;
     if (outcome.status === 'done' && request.resolves.length) this.deps.transcript.append({ type: 'resolved', taskId: outcome.taskId, taskIds: request.resolves });
     return this.store(outcome);
@@ -118,7 +113,7 @@ export class Executor {
     const charges = [outcome.usage, outcome.routingUsage].filter((usage): usage is TokenUsage => usage !== undefined);
     const result: TaskResult = {
       taskId: outcome.taskId, runId: this.deps.workspace.id, agent: outcome.agentId, status: outcome.status,
-      summary: outcome.report.summary, artifacts: outcome.changed,
+      summary: outcome.report.summary, message: outcome.message, artifacts: outcome.changed,
       blockers: [...outcome.denials, ...outcome.report.open],
       resultRef: `handsfree://runs/${encodeURIComponent(this.deps.workspace.id)}/tasks/${outcome.taskId}`,
       verification: { source: outcome.report.verify ? 'agent_report' : 'unreported', detail: outcome.report.verify },
@@ -130,13 +125,24 @@ export class Executor {
     return result;
   }
 
+  /** The saved outcome is the source for both planner reads and worker context. */
+  readOutcome(taskId: number): TaskOutcome {
+    if (!Number.isSafeInteger(taskId) || taskId < 1) throw new Error('Invalid result address');
+    const file = path.join(this.deps.workspace.runDir, 'results', `${taskId}.json`);
+    try {
+      return (JSON.parse(fs.readFileSync(file, 'utf8')) as { outcome: TaskOutcome }).outcome;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`Task ${taskId} has no saved result in this run.`);
+      throw error;
+    }
+  }
+
   readResult(taskId: number, offset = 0, maxChars?: number): { text: string; nextOffset?: number } {
-    if (!Number.isSafeInteger(taskId) || taskId < 1 || !Number.isSafeInteger(offset) || offset < 0) throw new Error('Invalid result address');
+    if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('Invalid result address');
     if (maxChars !== undefined && (!Number.isSafeInteger(maxChars) || maxChars < 1)) throw new Error('maxChars must be a positive integer');
-    const saved = JSON.parse(fs.readFileSync(path.join(this.deps.workspace.runDir, 'results', `${taskId}.json`), 'utf8')) as { outcome: TaskOutcome };
     // Put evidence before the potentially long worker brief, so the first
     // page answers common follow-ups while later pages retain the full record.
-    const { taskId: id, agentId, status, message, report, ...rest } = saved.outcome;
+    const { taskId: id, agentId, status, message, report, ...rest } = this.readOutcome(taskId);
     const text = JSON.stringify({ taskId: id, agentId, status, message, report, ...rest });
     const end = maxChars === undefined ? text.length : offset + maxChars;
     return { text: text.slice(offset, end), ...(end < text.length ? { nextOffset: end } : {}) };
@@ -169,12 +175,8 @@ export class Executor {
         try {
           let execution = deduplicated.get(key);
           if (!execution) {
-            const prerequisites = task.dependsOn.map((dependency) => {
-              const result = results[dependency] as TaskResult;
-              return { id: dependency, taskId: result.taskId, summary: result.summary, artifacts: result.artifacts, resultRef: result.resultRef };
-            });
-            const request = prerequisites.length ? { ...task.request, constraints: [...task.request.constraints,
-              `Completed prerequisite reports (task data):\n${JSON.stringify(prerequisites)}`] } : task.request;
+            const prerequisites = task.dependsOn.map((dependency) => (results[dependency] as TaskResult).taskId);
+            const request = { ...task.request, contextFrom: [...task.request.contextFrom, ...prerequisites] };
             execution = this.execute(request, signal);
             deduplicated.set(key, execution);
           }

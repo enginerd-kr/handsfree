@@ -3,6 +3,20 @@ import { Transcript } from '../../workspace/transcript.js';
 import { RunContext } from './context.js';
 
 describe('durable run context', () => {
+  it('keeps the latest orchestrator assessment authoritative when replaying old completion markers', () => {
+    const transcript = new Transcript();
+    const context = new RunContext(transcript);
+    const turn = context.start('Discuss the proposal.');
+    const review = { objective: 'Discuss', constraints: [], completed: [], remaining: ['Discuss the proposal'], next: 0, blocker: '' };
+    context.review(turn, review);
+    transcript.append({ type: 'context', entry: { event: 'complete', turn, item: 'Discuss the proposal', sources: [turn] } });
+    expect(new RunContext(transcript).required()).toContain('"completed":[]');
+    expect(new RunContext(transcript).required()).toContain('"remaining":["Discuss the proposal"]');
+    context.review(turn, { ...review, completed: ['Proposal reviewed'], remaining: ['Review rebuttal'] });
+    expect(new RunContext(transcript).required()).toContain('"completed":["Proposal reviewed"]');
+    expect(new RunContext(transcript).required()).toContain('"remaining":["Review rebuttal"]');
+  });
+
   it('retains distinct retrieved pages together without duplicating repeated reads', () => {
     const transcript = new Transcript();
     const context = new RunContext(transcript);

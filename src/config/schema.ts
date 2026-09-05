@@ -58,8 +58,6 @@ export const AgentProfileSchema = z
     model: z.string().min(1).optional(),
     /** Whether usage is attributed to a frontier model. */
     frontier: z.boolean().default(true),
-    /** Allow adapter-native operations by default; deny opts out of native execution. */
-    nativeTools: z.enum(['deny', 'allow']).default('allow'),
   })
   .superRefine((profile, ctx) => {
     try {
@@ -93,7 +91,6 @@ export const DEFAULT_AGENTS: Record<string, z.input<typeof AgentProfileSchema>> 
   codex: {
     command: 'npx',
     args: ['-y', '@agentclientprotocol/codex-acp'],
-    nativeTools: 'allow',
     note: 'methodical coding agent, good at tests and refactors',
   },
 };
@@ -119,13 +116,8 @@ export type RuleOutcome = 'allow' | 'ask' | 'deny';
 /**
  * What each agent is for, in the words the planner is given. Keyed by agent id.
  *
- * This sits outside `agents` on purpose. A profile under `agents` is taken
- * whole when two config files are layered — a launch line spliced from two
- * files is a command nobody wrote — but a role is the opposite kind of thing:
- * the line a checkout most wants to say on its own, and making it restate the
- * command and the arguments to do so is a tax on the one edit worth making.
- * Here it is an ordinary record, so it merges name by name: a project file that
- * re-describes `codex` leaves the user's line for `gemini` standing.
+ * This sits outside `agents` so describing a role does not require restating
+ * an agent's launch command and arguments in the user settings file.
  *
  * A name nothing configures is refused rather than dropped, because a role that
  * never reaches the planner and a role the planner ignored read the same from
@@ -166,13 +158,6 @@ export const OrchestrationSchema = z.object({
       model: z.string().min(1).optional(),
     })
     .prefault({}),
-  /**
-   * Include the agent's reply in the immediate tool result. Otherwise the
-   * planner receives a report and can use
-   * task_result to retrieve details for follow-up questions. This controls
-   * context delivery, not whether the planner may discuss agent findings.
-   */
-  relayAnswers: z.boolean().default(false),
 });
 
 export type Orchestration = z.infer<typeof OrchestrationSchema>;

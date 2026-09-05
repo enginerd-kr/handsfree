@@ -37,7 +37,6 @@ import type { UsageTracker } from '../usage/meter.js';
 import { ResultTool } from './tools/result.js';
 import { ContextTool } from './tools/context.js';
 import { RunContext } from '../context/context.js';
-import { nextItem } from '../../contracts/review.js';
 
 export interface ConversationDeps {
   executor?: Executor;
@@ -138,11 +137,10 @@ export class Conversation {
       new AgentTool({
         roster: () => this.roster(),
         delegator: this.delegator,
-        config: deps.config,
         transcript: deps.transcript,
         workspace: deps.workspace,
         onOutcome: (outcome) => deps.executor?.store(outcome),
-        workingContext: () => this.context.required(),
+        readOutcome: deps.executor ? (taskId) => deps.executor!.readOutcome(taskId) : undefined,
       }),
       ...(deps.executor ? [new ResultTool(deps.executor)] : []),
       new ContextTool(this.context),
@@ -343,7 +341,6 @@ export class Conversation {
           history.push({ role: 'assistant', content: JSON.stringify(planned.step) });
           const message = planned.step.message;
           this.context.step(turnId, JSON.stringify(planned.step));
-          if (planned.step.review) this.context.complete(turnId, nextItem(planned.step.review));
           stream.end(message);
           answered = true;
           completion = 'reported';
@@ -355,19 +352,10 @@ export class Conversation {
         const { call } = planned.step;
         history.push({ role: 'assistant', content: call.json });
         this.context.step(turnId, call.json);
-        if (call.name === 'agent' && planned.step.review && this.context.isComplete(turnId, nextItem(planned.step.review))) {
-          history.push({ role: 'user', content: this.relay(call.name,
-            `The item "${nextItem(planned.step.review)}" has already executed successfully. No worker was called. Review existing results and select remaining work or report the result.`) });
-          continue;
-        }
         const result = await call.run({ signal: turn.signal, turnId });
-        if (call.name === 'task_result' || call.name === 'context' && !result.completedWork) this.context.retainEvidence(turnId, call.json, result.text);
+        if (call.name === 'task_result' || call.name === 'context') this.context.retainEvidence(turnId, call.json, result.text);
         if (result.outcome) outcomes.push(result.outcome);
         if (result.outcomes) outcomes.push(...result.outcomes);
-        const completed = result.outcomes ?? (result.outcome ? [result.outcome] : []);
-        if (planned.step.review && (result.completedWork || completed.length > 0 && !result.note && completed.every((outcome) => outcome.status === 'done'))) {
-          this.context.complete(turnId, nextItem(planned.step.review));
-        }
         if (result.note && !notes.includes(result.note)) notes.push(result.note);
         history.push({ role: 'user', content: this.relay(call.name, result.text) });
 
@@ -588,12 +576,12 @@ export class Conversation {
   private requestMessage(agents: string[], prompt: string, turnId: number): ChatMessage {
     const required = [`CURRENT REQUEST SOURCE: record ${turnId}`, this.context.required()].filter(Boolean).join('\n');
     return { role: 'user', pinned: true,
-      content: composeUserMessage([required, this.runState(agents),
+      content: composeUserMessage([required, this.runState(agents, turnId),
         this.context.evidenceView(turnId)].filter(Boolean).join('\n\n'), prompt),
       requiredContent: composeUserMessage(required, prompt) };
   }
 
-  private runState(agents: string[]): string {
+  private runState(agents: string[], turnId: number): string {
     const { workspace } = this.deps;
     const tasks = this.context.tasks(this.delegator.ledgerOptions());
     const worked = agentRecords(tasks);
@@ -601,7 +589,7 @@ export class Conversation {
       id,
       record: renderAgentRecord(worked.get(id), workspace.dir),
     }));
-    return [renderState(sessions, renderRunState(tasks, workspace.dir)),
+    return [renderState(sessions, renderRunState(tasks, workspace.dir, { repliesBefore: turnId })),
       this.context.sources(), this.context.findings()].filter(Boolean).join('\n');
   }
 }

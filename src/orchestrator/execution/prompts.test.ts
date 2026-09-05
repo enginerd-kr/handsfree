@@ -23,24 +23,32 @@ describe('buildBrief', () => {
     expect(later).not.toContain('The working directory');
   });
 
-  it('spells out the report format with the rules, and only reminds after that', () => {
+  it('specifies verification reports for work even after earlier tasks in the session', () => {
     const first = buildBrief({ ...base, kind: 'change', task: 'x', first: true });
     const later = buildBrief({ ...base, kind: 'change', task: 'x' });
     expect(first).toContain('outcome: done | partial | blocked');
     expect(first).toContain('verify:');
-    expect(later).not.toContain('outcome: done | partial | blocked');
-    expect(later.endsWith('End your turn with a REPORT block.')).toBe(true);
+    expect(later).toContain('outcome: done | partial | blocked');
+    expect(later).toContain('verify:');
   });
 
-  it('puts the handoff after the task, as the brief the planner wrote', () => {
+  it.each([true, false])('requests a plain answer without a work report (first=%s)', (first) => {
+    const brief = buildBrief({ ...base, first, kind: 'answer', task: 'Answer in two sentences.' });
+    expect(brief).toContain('Follow the requested response length and format');
+    expect(brief).toContain('do not append a REPORT block');
+    expect(brief).not.toContain('outcome: done | partial | blocked');
+    expect(brief).not.toContain('verify:');
+  });
+
+  it('keeps file freshness notices separate from the requested task', () => {
     const brief = buildBrief({
       ...base,
       kind: 'change',
       task: 'Rename the flag. Done when --strict is the only spelling.',
-      handoff: 'Since your last task:\n- gemini, task 1: changed a.ts',
+      staleFiles: ['a.ts'],
     });
     const at = (needle: string) => brief.indexOf(needle);
-    expect(at('Rename the flag')).toBeLessThan(at('Since your last task:'));
-    expect(brief).not.toContain('Context:');
+    expect(at('Rename the flag')).toBeLessThan(at('Previously seen files changed on disk'));
+    expect(brief).toContain('re-read if relevant: a.ts');
   });
 });

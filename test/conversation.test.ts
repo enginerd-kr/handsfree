@@ -307,8 +307,8 @@ describe('Conversation', () => {
 
     await h.runtime.conversation.send('do two things');
 
-    expect(agent.prompts[0]).toContain('handsfree approves or refuses');
-    expect(agent.prompts[1]).not.toContain('handsfree approves or refuses');
+    expect(agent.prompts[0]).toContain('Operations requested through handsfree');
+    expect(agent.prompts[1]).not.toContain('Operations requested through handsfree');
     expect(agent.prompts[1]).toContain('Second task');
   });
 
@@ -363,12 +363,12 @@ describe('Conversation', () => {
     expect(llm.seen).toHaveLength(2);
     const reviews = h.runtime.transcript.all().filter((r) => r.type === 'context' && r.entry.event === 'review');
     expect(reviews).toContainEqual(expect.objectContaining({ entry: expect.objectContaining({
-      state: expect.objectContaining({ remaining: [task], next: 0 }),
+      state: expect.objectContaining({ remaining: [], next: -1 }),
     }) }));
     expect(assistantText(h).at(-1)).toBe(summary);
   });
 
-  it('records recovered work as completed and prevents duplicate execution in the same turn', async () => {
+  it('allows repeated calls without turning optional progress notes into execution gates', async () => {
     const agent = fakeAgent({ script: () => [{ do: 'say', text: 'Checked.' }] });
     const task = 'Check the changes again';
     const call = JSON.stringify({
@@ -381,8 +381,8 @@ describe('Conversation', () => {
 
     await h.runtime.conversation.send('Ask Claude to check again');
 
-    expect(agent.prompts).toHaveLength(1);
-    expect(llm.seen[2]?.at(-1)?.content).toContain('has already executed successfully');
+    expect(agent.prompts).toHaveLength(2);
+    expect(llm.seen[2]?.at(-1)?.content).toContain('Task 2');
     expect(assistantText(h).at(-1)).toBe('Checked.');
   });
 
@@ -815,7 +815,7 @@ describe('Conversation', () => {
     expect(assistantText(h)).toEqual(['nobody here goes by that name.']);
   });
 
-  it('hands an agent what the others changed since it last worked', async () => {
+  it('does not attach another agent’s changes or claims without a selected source', async () => {
     let edited = '';
     const claude = fakeAgent({
       script: () => [
@@ -842,11 +842,9 @@ describe('Conversation', () => {
     await h.runtime.conversation.send('@claude add parse()');
     await h.runtime.conversation.send('@gemini test parse()');
 
-    // gemini is told what claude changed, and what claude said about it —
-    // paths and an account, not the file.
-    expect(gemini.prompts[0]).toContain('Since your last task:');
-    expect(gemini.prompts[0]).toContain('claude (general coding agent), task 1: changed a.ts');
-    expect(gemini.prompts[0]).toContain('empty input returns null');
+    expect(gemini.prompts[0]).not.toContain('Since your last task:');
+    expect(gemini.prompts[0]).not.toContain('claude (general coding agent)');
+    expect(gemini.prompts[0]).not.toContain('empty input returns null');
   });
 
   it("does not hand an agent back its own work, which its session remembers", async () => {
@@ -876,10 +874,10 @@ describe('Conversation', () => {
     await h.runtime.conversation.send('@claude two');
     await h.runtime.conversation.send('@claude three');
 
-    expect(claude.prompts[0]).toContain('handsfree approves or refuses');
-    expect(claude.prompts[1]).not.toContain('handsfree approves or refuses');
+    expect(claude.prompts[0]).toContain('Operations requested through handsfree');
+    expect(claude.prompts[1]).not.toContain('Operations requested through handsfree');
     // A task count alone does not force a new briefing.
-    expect(claude.prompts[2]).not.toContain('handsfree approves or refuses');
+    expect(claude.prompts[2]).not.toContain('Operations requested through handsfree');
   });
 
   it('briefs an agent again after a turn that ran out of tokens', async () => {
@@ -893,7 +891,7 @@ describe('Conversation', () => {
     await h.runtime.conversation.send('@claude one');
     await h.runtime.conversation.send('@claude two');
 
-    expect(claude.prompts[1]).toContain('handsfree approves or refuses');
+    expect(claude.prompts[1]).toContain('Operations requested through handsfree');
   });
 
   it('keeps the run ahead of the user\'s line and folds the turn that established it', async () => {
@@ -1007,7 +1005,7 @@ describe('Conversation', () => {
     expect(assistantText(h).at(-1)).toBe('Claude만 수정 중인 파일을 언급했고, 나머지 둘은 인사만 했습니다.');
   });
 
-  it('hands the planner a report with a way to retrieve the rest', async () => {
+  it('returns the actual reply and verification details to the planner', async () => {
     const claude = fakeAgent({
       script: () => [
         {
@@ -1029,12 +1027,10 @@ describe('Conversation', () => {
     const result = llm.seen[1]?.at(-1)?.content ?? '';
     expect(result.startsWith('TOOL RESULT (agent)')).toBe(true);
     expect(result).toContain('summary: Added parse() with a null return for empty input.');
-    expect(result).toContain('open: the CLI still passes undefined sometimes');
-    expect(result).toContain('use task_result for details');
-    // What is for the next agent stays out of the planner's way, and so does the prose.
-    expect(result).not.toContain('decided');
-    expect(result).not.toContain('pnpm test');
-    expect(result).not.toContain('great length');
+    expect(result).toContain('open: - the CLI still passes undefined sometimes');
+    expect(result).toContain('decided: - empty input returns null, not an error');
+    expect(result).toContain('pnpm test');
+    expect(result).toContain('great length');
 
     // The count is of what the tool relayed: the result under the heading.
     const relayed = result.slice(result.indexOf('\n') + 1);
@@ -1045,10 +1041,10 @@ describe('Conversation', () => {
     expect(usage && usage.type === 'usage' ? usage.promptChars : 0).toBeGreaterThan(0);
   });
 
-  it('hands the planner the whole reply when the config asks for it', async () => {
+  it('returns the whole reply without a configuration switch', async () => {
     const claude = fakeAgent({ script: () => [{ do: 'say', text: 'The whole reply, verbatim.' }] });
     const llm = scriptedModel([delegate('Say something'), answer('done.')]);
-    const h = harness({ agents: { claude }, llm, config: { orchestration: { relayAnswers: true } } });
+    const h = harness({ agents: { claude }, llm });
     open = h;
 
     await h.runtime.conversation.send('say something');
@@ -1217,12 +1213,12 @@ describe('Conversation', () => {
 
     // The note said the agents would be briefed from scratch. They are: the
     // finishing task must not put back what the clear took away.
-    expect(agent.prompts[1]).toContain('handsfree approves or refuses');
+    expect(agent.prompts[1]).toContain('Operations requested through handsfree');
     // And nothing from before the line is carried across to it.
     expect(agent.prompts[1]).not.toContain('Since your last task:');
   });
 
-  it('repeats a handoff the agent never got, rather than losing it', async () => {
+  it('refreshes ground rules after failure without attaching unrelated task context', async () => {
     let edited = '';
     const claude = fakeAgent({
       script: () => [
@@ -1245,12 +1241,10 @@ describe('Conversation', () => {
     await h.runtime.conversation.send('@gemini test it');
     await h.runtime.conversation.send('@gemini test it again');
 
-    // The mark did not move past a brief nobody is known to have read, so what
-    // claude changed is still told to gemini on the next attempt.
-    expect(gemini.prompts.at(-1)).toContain('claude');
-    expect(gemini.prompts.at(-1)).toContain('changed a.ts');
+    expect(gemini.prompts.at(-1)).not.toContain('Added parse().');
+    expect(gemini.prompts.at(-1)).not.toContain('changed a.ts');
     // A session that may have lost the rules is given them again.
-    expect(gemini.prompts.at(-1)).toContain('handsfree approves or refuses');
+    expect(gemini.prompts.at(-1)).toContain('Operations requested through handsfree');
   });
 
   it('records the workspace path it gave the model', async () => {
@@ -1267,7 +1261,7 @@ describe('Conversation', () => {
 });
 
 describe('Conversation across a restart', () => {
-  it('reads the run back so the next agent is handed what happened before it', async () => {
+  it('resumes sessions and task ids without implicitly attaching earlier agents’ results', async () => {
     let edited = '';
     const claude = fakeAgent({
       // Resumable, and replays its past on load the way a real adapter does.
@@ -1299,10 +1293,9 @@ describe('Conversation across a restart', () => {
     await after.runtime.conversation.send('@gemini test parse()');
     await after.runtime.conversation.send('@claude tidy it');
 
-    // gemini is told what claude did in the process before this one...
-    expect(gemini.prompts[0]).toContain('Since your last task:');
-    expect(gemini.prompts[0]).toContain('claude, task 1: changed a.ts');
-    expect(gemini.prompts[0]).toContain('decided: empty input returns null');
+    expect(gemini.prompts[0]).not.toContain('Since your last task:');
+    expect(gemini.prompts[0]).not.toContain('claude, task 1: changed a.ts');
+    expect(gemini.prompts[0]).not.toContain('empty input returns null');
     // ...and its own task is numbered after claude's, not over it.
     const delegations = after.runtime.transcript
       .all()
@@ -1314,11 +1307,10 @@ describe('Conversation across a restart', () => {
       [3, 'claude'],
     ]);
 
-    // claude came back on the session it had, which holds its own work: it
-    // is told the rules again and what gemini did, not what it did itself.
+    // The resumed session keeps its own work and receives refreshed rules.
     const resumed = claude.prompts[1] ?? '';
-    expect(resumed).toContain('handsfree approves or refuses');
-    expect(resumed).toContain('gemini, task 2');
+    expect(resumed).toContain('Operations requested through handsfree');
+    expect(resumed).not.toContain('gemini, task 2');
     expect(resumed).not.toContain('claude, task 1');
     expect(resumed).not.toContain('Added parse().');
 

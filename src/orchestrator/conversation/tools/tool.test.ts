@@ -51,12 +51,12 @@ describe('Toolbox', () => {
   });
 
   it.each([
-    { remaining: [], next: -1, selected: 'Check the diff again' },
-    { remaining: [], next: 0, selected: 'Check the diff again' },
-    { remaining: ['Retry inspection'], next: 1, selected: 'Retry inspection' },
-    { remaining: ['Retry inspection', 'Summarize'], next: -1, selected: 'Retry inspection' },
-    { remaining: ['Summarize', 'Retry inspection'], next: 1, selected: 'Retry inspection' },
-  ])('recovers worker bookkeeping for $remaining with next=$next', async ({ remaining, next, selected }) => {
+    { remaining: [], next: -1 },
+    { remaining: [], next: 0 },
+    { remaining: ['Retry inspection'], next: 1 },
+    { remaining: ['Retry inspection', 'Summarize'], next: -1 },
+    { remaining: ['Summarize', 'Retry inspection'], next: 1 },
+  ])('preserves the optional review without rewriting $remaining or next=$next', async ({ remaining, next }) => {
     const calls: unknown[] = [];
     const worker: Tool<{ prompt: string }> = {
       name: 'agent', describe: () => '', input: z.object({ prompt: z.string().min(1) }),
@@ -67,24 +67,25 @@ describe('Toolbox', () => {
       action: 'call', tool: 'agent', input: { prompt: 'Check the diff again' },
     }));
     if (!parsed.ok || parsed.step.action !== 'call') throw new Error('not a call');
-    expect(parsed.step.review?.remaining[parsed.step.review.next]).toBe(selected);
+    expect(parsed.step.review?.remaining).toEqual(remaining);
+    expect(parsed.step.review?.next).toBe(next);
     expect(parsed.step.review?.constraints).toEqual(['Do not edit']);
     await parsed.step.call.run(ctx);
     expect(calls).toEqual([{ prompt: 'Check the diff again' }]);
   });
 
-  it('requires a repair when an invalid index leaves several worker items to choose from', () => {
+  it('executes a valid tool call regardless of the review item index', async () => {
     const worker = { ...echoTool(), name: 'agent' };
     const parsed = new Toolbox([worker]).parse(JSON.stringify({
       review: { objective: 'Inspect changes', constraints: [], completed: [], remaining: ['Inspect', 'Test'], next: 2, blocker: '' },
       action: 'call', tool: 'agent', input: { text: 'do it' },
     }));
-    expect(parsed.ok).toBe(false);
-    if (!parsed.ok) expect(parsed.error).toContain('zero-based index');
-    expect(worker.calls).toEqual([]);
+    if (!parsed.ok || parsed.step.action !== 'call') throw new Error('not a call');
+    await parsed.step.call.run(ctx);
+    expect(worker.calls).toEqual([{ text: 'do it' }]);
   });
 
-  it('does not recover bookkeeping at the expense of worker input validation', () => {
+  it('validates worker arguments independently of the optional review', () => {
     const worker = { ...echoTool(), name: 'agent' };
     const parsed = new Toolbox([worker]).parse(JSON.stringify({
       review: { objective: 'Inspect changes', constraints: [], completed: [], remaining: [], next: -1, blocker: '' },
@@ -128,5 +129,14 @@ describe('Toolbox', () => {
     expect(schema).toContain('"echo"');
     expect(schema).toContain('"loud"');
     expect(schema).toContain('"answer"');
+    const variants = (box.jsonSchema().schema as { anyOf: { required: string[] }[] }).anyOf;
+    expect(variants.every((variant) => !variant.required.includes('review'))).toBe(true);
+  });
+
+  it('accepts the orchestrator decision to answer without interpreting its progress notes', () => {
+    const review = { objective: 'Explain the tradeoff', constraints: [], completed: [], remaining: ['Compare', 'Synthesize'], next: -1, blocker: '' };
+    const parsed = new Toolbox([]).parse(JSON.stringify({ review, action: 'answer', message: 'Here is the comparison.' }));
+    expect(parsed.ok && parsed.step.action).toBe('answer');
+    expect(parsed.ok && parsed.step.review).toEqual(review);
   });
 });

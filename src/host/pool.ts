@@ -5,7 +5,7 @@ import type { PolicyEngine } from '../policy/engine.js';
 import type { Jail } from '../policy/jail.js';
 import type { Transcript } from '../workspace/transcript.js';
 import type { Workspace } from '../workspace/workspace.js';
-import { mediationProblem } from './mediation.js';
+import { nativeToolAdapter } from './native-tools.js';
 import { openAgent } from './open.js';
 import type { ModelChoice } from './models.js';
 import type { HostSession } from './session.js';
@@ -73,9 +73,9 @@ export class AgentPool {
 
   sessionId(agentId: string): string | undefined { return this.sessions.get(agentId)?.sessionId; }
 
-  executionProblem(agentId: string): string | undefined {
+  usesNativeTools(agentId: string): boolean {
     const profile = this.options.config.agents[agentId];
-    return profile ? mediationProblem(profile, this.connections.get(agentId)?.info?.name) : `Unknown agent ${agentId}`;
+    return !!profile && nativeToolAdapter(profile, this.connections.get(agentId)?.info?.name);
   }
 
   async rotate(agentId: string): Promise<HostSession> {
@@ -144,11 +144,7 @@ export class AgentPool {
 
   /** Opens the run's session with an agent, resuming the saved one if there is one. */
   private async start(agentId: string): Promise<HostSession> {
-    const problem = this.executionProblem(agentId);
-    if (problem) throw new Error(problem);
     const connection = await this.connection(agentId);
-    const identified = this.executionProblem(agentId);
-    if (identified) throw new Error(identified);
     const saved = this.options.workspace.readSessionIds()[agentId];
     const resumed = saved ? await connection.loadSession(saved) : undefined;
     const session = resumed ?? (await connection.newSession());

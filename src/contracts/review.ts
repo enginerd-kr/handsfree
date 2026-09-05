@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-/** A concise work-state checkpoint, not a chain of private reasoning. */
+/** An optional progress note written by the orchestrator, never an execution gate. */
 export const ReviewSchema = z.object({
   objective: z.string().min(1),
   constraints: z.array(z.string().min(1)),
@@ -11,5 +11,3 @@ export const ReviewSchema = z.object({
   blocker: z.string(),
 });
 export type LoopReview = z.infer<typeof ReviewSchema>;
-
-export function nextItem(review: LoopReview): string { return review.remaining[review.next] ?? ''; }

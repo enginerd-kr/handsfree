@@ -56,10 +56,10 @@ All token totals came from adapters; none were character estimates. The run took
 ## Reproduce and inspect
 
 ```sh
-node --import tsx bench/use-cases.ts --allow-native
+node --import tsx bench/use-cases.ts
 ```
 
-This command makes real model calls and prints its evidence directory. The explicit `--allow-native` flag is now required to exercise Codex; it accepts the native-tool limitation described above for this disposable fixture. Without it, Codex is intentionally blocked. See [follow-up controls and local routing measurements](execution-controls.md). It retains fixtures, reports, JSONL transcript, full outcomes, and host-owned test output outside the repository. It exits nonzero when a scenario assertion fails.
+This command makes real model calls and prints its evidence directory. Enabled Codex profiles run using adapter-native permissions in the disposable fixture. See [follow-up controls and local routing measurements](execution-controls.md). It retains fixtures, reports, JSONL transcript, full outcomes, and host-owned test output outside the repository. It exits nonzero when a scenario assertion fails.
 
 Evidence from this run:
 

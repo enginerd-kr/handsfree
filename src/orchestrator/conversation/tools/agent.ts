@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import type { Config } from '../../../config/schema.js';
 import type { Delegator } from '../../execution/delegate.js';
 import { renderOutcome, type TaskOutcome } from '../../results/outcome.js';
 import type { Transcript } from '../../../workspace/transcript.js';
@@ -14,14 +13,13 @@ export interface AgentCard {
 
 export interface AgentToolDeps {
   onOutcome?: (outcome: TaskOutcome) => void;
-  workingContext?: () => string;
+  readOutcome?: (taskId: number) => TaskOutcome;
   /**
    * Who can be called, read each time the tool is described or a call is
    * checked: an agent switched off mid-run is off the roster from then on.
    */
   roster: () => readonly AgentCard[];
   delegator: Delegator;
-  config: Config;
   transcript: Transcript;
   workspace: Workspace;
 }
@@ -32,6 +30,8 @@ export type AgentInput = {
   description?: string | undefined;
   kind: 'answer' | 'inspect' | 'change';
   model?: string | undefined;
+  /** Full replies from existing tasks, selected by the orchestrator. */
+  context_from?: number[];
 };
 
 /**
@@ -40,8 +40,7 @@ export type AgentInput = {
  * title for the screen, and whether words or a changed workspace are wanted
  * back. The planner writes the whole brief itself — what to do, what done
  * looks like, what from the conversation the agent needs — and this tool
- * adds only what the planner cannot know: the ground rules, and what the
- * other agents did since.
+ * attaches only the source results explicitly selected by the planner.
  */
 export class AgentTool implements Tool<AgentInput> {
   readonly name = 'agent';
@@ -64,6 +63,7 @@ export class AgentTool implements Tool<AgentInput> {
        */
       kind: z.enum(['answer', 'inspect', 'change']).default('change'),
       model: z.string().min(1).optional(),
+      context_from: z.array(z.number().int().positive()).optional(),
     });
   }
 
@@ -74,21 +74,33 @@ export class AgentTool implements Tool<AgentInput> {
     return `agent — delegate one task inside ${this.deps.workspace.dir}.
 Agents:
 ${roster}
-Input: {"agent":"id or an array of ids","kind":"answer|inspect|change","prompt":"brief","model":"optional model"}.
-For the same request to multiple agents, select every intended recipient in one agent array. For all agents, include every listed id. The host calls each independently before returning; never ask one agent to speak for the others.
-For different tasks, make separate calls with the appropriate briefs.
+Input: {"agent":"id or an array of ids","kind":"answer|inspect|change","prompt":"brief","model":"optional model","context_from":[1,2]}.
+Returns task ids, execution statuses and complete replies, including the actual arguments and findings. Read those replies before deciding the next action or synthesizing a conclusion. task_result retrieves saved replies later; context_from attaches them to a worker's brief with their source agents and statuses. References must name saved tasks in this run. They do not rerun the source tasks.
+Use the prompt for your own instructions or a summary you wrote after reading earlier results. Use context_from to pass exact earlier replies without copying them through your own response. Both can be combined.
+An agent array sends independent copies of the same brief. Every recipient sees the same selected context; they do not receive each other's new replies within that call.
+Choose call order and context from the user's request. When later work depends on an earlier answer, make the earlier call first, then use its task id in the next call. You may call an agent again to react to new evidence. An ended task does not establish that the user's objective is complete.
 Group example: {"action":"call","tool":"agent","input":{"agent":${JSON.stringify(cards.map((card) => card.id))},"kind":"answer","prompt":"Hi? Reply briefly."}}
 answer: reply only; inspect: read files and report, no commands or edits; change: implement and verify.
 Use change for tasks requiring commands, including read-only git status or git diff; state any no-edit constraint in the brief. This still uses the host's current command policy.
-Preserve the user's exact requirements and file names. Never invent a file for a question.
+Preserve the user's exact requirements, response length, format, constraints and file names in the prompt. Planner notes are not automatically sent to workers. Never invent a file for a question.
 Omit model unless the user selected one; default, none and null mean no model override.
-Prefer an agent with relevant unchanged context; sessions are reused and receive relevant handoffs.
+Prefer an agent with relevant unchanged context; its own session is reused. Other agents' replies, decisions and notes are sent only when you include them in the prompt or select context_from. For independent opinions, omit context_from and avoid sharing the other participants' positions.
 Agent replies are visible to the user. Use their findings to answer the current question, including explanation or comparison when requested. Summarize relevant details without copying unrelated material.
 Do not automatically retry permission refusals. When the user explicitly requests a fresh attempt, include that update in the brief; the host still checks current permissions. Report blockers; an ended turn is not proof of success.
-Example: {"action":"call","tool":"agent","input":{"agent":"${first}","kind":"change","prompt":"Create notes.txt containing exactly hello world."}}`;
+Example: {"action":"call","tool":"agent","input":{"agent":"${first}","kind":"answer","prompt":"Evaluate the reasoning in the referenced reply and explain where you agree or disagree.","context_from":[1]}}`;
   }
 
   async run(input: AgentInput, ctx: ToolContext): Promise<ToolResult> {
+    let sources: TaskOutcome[];
+    try {
+      sources = [...new Set(input.context_from ?? [])].map((taskId) => {
+        if (!this.deps.readOutcome) throw new Error('Saved task results are unavailable here.');
+        return this.deps.readOutcome(taskId);
+      });
+    } catch (error) {
+      const note = `Cannot attach task context: ${(error as Error).message} No agent was called.`;
+      return { text: note, note, callsUsed: 0 };
+    }
     if (Array.isArray(input.agent)) {
       const recipients = [...new Set(input.agent)];
       const outcomes: TaskOutcome[] = [];
@@ -99,7 +111,7 @@ Example: {"action":"call","tool":"agent","input":{"agent":"${first}","kind":"cha
         if (ctx.signal.aborted) break;
         callsUsed++;
         try {
-          const result = await this.runSingle({ ...input, agent }, ctx);
+          const result = await this.runSingle({ ...input, agent }, ctx, sources);
           if (result.outcome) outcomes.push(result.outcome);
           replies.push(result.text);
         } catch (err) {
@@ -116,15 +128,16 @@ Example: {"action":"call","tool":"agent","input":{"agent":"${first}","kind":"cha
         halt: ctx.signal.aborted,
       };
     }
-    return this.runSingle({ ...input, agent: input.agent }, ctx);
+    return this.runSingle({ ...input, agent: input.agent }, ctx, sources);
   }
 
-  private async runSingle(input: AgentInput & { agent: string }, ctx: ToolContext): Promise<ToolResult> {
+  private async runSingle(input: AgentInput & { agent: string }, ctx: ToolContext, sources: TaskOutcome[]): Promise<ToolResult> {
     const outcome = await this.deps.delegator.delegate(
       {
         agentId: input.agent,
         kind: input.kind,
-        prompt: [input.prompt, this.deps.workingContext?.()].filter(Boolean).join('\n\n'),
+        prompt: input.prompt,
+        ...(sources.length ? { context: sources } : {}),
         title: input.description,
         model: input.model && !/^(default|none|null)$/i.test(input.model) ? input.model : undefined,
       },
@@ -142,20 +155,12 @@ Example: {"action":"call","tool":"agent","input":{"agent":"${first}","kind":"cha
   }
 
   /**
-   * What the planner is handed when a task ends: the head, the report's
-   * summary and open items, and — unless the config asks for the whole reply
-   * — a reminder that the user has already seen the rest. Written down as it
-   * goes out, against what the agent actually said, so `/cost` can say what
-   * the report contract saved.
+   * The full reply is evidence for the next decision, even when a worker also
+   * supplied a structured report. A status summary cannot replace its argument.
    */
   private relay(outcome: TaskOutcome): string {
-    const { config, transcript, workspace } = this.deps;
-    const relayMessage = config.orchestration.relayAnswers;
-    const lines = [renderOutcome(outcome, workspace.dir, { relayMessage })];
-    if (!relayMessage && outcome.message) {
-      lines.push(`(${outcome.agentId}'s full reply is visible to the user; use task_result for details missing from this report.)`);
-    }
-    const result = lines.join('\n');
+    const { transcript, workspace } = this.deps;
+    const result = renderOutcome(outcome, workspace.dir, { relayMessage: true });
     transcript.append({
       type: 'usage',
       purpose: 'task',

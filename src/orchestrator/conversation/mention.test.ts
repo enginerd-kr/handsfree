@@ -191,6 +191,13 @@ describe('mentionSpans', () => {
 });
 
 describe('parseMention', () => {
+  it('leaves multiple named participants to the orchestrator', () => {
+    expect(parseMention('@codex @claude 서로 토론해.', AGENTS)).toBeUndefined();
+    expect(parseMention('@claude:opus[1m] 답변을 @codex에게 검토시켜', AGENTS)).toBeUndefined();
+    expect(parseMention('@claude explain the @nobody literal', AGENTS))
+      .toEqual({ agent: 'claude', task: 'explain the @nobody literal' });
+  });
+
   it('splits a leading mention into recipient and task', () => {
     expect(parseMention('@gemini fix the tests', AGENTS)).toEqual({
       agent: 'gemini',

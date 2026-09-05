@@ -19,7 +19,7 @@ describe('execution without configured limits', () => {
     });
     for (const key of ['budget', 'limits', 'policy']) expect(config).not.toHaveProperty(key);
     expect(config.execution).toEqual({ routing: 'auto' });
-    expect(Object.keys(config.orchestration).sort()).toEqual(['acp', 'local', 'provider', 'relayAnswers']);
+    expect(Object.keys(config.orchestration).sort()).toEqual(['acp', 'local', 'provider']);
     expect(config.orchestration.local).not.toHaveProperty('timeoutMs');
     expect(config.orchestration.local).not.toHaveProperty('maxOutputTokens');
     expect(config.orchestration.acp).not.toHaveProperty('timeoutMs');
@@ -43,7 +43,7 @@ describe('execution without configured limits', () => {
     ] })]));
     open = harness({ agents });
     const executor = open.runtime.executor;
-    const request = { task: 'Check', kind: 'answer' as const, constraints: [], acceptanceCriteria: [], files: [], resolves: [] };
+    const request = { task: 'Check', kind: 'answer' as const, constraints: [], acceptanceCriteria: [], files: [], contextFrom: [], resolves: [] };
     expect(executor.candidates(request)).toHaveLength(12);
     let active = 0, peak = 0;
     open.runtime.transcript.on('record', (r) => {

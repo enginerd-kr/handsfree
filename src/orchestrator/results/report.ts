@@ -164,7 +164,7 @@ export function oneLine(text: string): string {
  * The format, as the agent is told it. Kept in one place so the spec the
  * agent reads and the parser that reads the agent never drift apart.
  */
-export const REPORT_FORMAT = `End every turn with a REPORT block, in exactly this shape, after everything else you say:
+export const REPORT_FORMAT = `For this task, end your turn with a REPORT block, in exactly this shape, after everything else you say:
 REPORT
 outcome: done | partial | blocked
 summary: one or two sentences — what changed and what you verified
@@ -175,4 +175,3 @@ verify: the command that checks the work, or how to check it
 Include every relevant decision and open item. Leave a field empty rather than padding it.`;
 
 /** The one-line reminder on every brief after the first. */
-export const REPORT_REMINDER = 'End your turn with a REPORT block.';

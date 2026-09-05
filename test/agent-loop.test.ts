@@ -13,16 +13,15 @@ const replies = (h: Harness) => h.runtime.transcript.all().filter((r) => r.type 
 const source = (messages: ChatMessage[]) => Number(/CURRENT REQUEST SOURCE: record (\d+)/.exec(messages.find((m) => m.pinned)?.content ?? '')?.[1]);
 
 describe('analyze, execute, review loop', () => {
-  it('checkpoints each review automatically and rejects a final answer that still promises unfinished work', async () => {
+  it('records orchestrator reviews without completing their items after worker execution', async () => {
     const claude = fakeAgent({ script: () => [{ do: 'say', text: 'Compatibility reviewed.' }] });
     const gemini = fakeAgent({ script: () => [{ do: 'say', text: 'Verification items prepared.' }] });
     const review: LoopReview = { objective: 'Review compatibility, then prepare verification.', constraints: ['Preserve --legacy.'],
       completed: [], remaining: ['Review compatibility', 'Prepare verification'], next: 0, blocker: '' };
     const checked = (state: typeof review, action: string) => JSON.stringify({ review: state, ...JSON.parse(action) });
     const llm = scriptedModel([
-      checked(review, delegate('claude', 'Review compatibility.')),
-      checked({ ...review, completed: ['Compatibility reviewed'], remaining: ['Prepare verification'], next: -1 }, answer('I will ask gemini next.')),
-      checked({ ...review, completed: ['Compatibility reviewed'], remaining: ['Prepare verification'], next: 0 }, delegate('gemini', 'Prepare verification.')),
+      checked(review, delegate('claude', 'Review compatibility. Preserve --legacy.')),
+      checked({ ...review, completed: ['Compatibility reviewed'], remaining: ['Prepare verification'], next: 0 }, delegate('gemini', 'Prepare verification. Preserve --legacy.')),
       checked({ ...review, completed: ['Compatibility reviewed', 'Verification prepared'], remaining: [], next: -1 }, answer('Both steps are complete.')),
     ]);
     const h = harness({ agents: { claude, gemini }, llm });
@@ -30,11 +29,12 @@ describe('analyze, execute, review loop', () => {
     await h.runtime.conversation.send('Review compatibility and prepare verification. Preserve --legacy.');
     expect(claude.prompts[0]).toContain('Preserve --legacy.');
     expect(gemini.prompts[0]).toContain('Preserve --legacy.');
-    expect(llm.seen[2]?.at(-1)?.content).toContain('Work remains');
-    expect(replies(h)).not.toContain('I will ask gemini next.');
+    const stateAfterWorker = llm.seen[1]?.find((message) => message.pinned)?.content ?? '';
+    expect(stateAfterWorker).toContain('"completed":[]');
+    expect(stateAfterWorker).toContain('"remaining":["Review compatibility","Prepare verification"]');
     const checkpoints = h.runtime.transcript.all().filter((r) => r.type === 'context' && r.entry.event === 'review');
     expect(checkpoints).toHaveLength(3);
-    expect(h.runtime.transcript.all().filter((r) => r.type === 'context' && r.entry.event === 'complete')).toHaveLength(2);
+    expect(h.runtime.transcript.all().filter((r) => r.type === 'context' && r.entry.event === 'complete')).toHaveLength(0);
     expect(replies(h).at(-1)).toBe('Both steps are complete.');
   });
 
@@ -45,17 +45,17 @@ describe('analyze, execute, review loop', () => {
     expect(replies(h)).toEqual(['The answer is 4.']);
   });
 
-  it('does not execute an already completed work item again when a model repeats a stale review', async () => {
+  it('allows another worker call for the same review item when the orchestrator asks for it', async () => {
     const worker = fakeAgent({ script: () => [{ do: 'say', text: 'Reviewed.' }] });
-    const review = { objective: 'Review once', constraints: [], completed: [], remaining: ['Review'], next: 0, blocker: '' };
+    const review = { objective: 'Review twice', constraints: [], completed: [], remaining: ['Review'], next: 0, blocker: '' };
     const action = JSON.stringify({ review, action: 'call', tool: 'agent', input: { agent: 'claude', prompt: 'Review.', kind: 'answer' } });
-    const llm = scriptedModel([action, action, JSON.stringify({ review: { ...review, completed: ['Review'], remaining: [], next: -1 }, action: 'answer', message: 'Reviewed once.' })]);
+    const llm = scriptedModel([action, action, JSON.stringify({ review: { ...review, completed: ['Review'], remaining: [], next: -1 }, action: 'answer', message: 'Reviewed twice.' })]);
     const h = harness({ agents: { claude: worker }, llm });
     opened.push(h);
-    await h.runtime.conversation.send('Review once.');
-    expect(worker.prompts).toHaveLength(1);
-    expect(llm.seen[2]?.at(-1)?.content).toContain('already executed successfully');
-    expect(replies(h).at(-1)).toBe('Reviewed once.');
+    await h.runtime.conversation.send('Review twice.');
+    expect(worker.prompts).toHaveLength(2);
+    expect(llm.seen[2]?.at(-1)?.content).toContain('Task 2');
+    expect(replies(h).at(-1)).toBe('Reviewed twice.');
   });
 
   it('does its own intermediate work, preserves constraints in briefs, and reviews a failed worker before choosing another', async () => {
@@ -66,9 +66,9 @@ describe('analyze, execute, review loop', () => {
       seen.push([...messages]);
       switch (seen.length) {
         case 1: return call('context', { operation: 'save', key: 'compatibility', kind: 'constraint', text: 'Keep --legacy compatible.', sources: [source(messages)] });
-        case 2: return delegate('failed', 'Review flag compatibility.');
+        case 2: return delegate('failed', 'Review flag compatibility. Keep --legacy compatible.');
         case 3: return call('context', { operation: 'save', key: 'review', kind: 'finding', text: 'The first review failed; another worker is needed.', sources: [source(messages)] });
-        case 4: return delegate('healthy', 'Review flag compatibility.');
+        case 4: return delegate('healthy', 'Review flag compatibility. Keep --legacy compatible.');
         default: return answer('The replacement review confirmed compatibility.');
       }
     } };

@@ -15,7 +15,7 @@ function failure(error: unknown): CallToolResult {
 export function createMcpServer(runtime: Runtime): McpServer {
   const server = new McpServer({ name: 'handsfree', version: VERSION });
   server.registerTool('delegate', {
-    description: 'Execute one task. Specify agent to skip routing. Reuse requestId to avoid duplicate execution. Detailed output is fetched only when needed.',
+    description: 'Execute one task and return its complete reply with status and report metadata. Specify agent to skip routing. Select contextFrom task ids to attach earlier replies; other agents’ results are not attached automatically. Reuse requestId to avoid duplicate execution.',
     inputSchema: TaskRequestSchema,
     outputSchema: TaskResultSchema,
   }, async (request, extra) => {
@@ -28,7 +28,7 @@ export function createMcpServer(runtime: Runtime): McpServer {
     } catch (error) { return failure(error); }
   });
   server.registerTool('batch', {
-    description: 'Execute a dependency graph. Independent inspections may overlap; changes run exclusively. Failed prerequisites block dependents. Identical sibling requests share one execution.',
+    description: 'Execute a dependency graph and return complete worker replies. Explicit dependsOn edges attach prerequisite replies as source context. Independent inspections may overlap; changes run exclusively. Failed prerequisites block dependents. Identical sibling requests share one execution.',
     inputSchema: BatchRequestSchema,
   }, async (request, extra) => {
     try {

@@ -63,7 +63,8 @@ export function tasksSince(
     const delegation = slice[0];
     if (delegation?.type !== 'delegation') continue;
     const outcome = summarise(record.taskId, record.agentId, delegation.task, record.stopReason,
-      taskRecords(slice, delegation), record.at - start.startedAt, options);
+      taskRecords(slice, delegation), record.at - start.startedAt,
+      { ...options, kind: delegation.kind, contextFrom: delegation.contextFrom });
     if (record.status) outcome.status = record.status;
     tasks.push({
       seq: record.seq,
@@ -85,12 +86,14 @@ export function tasksSince(
 export function renderRunState(
   tasks: readonly LedgerTask[],
   workspaceDir: string,
+  options: { repliesBefore?: number } = {},
 ): string {
   if (tasks.length === 0) return '';
   const lines: string[] = [];
-  for (const { outcome } of tasks) {
+  for (const { outcome, seq } of tasks) {
     lines.push(renderOutcomeHead(outcome, workspaceDir));
     lines.push(`  task: ${oneLine(outcome.task)}`);
+    if (outcome.contextFrom?.length) lines.push(`  context from tasks: ${outcome.contextFrom.join(', ')}`);
     // The agent's own word on it, where it differs from the protocol's: a turn
     // that ended cleanly but says "blocked" is one the planner should not
     // build on as if it were done.
@@ -103,7 +106,11 @@ export function renderRunState(
     // the user's line and the planner's closing sentence once it is over, so
     // without this a "yes" to "want to hear more?" lands on a planner that
     // no longer knows what there was more of.
-    if (report.summary) lines.push(`  said: ${oneLine(report.summary)}`);
+    // Replies from the active turn already appear in tool results. Keep the
+    // index useful without repeating those answers inside the run state.
+    if (report.summary && (options.repliesBefore === undefined || seq < options.repliesBefore)) {
+      lines.push(`  said: ${oneLine(report.summary)}`);
+    }
   }
   const changed = new Set<string>();
   for (const { outcome } of tasks) {
@@ -164,72 +171,4 @@ export function renderAgentRecord(record: AgentRecord | undefined, workspaceDir:
   }
   if (record.trouble) parts.push('one of them did not finish');
   return parts.join('; ');
-}
-
-export interface HandoffInput {
-  query?: string;
-  tasks: readonly LedgerTask[];
-  /** Who is about to be briefed. Its own tasks are left out: its session remembers them. */
-  agentId: string;
-  /**
-   * Whether the agent's own tasks go in too — for a session that is new and
-   * remembers nothing, which is when "since your last task" has to mean
-   * "since the run began".
-   */
-  includeOwn: boolean;
-  workspaceDir: string;
-  /**
-   * What each agent is for, as the config has it. A handoff names the role the
-   * first time an agent appears in it: "gemini changed the tests" is a fact
-   * about a stranger until you know what gemini is for.
-   */
-  roleOf?: (agentId: string) => string;
-}
-
-/**
- * What the other agents did while this one was not looking, for the foot of
- * its brief: the files each changed, what it said it did, what it decided and
- * what it left open — in its own words rather than the planner's. Paths and
- * not contents — the agent can read a file, and reading it is cheaper and
- * truer than being told.
- */
-export function renderHandoff(input: HandoffInput): string {
-  const relevant = input.tasks.filter(({ outcome, resolved }) => {
-    if (resolved) return false;
-    if (!input.includeOwn && outcome.agentId === input.agentId) return false;
-    return (
-      outcome.changed.length > 0 ||
-      outcome.report.summary !== '' ||
-      outcome.report.open.length > 0 ||
-      outcome.status !== 'done'
-    );
-  });
-  if (relevant.length === 0) return '';
-
-  const entries = relevant.map(({ outcome }) => ({ outcome, lines: renderEntry(outcome, input) }));
-  const lines = ['Since your last task:'];
-  const introduced = new Set<string>();
-  for (let at = 0; at < entries.length; at++) {
-    const entry = entries[at]!;
-    const { agentId } = entry.outcome;
-    const role = introduced.has(agentId) ? '' : input.roleOf?.(agentId) ?? '';
-    introduced.add(agentId);
-    const who = `${agentId}${role ? ` (${role})` : ''}`;
-    lines.push(entry.lines[0]!.replace('{who}', who), ...entry.lines.slice(1));
-  }
-  return lines.join('\n');
-}
-
-function renderEntry(outcome: TaskOutcome, input: HandoffInput): string[] {
-  const files = outcome.changed.map((file) => relative(file, input.workspaceDir));
-  const did = files.length > 0 ? `changed ${files.join(', ')}` : 'changed nothing';
-  const status = outcome.status === 'done' ? '' : ` — ${outcome.status}`;
-  const lines = [`- {who}, task ${outcome.taskId}: ${did}${status}`];
-  const { report } = outcome;
-  if (report.outcome && report.outcome !== 'done') lines.push(`  outcome: ${report.outcome}`);
-  if (report.summary) lines.push(`  did: ${oneLine(report.summary)}`);
-  for (const item of report.decided) lines.push(`  decided: ${item}`);
-  for (const item of report.open) lines.push(`  open: ${item}`);
-  if (report.verify) lines.push(`  verify: ${report.verify}`);
-  return lines;
 }

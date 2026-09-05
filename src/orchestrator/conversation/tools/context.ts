@@ -34,7 +34,7 @@ Source ids are the record numbers in context. Keep constraints, decisions and re
           if (ctx.turnId === undefined) return { text: 'Context updates require an active conversation turn.' };
           const { operation: _, ...note } = input;
           const seq = this.context.save(ctx.turnId, note);
-          return { text: `Saved ${input.key} as record ${seq}${input.active ? '' : ' (resolved)'}.`, completedWork: input.kind === 'finding' && input.active };
+          return { text: `Saved ${input.key} as record ${seq}${input.active ? '' : ' (resolved)'}.` };
         }
       }
     } catch (err) {

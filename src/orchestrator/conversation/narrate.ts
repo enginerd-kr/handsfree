@@ -41,12 +41,13 @@ export async function narrate(
   if (!llm || signal?.aborted) return { text: ledger, ledger: true };
 
   try {
+    const evidence = [...input.outcomes.map((outcome) => renderOutcome(outcome, input.workspaceDir, { relayMessage: true })), ...input.notes].join('\n\n');
     const reply = await llm.chat(
       [
         { role: 'system', content: SYSTEM },
         {
           role: 'user',
-          content: `The user asked:\n${input.userMessage}\n\nHere is exactly what happened:\n\n${ledger}\n\nReport back to the user.`,
+          content: `The user asked:\n${input.userMessage}\n\nHere is exactly what happened:\n\n${evidence}\n\nReport back to the user.`,
         },
       ],
       { signal, onDelta: onDelta ? proseGate(onDelta) : undefined },

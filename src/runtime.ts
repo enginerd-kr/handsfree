@@ -27,11 +27,11 @@ const PRUNE_DELAY_MS = 5_000;
 export interface RuntimeOptions {
   permissionMode?: PermissionMode;
   config: Config;
-  /** The files the settings were read from, strongest first, for `/config` to name. */
+  /** The user settings source, for `/config` to name. */
   configSources?: readonly ConfigLocation[];
   /**
-   * Where project files are looked up — the config's directory and the command
-   * directory beside it. The workspace is never this: it is the agents' jail.
+   * Where project command files are looked up. Configuration is user-wide;
+   * the workspace is the agents' jail and may be a separate directory.
    */
   cwd?: string;
   /** Reuse an existing run directory instead of starting a new one. */

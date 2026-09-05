@@ -30,6 +30,7 @@ export type CommandEffect =
   | { do: 'say'; text: string; lines?: string[] }
   /** Forget the conversation, and take the screen with it. */
   | { do: 'clear' }
+  | { do: 'models' }
   | { do: 'quit' };
 
 /**
@@ -70,7 +71,7 @@ export interface CommandHost {
   /** Who is asking, as the audit trail and the approval box will name them. */
   agentId: string;
   config: Config;
-  /** The files the settings were read from, strongest first. Empty when there were none. */
+  /** The user settings source. Empty when built-in defaults were used. */
   configSources: readonly ConfigLocation[];
   workspace: Workspace;
   jail: Jail;

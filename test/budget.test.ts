@@ -36,24 +36,8 @@ decided: - kept --legacy as a warning rather than removing it
 open: - e2e/stage.ts may still use the old signature
 verify: pnpm test`;
 
-/**
- * What the planner reads across a run, in characters, on a fixed scenario:
- * two agents, three tasks, four turns, agents that write at length. The
- * figures are the ones the context-management work is judged by, and the
- * bounds are ceilings that have to hold rather than snapshots that have to
- * match.
- *
- * Two figures, because they move for different reasons. The system prompt is
- * sent on every call and is the bulk of each one; what matters about it is
- * that it never changes, since an endpoint that caches by prefix then pays for
- * it once. Everything after it is what a call actually costs anew, and that is
- * the number the report contract and the folded turns bring down: before
- * them, the same scenario put 29,191 characters through the planner, with a
- * system prompt that changed every turn and results that carried the agents'
- * whole replies.
- */
 describe('planner context budget', () => {
-  it('keeps the system prompt fixed and everything after it small', async () => {
+  it('keeps instructions stable, full active replies available, and finished exchanges folded', async () => {
     let edited = '';
     const claude = fakeAgent({
       script: () => [
@@ -92,21 +76,13 @@ describe('planner context budget', () => {
     expect(system.length).toBeGreaterThan(0);
     for (const call of llm.seen) expect(call[0]?.content).toBe(system);
 
-    const beyond = llm.seen.reduce(
-      (total, messages) =>
-        total + messages.slice(1).reduce((sum, message) => sum + message.content.length, 0),
-      0,
-    );
-    const total = beyond + system.length * llm.seen.length;
-    // Written down so the figures are in the test output, not only the bounds.
-    console.info(
-      `planner input across the run: ${total} chars over ${llm.seen.length} calls; ` +
-        `${system.length} of each is the fixed system prompt, ${beyond} chars in all came after it`,
-    );
-    // Fresh state now includes source addresses on each step, while full
-    // reports and old tool exchanges remain outside the working window.
-    expect(beyond).toBeLessThan(7_000);
-    // The agents said this much; none of it reached the planner verbatim.
-    expect(JSON.stringify(llm.seen)).not.toContain('I looked through the parser');
+    // Actual evidence remains available during the turn that requested it.
+    expect(llm.seen[1]?.at(-1)?.content).toContain(ACCOUNT);
+    expect(llm.seen[2]?.at(-1)?.content).toContain(ACCOUNT);
+    // Later turns retain result addresses and report summaries, while the
+    // complete original is still available through task_result.
+    expect(JSON.stringify(llm.seen[5])).not.toContain(ACCOUNT);
+    expect(JSON.stringify(llm.seen[5])).toContain('task 1: record');
+    expect(h.runtime.executor.readOutcome(1).message).toContain(ACCOUNT);
   });
 });

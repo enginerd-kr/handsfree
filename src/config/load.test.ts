@@ -2,249 +2,198 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { agentsConfigPath, CONFIG_FILENAME, loadConfig } from './load.js';
-import { agentRole } from './schema.js';
+import { configPath, loadConfig, updateConfig } from './load.js';
+import { modelDefaults, saveModelDefaults } from './models.js';
+import { ConfigSchema } from './schema.js';
 
 const made: string[] = [];
+afterEach(() => { for (const dir of made.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
 
-afterEach(() => {
-  for (const dir of made.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
-});
-
-/** A project directory and a home directory, neither of them the machine's own. */
-function layout(files: { project?: unknown; user?: unknown; agentRoles?: unknown }): { cwd: string; home: string } {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'handsfree-config-'));
-  made.push(root);
-  const cwd = path.join(root, 'project');
-  const home = path.join(root, 'home');
+function layout(raw?: unknown) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'handsfree-config-'));
+  made.push(home);
+  const cwd = path.join(home, 'project');
   fs.mkdirSync(cwd);
-  fs.mkdirSync(path.join(home, '.handsfree'), { recursive: true });
-  if (files.project !== undefined) {
-    fs.writeFileSync(path.join(cwd, CONFIG_FILENAME), JSON.stringify(files.project));
+  const file = configPath(home);
+  if (raw !== undefined) {
+    fs.mkdirSync(path.dirname(file));
+    fs.writeFileSync(file, JSON.stringify(raw));
   }
-  if (files.user !== undefined) {
-    fs.writeFileSync(
-      path.join(home, '.handsfree', 'config.json'),
-      JSON.stringify(files.user),
-    );
-  }
-  if (files.agentRoles !== undefined) {
-    fs.mkdirSync(path.dirname(agentsConfigPath(home)), { recursive: true });
-    fs.writeFileSync(agentsConfigPath(home), JSON.stringify(files.agentRoles));
-  }
-  return { cwd, home };
+  return { cwd, home, file };
 }
 
-describe('standalone agent roles', () => {
-  it('loads ~/.handsfree/agents.json without requiring launch profiles', () => {
-    const { cwd, home } = layout({ agentRoles: { codex: '테스트 작성, 버그 수정, 리팩터링' } });
-    const { config, sources } = loadConfig(cwd, home);
-    expect(agentRole(config, 'codex')).toBe('테스트 작성, 버그 수정, 리팩터링');
+describe('user settings', () => {
+  it('uses ~/.handsfree/config.json from every project and ignores both old paths', () => {
+    const { cwd, home, file } = layout({ orchestration: { local: { model: 'global' } } });
+    fs.writeFileSync(path.join(cwd, 'handsfree.config.json'), '{ invalid legacy project config');
+    fs.mkdirSync(path.join(home, '.config', 'handsfree'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.config', 'handsfree', 'config.json'), '{ invalid legacy user config');
+    for (const project of [cwd, path.join(home, 'another-project')]) {
+      const loaded = loadConfig(project, home);
+      expect(loaded.config.orchestration.local.model).toBe('global');
+      expect(loaded.sources).toEqual([{ file, scope: 'user' }]);
+    }
+  });
+
+  it('uses defaults without creating a file when the new file is absent', () => {
+    const { cwd, home, file } = layout();
+    fs.writeFileSync(path.join(cwd, 'handsfree.config.json'), JSON.stringify({ orchestration: { provider: 'acp' } }));
+    const loaded = loadConfig(cwd, home);
+    expect(loaded.sources).toEqual([]);
+    expect(loaded.config.workspaceRoot).toBe(path.join(home, '.handsfree'));
+    expect(loaded.config.orchestration.provider).toBe('local');
+    expect(fs.existsSync(file)).toBe(false);
+  });
+
+  it.each([[], null, 12])('rejects non-object settings: %s', (raw) => {
+    const { cwd, home } = layout(raw);
+    expect(() => loadConfig(cwd, home)).toThrow('must hold a JSON object');
+  });
+
+  it('names the new file in parse and schema errors', () => {
+    const { cwd, home, file } = layout({ orchestration: { provider: 'unknown' } });
+    expect(() => loadConfig(cwd, home)).toThrow(`Invalid configuration in ${file}`);
+    fs.writeFileSync(file, '{ nope');
+    expect(() => loadConfig(cwd, home)).toThrow(`${file} is not valid JSON`);
+  });
+
+  it('retains legacy llm fields when updating the new file', () => {
+    const { cwd, home } = layout({ llm: { model: 'old', baseURL: 'http://localhost:9999/v1' } });
+    const before = modelDefaults(loadConfig(cwd, home).config);
+    saveModelDefaults(before, { ...before, local: 'new' }, home);
+    const config = loadConfig(cwd, home).config;
+    expect(config.orchestration.local.model).toBe('new');
+    expect(config.orchestration.local.baseURL).toBe('http://localhost:9999/v1');
+  });
+});
+
+describe('built-in agents', () => {
+  it('fills in the default profiles around whatever the file names', () => {
+    const { cwd, home } = layout({ agents: { codex: { model: 'pinned', enabled: false }, custom: { command: 'other' } } });
+    const { agents } = loadConfig(cwd, home).config;
+    expect(Object.keys(agents).sort()).toEqual(['claude', 'codex', 'custom', 'gemini']);
+    // A built-in entry is a delta: what it says wins, the rest is inherited.
+    expect(agents.codex).toMatchObject({
+      command: 'npx', args: ['-y', '@agentclientprotocol/codex-acp'],
+      note: 'methodical coding agent, good at tests and refactors', model: 'pinned', enabled: false,
+    });
+    expect(agents.claude).toEqual(ConfigSchema.parse({}).agents.claude);
+    expect(agents.custom).toMatchObject({ command: 'other', args: [], enabled: true });
+  });
+
+  it('takes the launch line whole: naming the command drops the default arguments', () => {
+    const { cwd, home } = layout({ agents: { gemini: { command: 'gemini-nightly' } } });
+    const gemini = loadConfig(cwd, home).config.agents.gemini;
+    expect(gemini).toMatchObject({ command: 'gemini-nightly', args: [], note: 'fast, good at bulk text and single-file work' });
+  });
+
+  it('refuses arguments without a command, even for a built-in agent', () => {
+    const { cwd, home, file } = layout({ agents: { claude: { args: ['--acp'] } } });
+    expect(() => loadConfig(cwd, home)).toThrow(`Invalid configuration in ${file}`);
+    expect(() => loadConfig(cwd, home)).toThrow('agents.claude.command');
+  });
+
+  it('requires a command for an agent the defaults do not know', () => {
+    const { cwd, home } = layout({ agents: { custom: { model: 'x' } } });
+    expect(() => loadConfig(cwd, home)).toThrow('agents.custom.command');
+  });
+
+  it('leaves the schema to judge an entry that is not an object', () => {
+    const { cwd, home } = layout({ agents: { codex: 'npx codex-acp' } });
+    expect(() => loadConfig(cwd, home)).toThrow('agents.codex');
+  });
+});
+
+describe('saving model defaults', () => {
+  it('ignores legacy native-tool switches and removes them on the next settings save', () => {
+    const { cwd, home, file } = layout({
+      agents: { codex: { command: 'codex-acp', nativeTools: 'deny', model: 'existing-model' } },
+    });
+    const config = loadConfig(cwd, home).config;
+    expect(config.agents.codex).not.toHaveProperty('nativeTools');
+    const before = modelDefaults(config);
+    saveModelDefaults(before, { ...before, agents: { codex: 'new-model' } }, home);
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).agents.codex)
+      .toEqual({ command: 'codex-acp', model: 'new-model' });
+  });
+
+  it('creates private settings holding only the changed models, and reloads all four', () => {
+    const { cwd, home, file } = layout();
+    const before = modelDefaults(loadConfig(cwd, home).config);
+    saveModelDefaults(before, {
+      ...before, provider: 'acp', agent: 'claude', acp: 'planner-test',
+      agents: { claude: 'claude-test', codex: 'codex-test', gemini: 'gemini-test' },
+    }, home);
+    // No launch line, note or flag is copied in: the defaults stay the defaults.
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({
+      orchestration: { provider: 'acp', acp: { model: 'planner-test' } },
+      agents: { claude: { model: 'claude-test' }, codex: { model: 'codex-test' }, gemini: { model: 'gemini-test' } },
+    });
+    const config = loadConfig(cwd, home).config;
+    expect(config.orchestration.acp.model).toBe('planner-test');
+    expect(config.orchestration.provider).toBe('acp');
+    expect(config.agents.claude?.model).toBe('claude-test');
+    expect(config.agents.codex?.model).toBe('codex-test');
+    expect(config.agents.gemini?.model).toBe('gemini-test');
     expect(config.agents.codex?.command).toBe('npx');
-    expect(agentRole(config, 'gemini')).toBe('fast, good at bulk text and single-file work');
-    expect(sources).toEqual([{ file: path.join(home, '.handsfree', 'agents.json'), scope: 'user' }]);
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    expect(fs.readdirSync(path.dirname(file))).toEqual(['config.json']);
   });
 
-  it('layers project roles over standalone roles over global roles by agent name', () => {
-    const { cwd, home } = layout({
-      user: { roles: { claude: 'global claude', codex: 'global codex', gemini: 'global gemini' } },
-      agentRoles: { claude: 'personal claude', codex: 'personal codex' },
-      project: { roles: { claude: 'project claude' } },
-    });
-    const { config, sources } = loadConfig(cwd, home);
-    expect(config.roles).toEqual({ claude: 'project claude', codex: 'personal codex', gemini: 'global gemini' });
-    expect(sources.map((source) => source.file)).toEqual([
-      path.join(cwd, CONFIG_FILENAME), agentsConfigPath(home),
-      path.join(home, '.handsfree', 'config.json'),
-    ]);
+  it('drops an entry that clearing its model leaves empty', () => {
+    const { cwd, home, file } = layout({ cleanupPeriodDays: 7 });
+    const before = modelDefaults(loadConfig(cwd, home).config);
+    saveModelDefaults(before, { ...before, agents: { ...before.agents, codex: 'test-model' } }, home);
+    const pinned = modelDefaults(loadConfig(cwd, home).config);
+    saveModelDefaults(pinned, { ...pinned, agents: { ...pinned.agents, codex: '' } }, home);
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ cleanupPeriodDays: 7 });
+    expect(loadConfig(cwd, home).config.agents.codex?.model).toBeUndefined();
   });
 
-  it('can describe a custom agent configured in the project', () => {
-    const { cwd, home } = layout({
-      agentRoles: { reviewer: 'Code review and test analysis' },
-      project: { agents: { reviewer: { command: 'review-agent', args: ['--acp'] } } },
-    });
-    const { config } = loadConfig(cwd, home);
-    expect(agentRole(config, 'reviewer')).toBe('Code review and test analysis');
-    expect(config.agents.reviewer?.args).toEqual(['--acp']);
-  });
-
-  it('reports an unknown agent with the source file', () => {
-    const { cwd, home } = layout({ agentRoles: { typo: 'Review' } });
-    expect(() => loadConfig(cwd, home)).toThrow(/agents\.json:[\s\S]*no such agent is configured/);
-  });
-
-  it.each([null, [], { codex: '' }, { codex: 42 }, { codex: { role: 'Review' } }])(
-    'rejects malformed role maps: %j', (agentRoles) => {
-      const { cwd, home } = layout({ agentRoles });
-      expect(() => loadConfig(cwd, home)).toThrow(/agents\.json/);
-    },
-  );
-
-  it('reports invalid JSON in the standalone file', () => {
-    const { cwd, home } = layout({ agentRoles: {} });
-    fs.writeFileSync(agentsConfigPath(home), '{ nope');
-    expect(() => loadConfig(cwd, home)).toThrow(/agents\.json is not valid JSON/);
-  });
-
-  it('keeps defaults when the standalone file is empty', () => {
-    const { cwd, home } = layout({ agentRoles: {} });
-    expect(agentRole(loadConfig(cwd, home).config, 'codex')).toBe(
-      'methodical coding agent, good at tests and refactors',
-    );
-  });
-});
-
-describe('layering', () => {
-  it.each(['user', 'project'] as const)('allows native tools in existing %s profiles that omit the setting', (scope) => {
-    const { cwd, home } = layout({
-      [scope]: { agents: {
-        codex: { command: 'npx', args: ['-y', '@agentclientprotocol/codex-acp'] },
-        custom: { command: 'custom-wrapper' },
-        blocked: { command: 'codex-acp', nativeTools: 'deny' },
-      } },
-    });
-    const { config } = loadConfig(cwd, home);
-    expect(config.agents.codex?.nativeTools).toBe('allow');
-    expect(config.agents.custom?.nativeTools).toBe('allow');
-    expect(config.agents.blocked?.nativeTools).toBe('deny');
-  });
-
-  it('reads the user file when there is no project one', () => {
-    const { cwd, home } = layout({ user: { orchestration: { local: { model: 'mine' } } } });
-    const { config, sources } = loadConfig(cwd, home);
-    expect(config.orchestration.local.model).toBe('mine');
-    expect(sources.map((source) => source.scope)).toEqual(['user']);
-  });
-
-  it('merges a project file over the user one, key by key', () => {
-    const { cwd, home } = layout({
-      user: {
-        orchestration: { local: { baseURL: 'http://localhost:9999/v1', model: 'mine' } },
+  it('keeps unrelated fields, custom profiles, and disk edits made after opening the screen', () => {
+    const raw = {
+      orchestration: { provider: 'acp', acp: { agent: 'claude', model: 'planner' }, relayAnswers: true },
+      agents: {
+        claude: { command: 'custom-launch', args: ['--acp'], env: { SECRET: 'kept' }, model: 'old' },
+        custom: { command: 'other', enabled: false },
       },
-      project: {
-        orchestration: { local: { model: 'theirs' } },
-      },
-    });
-    const { config, sources } = loadConfig(cwd, home);
-    // The project spoke, so it wins the key it named…
-    expect(config.orchestration.local.model).toBe('theirs');
-    // …and everything it stayed quiet about is still the user's.
-    expect(config.orchestration.local.baseURL).toBe('http://localhost:9999/v1');
-    expect(sources.map((source) => source.scope)).toEqual(['project', 'user']);
+      roles: { custom: 'specialist' }, extra: { keep: true },
+    };
+    const { cwd, home, file } = layout(raw);
+    const before = modelDefaults(loadConfig(cwd, home).config);
+    fs.writeFileSync(file, JSON.stringify({ ...raw, cleanupPeriodDays: 7, roles: { custom: 'edited later' } }));
+    saveModelDefaults(before, { ...before, acp: '', agents: { ...before.agents, claude: '' } }, home);
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+    expect(saved.agents.claude).toEqual({ command: 'custom-launch', args: ['--acp'], env: { SECRET: 'kept' } });
+    expect(saved.agents.custom).toEqual(raw.agents.custom);
+    expect(saved.orchestration).toEqual({ provider: 'acp', acp: { agent: 'claude' } });
+    expect(saved.roles.custom).toBe('edited later');
+    expect(saved.cleanupPeriodDays).toBe(7);
+    expect(saved.extra).toEqual({ keep: true });
   });
 
-  it('replaces agent argument arrays rather than combining commands', () => {
-    const { cwd, home } = layout({
-      user: { agents: { local: { command: 'agent', args: ['--old'] } } },
-      project: { agents: { local: { command: 'agent', args: ['--new'] } } },
-    });
-    expect(loadConfig(cwd, home).config.agents.local?.args).toEqual(['--new']);
+  it('keeps the other default agents when only one model is first saved', () => {
+    const { cwd, home, file } = layout();
+    const before = modelDefaults(loadConfig(cwd, home).config);
+    saveModelDefaults(before, { ...before, agents: { ...before.agents, codex: 'test-model' } }, home);
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).agents).toEqual({ codex: { model: 'test-model' } });
+    expect(Object.keys(loadConfig(cwd, home).config.agents).sort()).toEqual(['claude', 'codex', 'gemini']);
   });
 
-  it('takes an agent profile whole, and keeps the ones the project did not name', () => {
-    const { cwd, home } = layout({
-      user: {
-        agents: {
-          gemini: { command: 'gemini', args: ['--experimental-acp', '-m', 'old'], note: 'mine' },
-          codex: { command: 'codex', args: [] },
-        },
-      },
-      project: { agents: { gemini: { command: 'gemini', args: ['--experimental-acp'] } } },
-    });
-    const { config } = loadConfig(cwd, home);
-    // No splicing: the profile is the one the project wrote, not a mixture.
-    expect(config.agents['gemini']?.args).toEqual(['--experimental-acp']);
-    expect(config.agents['gemini']?.note).toBe('');
-    expect(config.agents['codex']?.command).toBe('codex');
+  it('leaves original bytes untouched when validation fails', () => {
+    const { cwd, home, file } = layout({ cleanupPeriodDays: 9 });
+    const original = fs.readFileSync(file, 'utf8');
+    const before = modelDefaults(loadConfig(cwd, home).config);
+    expect(() => saveModelDefaults(before, { ...before, local: ' ' }, home)).toThrow('cannot be empty');
+    expect(() => updateConfig((raw) => { raw.cleanupPeriodDays = -1; }, home)).toThrow('Invalid configuration');
+    expect(fs.readFileSync(file, 'utf8')).toBe(original);
   });
 
-  it('layers roles name by name, where a profile is taken whole', () => {
-    const { cwd, home } = layout({
-      user: { roles: { claude: 'mine', gemini: 'bulk text' } },
-      project: { roles: { claude: 'this checkout only' } },
-    });
-    const { config } = loadConfig(cwd, home);
-    // The project spoke for claude and stayed quiet about gemini, and unlike an
-    // `agents` profile that leaves the user's other line standing.
-    expect(config.roles).toEqual({ claude: 'this checkout only', gemini: 'bulk text' });
-    // …and it did not have to restate the launch line to say it.
-    expect(config.agents['claude']?.command).toBe('npx');
-  });
-
-  it('validates the merged whole, so a layer may be a fragment', () => {
-    const { cwd, home } = layout({
-      user: { agents: { local: { command: 'my-agent' } } },
-      project: { orchestration: { provider: 'acp', acp: { agent: 'local' } } },
-    });
-    const { config } = loadConfig(cwd, home);
-    expect(config.orchestration.provider).toBe('acp');
-    expect(config.orchestration.acp.agent).toBe('local');
-  });
-
-  it('names every file that contributed when the result does not validate', () => {
-    const { cwd, home } = layout({
-      user: { agents: { local: { command: 'my-agent' } } },
-      project: { orchestration: { provider: 'acp', acp: { agent: 'missing' } } },
-    });
-    expect(() => loadConfig(cwd, home)).toThrow(/handsfree\.config\.json over .*config\.json/s);
-  });
-
-  it('falls back to defaults, from nowhere, when neither file exists', () => {
-    const { cwd, home } = layout({});
-    const { config, sources } = loadConfig(cwd, home);
-    expect(sources).toEqual([]);
-    expect(config.orchestration.provider).toBe('local');
-  });
-
-  it('names the file that is not valid JSON', () => {
-    const { cwd, home } = layout({ project: {} });
-    fs.writeFileSync(path.join(cwd, CONFIG_FILENAME), '{ nope');
-    expect(() => loadConfig(cwd, home)).toThrow(/handsfree\.config\.json is not valid JSON/);
-  });
-});
-
-describe('legacy policy resources', () => {
-  it('ignores removed permission and resource configuration', () => {
-    const { cwd, home } = layout({ project: { policy: { exec: { mode: 'deny', timeoutMs: 1 }, decisionTimeoutMs: 1 } } });
-    const { config } = loadConfig(cwd, home);
-    expect(config).not.toHaveProperty('policy');
-    expect(config).not.toHaveProperty('limits');
-    expect(config.execution).not.toHaveProperty('terminal');
-    expect(config.capabilities.terminal).toBe(true);
-  });
-});
-
-describe('legacy llm block', () => {
-  it('is read as orchestration.local', () => {
-    const { cwd, home } = layout({
-      project: {
-        llm: { baseURL: 'http://localhost:9999/v1', model: 'legacy', },
-      },
-    });
-    const { config } = loadConfig(cwd, home);
-    expect(config.orchestration.provider).toBe('local');
-    expect(config.orchestration.local.baseURL).toBe('http://localhost:9999/v1');
-    expect(config.orchestration.local.model).toBe('legacy');
-    expect(config.orchestration).not.toHaveProperty('maxHistoryMessages');
-  });
-
-  it('yields to an orchestration block in the same file', () => {
-    const { cwd, home } = layout({
-      project: { llm: { model: 'legacy' }, orchestration: { provider: 'acp' } },
-    });
-    const { config } = loadConfig(cwd, home);
-    expect(config.orchestration.provider).toBe('acp');
-    expect(config.orchestration.local.model).toBe('google/gemma-3-12b');
-  });
-
-  it('is translated per file, so an old user file layers under a new project one', () => {
-    const { cwd, home } = layout({
-      user: { llm: { baseURL: 'http://localhost:9999/v1', model: 'legacy' } },
-      project: { orchestration: { local: { model: 'current' } } },
-    });
-    const { config } = loadConfig(cwd, home);
-    expect(config.orchestration.local.model).toBe('current');
-    expect(config.orchestration.local.baseURL).toBe('http://localhost:9999/v1');
+  it('reports a write failure without leaving a temporary file', () => {
+    const { home, file } = layout();
+    fs.mkdirSync(path.dirname(file));
+    fs.mkdirSync(file);
+    expect(() => updateConfig(() => {}, home)).toThrow();
+    expect(fs.readdirSync(path.dirname(file))).toEqual(['config.json']);
   });
 });

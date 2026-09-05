@@ -78,6 +78,9 @@ import {
   SPINNER,
 } from './theme.js';
 import { VERSION } from '../../version.js';
+import { configPath, loadConfig } from '../../config/load.js';
+import { saveModelDefaults } from '../../config/models.js';
+import { ModelSettings } from './model-settings.js';
 
 const EXPAND_HINT = 'ctrl+o to expand';
 const COLLAPSE_HINT = 'ctrl+o to collapse';
@@ -303,9 +306,12 @@ function menuLabel(item: MenuItem): string {
   return `:${item.choice.value}`;
 }
 
-export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
+export function App({ runtime, settingsHome }: { runtime: Runtime; settingsHome?: string }): React.JSX.Element {
   const { exit } = useApp();
   const { stdout } = useStdout();
+  const [settings, setSettings] = useState<Config>();
+  const settingsOpen = useRef(false);
+  const closeSettings = () => { settingsOpen.current = false; setSettings(undefined); };
   const [items, setItems] = useState<ViewItem[]>([]);
   const [draft, setDraft] = useState<Draft>({ value: '', cursor: 0 });
   // The draft's synchronous truth. Keys fused into one stdin chunk are all
@@ -873,6 +879,18 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       if (effect.do === 'quit') {
         void runtime.conversation.close();
         exit();
+      } else if (effect.do === 'models') {
+        if (busy || runtime.conversation.isBusy) {
+          runtime.transcript.append({ type: 'note', level: 'info', text: 'Open /models once the current turn finishes.' });
+        } else {
+          try {
+            const loaded = loadConfig(undefined, settingsHome);
+            settingsOpen.current = true;
+            setSettings(loaded.config);
+          } catch (err) {
+            runtime.transcript.append({ type: 'note', level: 'error', text: (err as Error).message });
+          }
+        }
       }
       return;
     }
@@ -897,19 +915,20 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   // one before it — a queue drained all at once would race the conversation,
   // which takes a single turn.
   useEffect(() => {
-    if (busy || queued.length === 0) return;
+    if (busy || settings || queued.length === 0) return;
     const [next, ...rest] = queued;
     setQueued(rest);
     start(next!);
     // `start` is rebuilt every render and is deliberately not a dependency:
     // the queue and whether a turn is running are what decide when one leaves.
-  }, [busy, queued]);
+  }, [busy, queued, settings]);
 
   // A paste comes on its own channel, bracketed by the terminal, so it is
   // known for one: a file's path is the image it names, pages of text are
   // folded to a placeholder, and anything shorter is typed as it is — line
   // breaks included, which typed by hand would each have been an enter.
   usePaste((pasted) => {
+    if (settingsOpen.current && !head.current) return;
     if (ask) {
       // A form's text field takes a paste as typing.
       if (ask.kind !== 'input') return;
@@ -940,6 +959,14 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     // The terminal answering Ink's kitty keyboard query, on its way through
     // the input as well as to Ink: not something anyone typed.
     if (isKittyQueryReply(char)) return;
+    const cursorRow = parseCursorReport(char);
+    if (cursorRow !== undefined) {
+      // The frame fills the window whatever it holds, so the answer minus its
+      // fixed height is the frame's first row — even while an ask is up.
+      frameTop.current = Math.max(0, cursorRow - (rows - 1));
+      return;
+    }
+    if (settingsOpen.current && !head.current) return;
     // Shift+Tab moves the permission mode, from anywhere — a question up on
     // screen included, since the mode is the answer to some of them. It sits
     // above the question block, which takes every other key, and above the
@@ -1165,21 +1192,29 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     // enter it carries, so it submits right where it sits.
     for (const [index, segment] of char.split(/\r\n|[\r\n]/).entries()) {
       if (index > 0) submit(draftRef.current.value);
+      if (settingsOpen.current) break;
       if (segment !== '') insert(segment);
     }
   });
 
-  // Two parts. What is finished is printed once, above, and is the
-  // terminal's from then on: its scrollback holds it, its wheel scrolls it and
-  // its own selection copies it. What can still change is drawn under that
-  // and redrawn in place — and has to fit the window, since a frame taller
-  // than the window is one Ink can only redraw by wiping the screen. So the
-  // live rows are pinned to their end and clipped at the top, until they
-  // settle and move up into the scrollback. The opening screen stands the
-  // full height of the window, greeting on the prompt; from the first row
-  // printed the prompt is at the bottom because what was printed put it
-  // there, every row after pushes the screen up, and the live part never
-  // shrinks on its own, so the prompt never climbs.
+  if (settings && !ask) return <ModelSettings
+    config={settings}
+    file={configPath(settingsHome)}
+    models={Object.fromEntries(Object.keys(settings.agents).map((id) => [id, runtime.pool.models(id)]))}
+    rows={rows}
+    columns={columns}
+    onClose={closeSettings}
+    onSave={(before, next) => {
+      const file = saveModelDefaults(before, next, settingsHome);
+      closeSettings();
+      runtime.transcript.append({ type: 'note', level: 'info', text: 'Model defaults saved. They apply on the next launch.', lines: [file] });
+    }}
+  />;
+
+  // The frame takes the whole window minus the line Ink keeps the cursor on:
+  // the transcript's pane takes every row the header and the prompt leave, so
+  // the prompt stays at the bottom while what is above it scrolls, the way
+  // Claude Code's chat sits under its welcome mark.
   return (
     <>
       <Static key={generation} items={printed}>

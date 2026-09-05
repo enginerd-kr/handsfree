@@ -68,6 +68,9 @@ export type TranscriptBody =
       agentId: string;
       sessionId: string;
       task: string;
+      kind?: 'answer' | 'inspect' | 'change';
+      /** Explicit source task IDs; source replies live in their own records. */
+      contextFrom?: number[];
       /** A few words naming the task, where the planner gave them. */
       title?: string;
       model?: string;
@@ -96,8 +99,8 @@ export type TranscriptBody =
    * characters are counted here and are always present; tokens are the
    * endpoint's own figure and are there only when it gave one. For a `task`
    * the prompt is the brief the agent was sent, the reply is everything it said,
-   * and `relayedChars` is how much of that the planner was then handed — the
-   * gap between the last two is what the report contract saves. `/cost` adds
+   * and `relayedChars` is how much text the tool returned to the planner,
+   * including the reply and its source/status heading. `/cost` adds
    * these up; the file is where to read them one by one. `model` is the
    * planner as the roll call spells it at the time of the call — the model
    * behind it moves mid-run, and the spend has to stay with the one that

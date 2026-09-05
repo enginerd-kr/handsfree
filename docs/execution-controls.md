@@ -1,18 +1,18 @@
 # Execution controls and lightweight routing — 2026-09-05
 
-This is a historical evaluation. Token, output, context and execution limits described below have since been removed; see [current execution behavior](execution.md).
+This is a historical evaluation. Token, output, context and execution limits, including the native-tool execution switch, have since been removed; see [current execution behavior](execution.md).
 
 This follow-up addresses the three issues found in the [three-agent live run](live-use-cases.md): unmediated Codex tools, ACP input overhead exceeding the old task limit, and expensive ACP selection calls.
 
 ## Native execution
 
-Known Codex ACP launches and handshake identities fail before session prompting when their agent profile explicitly sets `nativeTools: "deny"`. Automatic routing excludes known blocked profiles. `doctor` distinguishes a successful handshake from permission to execute. This is a fail-closed compatibility guard for known adapters, not a replacement implementation of Codex's native tools or a certification of unknown adapters.
+At the time of this evaluation, known Codex ACP launches and handshake identities were blocked before prompting unless explicitly enabled. Automatic routing excluded blocked profiles, and `doctor` reported their execution status. That gate has been removed: enabled Codex profiles now run regardless of the former setting.
 
-Native execution tasks take the exclusive workspace lock even for inspections, because host read-only restrictions cannot reliably govern their native operations. All agent profiles default to `nativeTools: "allow"`, including existing and custom profiles that omit the setting, so normal orchestration can run Codex using its adapter's permissions and sandbox. Profiles allowing native tools take the exclusive workspace lock. An explicit `"deny"` still blocks known Codex adapters.
+Known native execution tasks continue to take the exclusive workspace lock even for inspections. Codex uses its adapter's permissions and sandbox.
 
 The installed `codex-acp 1.10.0` applies its mode's approval and sandbox policy to each turn. Its `read-only` mode ID actually selects workspace-write behavior in that version. Simply changing a launch environment variable would not restore host command-by-command enforcement. Official Codex configuration also distinguishes the approval reviewer from sandbox permissions: changing the reviewer does not affect actions already allowed inside the sandbox. [Official configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference)
 
-The original control check, with `nativeTools: "deny"`, attempted an explicit Codex task and confirmed rejection with no launched Codex connection and zero charged tokens.
+The original control check confirmed rejection with no launched Codex connection and zero charged tokens. The current control script checks successful Codex execution.
 
 ## Token efficiency and usage
 
@@ -20,7 +20,7 @@ Handsfree no longer enforces run, task, frontier-token or USD budgets. Token cou
 
 Usage and cost reporting remain available. Candidate ranking uses the 90th percentile of the most recent eight positive worker usage records, bounded below by current context occupancy and task size. `execution.estimatedTaskTokens` supplies the cold-start estimate. Context reuse, concise handoffs and lightweight selection reduce orchestration overhead.
 
-The earlier 32,000- and 128,000-token task ceilings and 4,096-token worker output cap have been removed, along with request/run budget configuration. The historical live findings below retain their original measurements.
+The configuration used for this evaluation selected the 4B router, a 400,000-token run/frontier ceiling, and the task limits above. Current settings live in `~/.handsfree/config.json`, and the former limits have been removed.
 
 ## Selector policy and transport
 

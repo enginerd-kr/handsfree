@@ -319,6 +319,9 @@ export function parseMention(
   const wanted = name.toLowerCase();
   const agent = agents.find((id) => id.toLowerCase() === wanted);
   if (!agent) return undefined;
+  // Several named participants need the orchestrator to choose how their work
+  // relates; a leading name must not claim the whole multi-agent request.
+  if (mentionSpans(trimmed, agents).some((span) => span.agent !== agent)) return undefined;
   const task = gap === -1 ? '' : rest.slice(gap + 1).trim();
   if (task === '') return undefined;
   return model === undefined ? { agent, task } : { agent, model, task };

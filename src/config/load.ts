@@ -1,180 +1,132 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ConfigSchema, RolesSchema, type Config } from './schema.js';
-
-export const CONFIG_FILENAME = 'handsfree.config.json';
-
-/** A standalone agent-id → role map, shared by all projects. */
-export function agentsConfigPath(home = os.homedir()): string {
-  return path.join(home, '.handsfree', 'agents.json');
-}
-
-export type ConfigScope = 'project' | 'user';
+import { randomUUID } from 'node:crypto';
+import { ConfigSchema, DEFAULT_AGENTS, type Config } from './schema.js';
 
 export interface ConfigLocation {
   file: string;
-  scope: ConfigScope;
+  scope: 'user';
 }
 
-/**
- * Where settings are read from, in the order they win — the project directory
- * first, the standalone agent roles second, the user's general config last.
- * All existing files are read: a project file is a
- * layer *over* the user's, not a replacement for it, so a checkout can pin the
- * one thing it cares about (the agent it wants, a terminal timeout) without
- * having to restate the endpoint, the proxy and the timeouts you set once for
- * every project on the machine.
- *
- * `home` is a parameter rather than a call to `os.homedir()` so a test can lay
- * out both halves of the pair without borrowing the machine's own settings.
- */
-export function configSearchPaths(cwd = process.cwd(), home = os.homedir()): ConfigLocation[] {
-  return [
-    { file: path.join(cwd, CONFIG_FILENAME), scope: 'project' },
-    { file: agentsConfigPath(home), scope: 'user' },
-    { file: path.join(home, '.handsfree', 'config.json'), scope: 'user' },
-  ];
+/** One user-wide settings file, shared by every project and entry point. */
+export function configPath(home = os.homedir()): string {
+  return path.join(home, '.handsfree', 'config.json');
 }
 
 export interface LoadedConfig {
   config: Config;
-  /** The files that contributed, strongest first. Empty when defaults were used. */
+  /** Empty when the file does not exist and built-in defaults were used. */
   sources: ConfigLocation[];
 }
 
 export function loadConfig(cwd = process.cwd(), home = os.homedir()): LoadedConfig {
-  const sources: ConfigLocation[] = [];
-  let raw: Record<string, unknown> = {};
-
-  // Folded weakest-first, so each layer is merged onto what the ones below it
-  // had already said, and the project file — read first, applied last — wins.
-  for (const location of [...configSearchPaths(cwd, home)].reverse()) {
-    if (!fs.existsSync(location.file)) continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(fs.readFileSync(location.file, 'utf8'));
-    } catch (err) {
-      throw new Error(`${location.file} is not valid JSON: ${(err as Error).message}`);
-    }
-    if (!isRecord(parsed)) {
-      throw new Error(`${location.file} must hold a JSON object.`);
-    }
-    if (location.file === agentsConfigPath(home)) {
-      const roles = RolesSchema.safeParse(parsed);
-      if (!roles.success) {
-        throw new Error(`Invalid agent roles in ${location.file}:\n${formatIssues(roles.error)}`);
-      }
-      raw = mergeLayer(raw, { roles: roles.data });
-    } else {
-      raw = mergeLayer(raw, migrateLegacyPolicy(asRecord(migrateLegacyLlm(parsed))));
-    }
-    sources.unshift(location);
-  }
-
-  // Validated once, on the merged whole: a layer is a fragment, and a fragment
-  // is allowed to be incomplete in ways the finished settings are not.
-  const parsed = ConfigSchema.safeParse(raw);
-  if (!parsed.success) {
-    throw new Error(`Invalid configuration in ${describeSources(sources)}:\n${formatIssues(parsed.error)}`);
-  }
-
-  const config = parsed.data;
+  const file = configPath(home);
+  const sources: ConfigLocation[] = fs.existsSync(file) ? [{ file, scope: 'user' }] : [];
+  const config = validate(composeConfig(readConfigFile(file)), file);
   config.workspaceRoot = config.workspaceRoot
     ? path.resolve(cwd, config.workspaceRoot)
     : path.join(home, '.handsfree');
   return { config, sources };
 }
 
-/** The files a merged config came from, strongest first, as an error can name them. */
 export function describeSources(sources: readonly ConfigLocation[]): string {
-  if (sources.length === 0) return 'default config';
-  return sources.map((source) => source.file).join(' over ');
+  return sources.length === 0 ? 'default config' : sources.map((source) => source.file).join(', ');
 }
 
 /**
- * One settings layer laid over another. Objects merge key by key, so a project
- * file naming `execution.terminal.timeoutMs` leaves the other terminal settings as the user wrote
- * it; everything else — a scalar, an array — is replaced outright by the
- * stronger layer. Arrays such as `execution.terminal.env` replace the lower
- * layer's list rather than silently adding inherited entries.
+ * Re-read before editing, preserve unrelated keys, and replace only after
+ * validation. `edit` sees the file as stored — deltas, not the composed whole —
+ * so what it writes back is what the user changed and nothing more.
  */
-function mergeLayer(
-  base: Record<string, unknown>,
-  over: Record<string, unknown>,
-  at: string[] = [],
-): Record<string, unknown> {
-  const merged: Record<string, unknown> = { ...base };
-  for (const [key, value] of Object.entries(over)) {
-    const here = [...at, key];
-    const existing = merged[key];
-    merged[key] =
-      isRecord(existing) && isRecord(value) && !isWholeValue(here)
-        ? mergeLayer(existing, value, here)
-        : value;
+export function updateConfig(
+  edit: (raw: Record<string, unknown>, config: Config) => void,
+  home = os.homedir(),
+): string {
+  const file = configPath(home);
+  const raw = readConfigFile(file);
+  edit(raw, validate(composeConfig(raw), file));
+  validate(composeConfig(raw), file);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const temporary = path.join(path.dirname(file), `.config-${randomUUID()}.tmp`);
+  try {
+    fs.writeFileSync(temporary, `${JSON.stringify(raw, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+    fs.renameSync(temporary, file);
+  } finally {
+    fs.rmSync(temporary, { force: true });
   }
-  return merged;
+  return file;
+}
+
+function readConfigFile(file: string): Record<string, unknown> {
+  let text: string;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    throw err;
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch (err) {
+    throw new Error(`${file} is not valid JSON: ${(err as Error).message}`);
+  }
+  if (!isRecord(raw)) throw new Error(`${file} must hold a JSON object.`);
+  // The former native-tool execution switch no longer controls any adapter.
+  // Drop legacy values so a later settings save also removes them from disk.
+  if (isRecord(raw.agents)) {
+    for (const profile of Object.values(raw.agents)) {
+      if (isRecord(profile)) delete profile.nativeTools;
+    }
+  }
+  // Keep the old flat endpoint spelling usable inside the new settings file.
+  if (raw.orchestration === undefined && isRecord(raw.llm)) {
+    raw.orchestration = { provider: 'local', local: raw.llm };
+    delete raw.llm;
+  }
+  // Tool replies always preserve the agent's answer.
+  if (isRecord(raw.orchestration)) delete raw.orchestration.relayAnswers;
+  return raw;
 }
 
 /**
- * A path whose object is taken whole rather than merged into. An agent profile
- * is a launch line — command, arguments and environment agreeing with one
- * another — and half of one file's profile spliced onto half of another's is a
- * command line nobody wrote and nobody checked.
+ * The file stores what the user changed; the built-in profiles are never
+ * copied into it. An entry for a built-in agent is a delta over its default:
+ * the fields it names win and the rest are inherited, so
+ * `{ "codex": { "model": "x" } }` is a complete setting. The launch line is
+ * the one exception — `command` and `args` are a unit, so an entry naming
+ * either supplies both. Half a default's command line joined to half a user's
+ * is a command nobody wrote. Agents the defaults do not know are taken as
+ * written and need a `command` of their own.
  */
-function isWholeValue(at: string[]): boolean {
-  return at.length === 2 && at[0] === 'agents';
-}
-
-/** Preserve resource settings from old files; permission rules are discarded. */
-function migrateLegacyPolicy(raw: Record<string, unknown>): Record<string, unknown> {
-  const { policy, ...rest } = raw;
-  if (!isRecord(policy)) return rest;
-  const migrated: Record<string, unknown> = {};
-  if (isRecord(policy.exec)) {
-    const exec = policy.exec;
-    const terminal = Object.fromEntries(
-      ['timeoutMs', 'outputByteLimit', 'env']
-        .filter((key) => exec[key] !== undefined)
-        .map((key) => [key, exec[key]]),
-    );
-    if (Object.keys(terminal).length) migrated.execution = { terminal };
+export function composeConfig(raw: Record<string, unknown>): Record<string, unknown> {
+  const written = isRecord(raw.agents) ? raw.agents : {};
+  const agents: Record<string, unknown> = {};
+  for (const id of new Set([...Object.keys(DEFAULT_AGENTS), ...Object.keys(written)])) {
+    const base = DEFAULT_AGENTS[id];
+    const delta = written[id];
+    if (delta === undefined) { agents[id] = { ...base, args: [...(base?.args ?? [])] }; continue; }
+    // Not a record, or not a built-in: passed through for the schema to judge.
+    if (!base || !isRecord(delta)) { agents[id] = delta; continue; }
+    const { command, args, ...inherited } = base;
+    const launch = 'command' in delta || 'args' in delta ? {} : { command, args: [...(args ?? [])] };
+    agents[id] = { ...inherited, ...launch, ...delta };
   }
-  if (policy.decisionTimeoutMs !== undefined) {
-    migrated.limits = { decisionTimeoutMs: policy.decisionTimeoutMs };
+  return { ...raw, agents };
+}
+
+function validate(raw: Record<string, unknown>, file: string): Config {
+  const parsed = ConfigSchema.safeParse(raw);
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .map((issue) => `  - ${issue.path.join('.') || '(root)'}: ${issue.message}`)
+      .join('\n');
+    throw new Error(`Invalid configuration in ${file}:\n${issues}`);
   }
-  // Current names win within a file, before project/user layers are combined.
-  return mergeLayer(migrated, rest);
+  return parsed.data;
 }
 
-/**
- * `llm` became `orchestration` when the planner learned to run over ACP as well
- * as against a local endpoint. Old files keep working: the flat block maps onto
- * the local provider it always described. Without this, an old key would be
- * silently dropped and the defaults used in its place.
- *
- * Applied per layer, before merging, so an old user file and a new project file
- * meet each other already speaking the same shape.
- */
-function migrateLegacyLlm(raw: Record<string, unknown>): Record<string, unknown> {
-  const local = raw['llm'];
-  if (raw['orchestration'] !== undefined || !isRecord(local)) return raw;
-  const { llm: _llm, ...rest } = raw;
-  return {
-    ...rest,
-    orchestration: {
-      provider: 'local',
-      local,
-    },
-  };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function formatIssues(error: { issues: { path: PropertyKey[]; message: string }[] }): string {
-  return error.issues
-    .map((issue) => `  - ${issue.path.join('.') || '(root)'}: ${issue.message}`)
-    .join('\n');
 }

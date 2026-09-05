@@ -4,7 +4,7 @@
 
 **A token-aware multi-agent tool for Claude Code, Gemini CLI, and Codex, with a lightweight router and reusable worker sessions.**
 
-A lightweight orchestrator analyzes requests, works directly or selects a worker, reviews the results, and continues until it can report the outcome. Source-linked working memory survives chat trimming and run restarts. Reusable worker sessions and compact handoffs reduce repeated setup.
+A lightweight orchestrator analyzes requests, works directly or selects a worker, reviews the results, and continues until it can report the outcome. Source-linked working memory survives chat trimming and run restarts. Reusable worker sessions reduce repeated setup, and explicit task references carry evidence between workers.
 
 [![ci](https://github.com/enginerd-kr/handsfree/actions/workflows/ci.yml/badge.svg)](https://github.com/enginerd-kr/handsfree/actions/workflows/ci.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -25,7 +25,7 @@ A lightweight orchestrator analyzes requests, works directly or selects a worker
 
 Coding agents are expensive to initialize and wasteful to re-brief. `handsfree` preserves the stateful, context-heavy components—such as read files, codebase comprehension, and active modifications—within dedicated agent sessions throughout the run. It delegates the lower-cost tasks of routing and state-keeping to a lightweight planning model, which decides the appropriate agent for each step and maintains a minimal, high-level ledger of the conversation.
 
-The structured execution path preserves the original task and constraints in code. Explicit routing skips the planning model; otherwise code ranks a small candidate set and consults the router only when needed. Reports stay short, and full results remain available on demand. Token savings and task quality can be compared with the included benchmark; session reuse alone does not guarantee lower billed usage.
+The structured execution path preserves the original task and constraints in code. Explicit routing skips the planning model; otherwise code ranks a small candidate set and consults the router only when needed. Task results include the complete worker reply alongside status and verification metadata. Token savings and task quality can be compared with the included benchmark; session reuse alone does not guarantee lower billed usage.
 
 ## Use as a multi-agent tool
 
@@ -51,9 +51,9 @@ Results include task status, a short summary, blockers, artifacts, verification 
 
 See [execution contracts and configuration](docs/execution.md) for configuration and examples.
 
-Structured routing defaults to local/API selection and skips ACP selection calls. The [measured local 4B path](docs/execution-controls.md) includes real role-selection and worker checks. All agent profiles default to `nativeTools: "allow"`, including existing configurations that omit the setting. Codex runs using its adapter's permissions and sandbox. Profiles allowing native tools run tasks exclusively. Set `agents.<id>.nativeTools` to `"deny"` to block known Codex adapters before prompting.
+Structured routing defaults to local/API selection and skips ACP selection calls. The [measured local 4B path](docs/execution-controls.md) includes real role-selection and worker checks. Codex ACP runs using its adapter's permissions and sandbox. Enabled Codex profiles are always available for execution, including custom profiles. Known native tasks run exclusively.
 
-In conversation, the orchestration model can select several recipients in one `agent` call, for example `"agent": ["claude", "gemini", "codex"]`. It interprets requests such as “ask everyone” from the conversation. The host executes each selected recipient independently and reports every outcome.
+In conversation, the orchestration model chooses who to call next from the request and returned evidence. An `agent` array, such as `"agent": ["claude", "gemini", "codex"]`, collects independent answers. For dependent work, it calls an agent, then includes the returned task ID in the next call's `"context_from": [1]` to pass the exact reply. It can also read `task_result` and write its own summary into the next brief. Discussion and review use these same tools, with the orchestrator choosing each next speaker and when to finish. Multiple mentions such as `@codex @claude 서로 토론해` go through the orchestrator. Other workers’ replies and planner notes are not attached automatically: the orchestrator puts relevant constraints or summaries in the brief and selects exact replies with `context_from`. Answer tasks return plain prose in the requested format without a mandatory work report.
 
 The conversation loop returns every result, including failures, to the orchestrator for review. It can use `context` to preserve objectives, constraints, decisions and open items, search older records, or save its own intermediate conclusions. `task_result` retrieves full worker replies. See [the loop and context design](docs/agent-loop.md).
 
@@ -77,7 +77,7 @@ handsfree run "add a test"                       # one turn, no UI
 handsfree run --permission-mode bypass "..."     # one turn, nothing asked
 ```
 
-Simply describe your goal, and the dialogue planner routes it to an agent. Each step either answers you or calls `agent` with a brief and reads back a short report. The `task_result` tool retrieves additional details when needed. Use the structured interface above to preserve explicit requirements without planner rewriting.
+Simply describe your goal, and the dialogue planner routes it to an agent. Each step either answers you or calls `agent` with a brief and reads back the complete reply. The `task_result` tool retrieves saved results in later turns. Use the structured interface above to preserve explicit requirements without planner rewriting.
 
 ```
 > fix the failing tests
@@ -114,12 +114,10 @@ Any other agent that speaks ACP works the same way — add it under `agents` in 
 
 ## Settings
 
-Configuration is loaded from the following locations, in order of precedence:
+Configuration is shared by every project and loaded from one user settings file:
 
 ```
-./handsfree.config.json                 Project-level configuration (committed/specific to workspace)
-~/.handsfree/agents.json                Agent roles shared across projects
-~/.handsfree/config.json                User-level global configuration (specific to your machine)
+~/.handsfree/config.json
 ```
 
 All user configuration lives under `~/.handsfree`: general settings in `config.json`, agent roles in `agents.json`, and custom commands in `commands/*.md`. Project commands live in `./.handsfree/commands/*.md` and take precedence over user commands with the same name.
@@ -157,7 +155,11 @@ Agents are spawned directly, not through a shell, so aliases and rc-file tricks 
 }
 ```
 
-Use the `/config` command to inspect active settings and their origins. Refer to `handsfree.config.example.json` for the complete configuration schema—all options have sensible built-in defaults.
+Open `/models` (also `/model` or `/settings`) in the terminal UI to set the default models for the orchestrator, Claude, Codex, and Gemini. Use ↑/↓ or Tab to move, Enter to edit a model, and ←/→ on the orchestrator source to choose a local/API endpoint or an ACP agent. Choose an advertised agent model or type a model ID directly; Ctrl+U clears the field. An empty agent model uses its CLI default, and an empty ACP orchestrator model inherits that agent's default. Endpoint models require an ID and use the endpoint already configured in the file.
+
+Ctrl+S or **Save defaults** writes to `~/.handsfree/config.json`; changes apply on the next launch. Escape leaves without saving. Other settings and launch profiles are preserved.
+
+The file holds only what you changed. An entry for a built-in agent (`claude`, `codex`, `gemini`) is merged over its default profile field by field, so `"agents": { "codex": { "model": "gpt-5.6-codex" } }` is a complete setting and the other two agents stay on their defaults. `command` and `args` are one unit: name either and the default launch line is replaced entirely. Any other agent needs a `command` of its own. `/config` shows active settings and their source. The former project `handsfree.config.json` and `~/.config/handsfree/config.json` are no longer read; move any settings you want to keep into the new file. `handsfree.config.example.json` is a reference template, and a missing settings file uses built-in defaults.
 
 ## Development
 

@@ -9,6 +9,9 @@ export interface TaskOutcome {
   taskId: number;
   agentId: string;
   task: string;
+  kind?: 'answer' | 'inspect' | 'change';
+  /** References only; the instruction never embeds the source replies. */
+  contextFrom?: number[];
   status: TaskStatus;
   stopReason?: StopReason | 'unresponsive';
   usage?: TokenUsage;
@@ -44,7 +47,7 @@ export function summarise(
   stopReason: StopReason | 'unresponsive',
   records: readonly TranscriptRecord[],
   durationMs: number,
-  options: { workspaceDir?: string } = {},
+  options: { workspaceDir?: string; kind?: TaskOutcome['kind']; contextFrom?: number[] } = {},
 ): TaskOutcome {
   const denials: string[] = [];
   for (const record of records) {
@@ -68,6 +71,8 @@ export function summarise(
     taskId,
     agentId,
     task,
+    ...(options.kind === undefined ? {} : { kind: options.kind }),
+    ...(options.contextFrom?.length ? { contextFrom: options.contextFrom } : {}),
     status: stopReason === 'end_turn' && report.outcome === 'blocked' ? 'blocked'
       : stopReason === 'end_turn' && report.outcome === 'partial' ? 'incomplete' : statusOf(stopReason),
     stopReason,
@@ -98,19 +103,16 @@ function statusOf(stopReason: StopReason | 'unresponsive'): TaskStatus {
 
 export interface RenderOptions {
   /**
-   * Whether the agent's whole message follows the head, the way it used to.
-   * Off, what follows is the report's summary and open items — the user has
-   * seen the rest on screen, as it streamed.
+   * Include the complete reply as evidence for a model or another worker.
+   * The default compact form is for a status ledger shown to the user.
    */
   relayMessage?: boolean;
 }
 
 /**
- * What the planner is handed when a task ends. The head is the facts the
- * record established; under it, what the agent said it did and what it left
- * open — the two fields a routing decision can turn on. Decisions and the
- * verify line are for the next agent, not the planner, and go out in the
- * handoff instead.
+ * A recorded result with source identity and execution status. Model-facing
+ * callers use relayMessage to retain the actual reasoning and verification;
+ * the compact form is a status summary, not a replacement for that evidence.
  */
 export function renderOutcome(
   outcome: TaskOutcome,

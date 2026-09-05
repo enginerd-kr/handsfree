@@ -4,11 +4,9 @@ import path from 'node:path';
 import type { Command, CommandSource } from './command.js';
 
 /**
- * Where command files are looked for, in the order they win. Shaped after
- * `configSearchPaths` deliberately — the project directory first, the user's
- * config home second — with one difference: settings layer, key by key, and a
- * command is taken whole, so a project file that shares a name shadows the
- * user's rather than merging with it.
+ * Where command files are looked for, in the order they win. A project command
+ * shadows a user command with the same name. These command directories are
+ * independent of the single user-wide settings file.
  *
  * The project directory is the shell's working directory, not the workspace.
  * The workspace is the agents' jail and they can write to it; a command file

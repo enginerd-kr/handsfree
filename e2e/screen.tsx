@@ -68,10 +68,10 @@ const ANSI = new RegExp(`${ESC}\\[[0-9;?]*[A-Za-z]`, 'g');
 export const strip = (text: string): string => text.replace(ANSI, '');
 
 /** Opens the real TUI on a screen of the given size. */
-export function open(runtime: Runtime, columns = 96, rows = 40): Session {
+export function open(runtime: Runtime, columns = 96, rows = 40, settingsHome?: string): Session {
   const screen = new Screen(columns, rows);
   const keyboard = new Keyboard();
-  const instance = inkRender(<App runtime={runtime} />, {
+  const instance = inkRender(<App runtime={runtime} settingsHome={settingsHome} />, {
     stdout: screen as unknown as NodeJS.WriteStream,
     stderr: screen as unknown as NodeJS.WriteStream,
     stdin: keyboard as unknown as NodeJS.ReadStream,

@@ -34,8 +34,6 @@ export interface ToolResult {
   /** A grouped call reports every recipient, with no duplicate singular outcome. */
   outcomes?: TaskOutcome[];
   callsUsed?: number;
-  /** A selected self-work operation completed (a saved finding or a result-page read). */
-  completedWork?: boolean;
   /** A line for the closing account, from a tool that has no outcome to give it. */
   note?: string;
 }
@@ -105,9 +103,9 @@ export class Toolbox {
    */
   jsonSchema(): JsonSchemaSpec {
     const calls = [...this.tools.values()].map((tool) =>
-      z.object({ review: ReviewSchema, action: z.literal('call'), tool: z.literal(tool.name), input: tool.input }),
+      z.object({ review: ReviewSchema.optional(), action: z.literal('call'), tool: z.literal(tool.name), input: tool.input }),
     );
-    const shape = z.union([z.object({ review: ReviewSchema, action: z.literal('answer'), message: z.string().trim().min(1) }), ...calls]);
+    const shape = z.union([z.object({ review: ReviewSchema.optional(), action: z.literal('answer'), message: z.string().trim().min(1) }), ...calls]);
     return { name: 'handsfree_step', schema: z.toJSONSchema(shape) as Record<string, unknown> };
   }
 
@@ -132,17 +130,11 @@ export class Toolbox {
       return { ok: false, error: `Does not match the schema: ${envelope.error.issues[0]?.message}` };
     }
     if (envelope.data.action === 'answer') {
-      const review = envelope.data.review;
-      const unfinished = review?.remaining.filter((_item, index) => index !== review.next) ?? [];
-      if (review && unfinished.length > 0 && !review.blocker.trim()) {
-        return { ok: false, error: `Work remains: ${review.remaining.join('; ')}. If your answer performs the remaining synthesis or explanation, set next to that item's index and give the actual result now. Otherwise call the tool needed for unfinished work. Do not repeat completed worker tasks or promise future work in an answer. A concrete obstacle belongs in review.blocker.` };
-      }
       return { ok: true, step: { action: 'answer', message: envelope.data.message,
         ...(envelope.data.review ? { review: envelope.data.review } : {}) } };
     }
 
     const { tool: name } = envelope.data;
-    const review = envelope.data.review;
     const tool = this.tools.get(name);
     if (!tool) {
       return { ok: false, error: `"${name}" is not a tool. Tools: ${this.names().join(', ')}.` };
@@ -154,20 +146,6 @@ export class Toolbox {
       return { ok: false, error: `Input for "${name}" does not match: ${where}${issue?.message ?? 'invalid'}.` };
     }
     const checked = input.data;
-    if (review && name === 'agent') {
-      // A valid worker brief already specifies work. Recover missing bookkeeping
-      // from that brief, without inventing or changing the tool's input.
-      if (!review.remaining.length && checked && typeof checked === 'object'
-        && 'prompt' in checked && typeof checked.prompt === 'string' && checked.prompt.trim()) {
-        review.remaining = [checked.prompt.trim().slice(0, 300)];
-        review.next = 0;
-      }
-      // A single item is unambiguous; -1 selects the first ordered item.
-      if (review.remaining.length === 1 || review.next === -1 && review.remaining.length) review.next = 0;
-      if (!review.remaining[review.next]) {
-        return { ok: false, error: `For a worker call, review.next must select an item in review.remaining (0 selects its first item). Remaining: ${JSON.stringify(review.remaining)}. Add the worker task to remaining if it is empty; otherwise choose its zero-based index.` };
-      }
-    }
     return {
       ok: true,
       step: {

@@ -1,12 +1,11 @@
 import type { StopReason } from '@agentclientprotocol/sdk';
-import { agentRole, type Config } from '../../config/schema.js';
+import type { Config } from '../../config/schema.js';
 import { estimateTokens } from '../../models/client.js';
 import type { UsageTracker, UsageLease } from '../usage/meter.js';
 import { tokensOf } from '../usage/usage.js';
 import type { PolicyEngine } from '../../policy/engine.js';
 import { TaskScheduler } from './scheduler.js';
-import { nativeToolAdapter } from '../../host/mediation.js';
-import { durableFacts, remember, sessionMemory } from '../context/memory.js';
+import { remember, sessionMemory } from '../context/memory.js';
 import { debug } from '../../debug.js';
 import { SessionUnresponsiveError } from '../../host/session.js';
 import { type TurnUsage } from '../../contracts/usage.js';
@@ -14,21 +13,17 @@ import type { ModelChoice } from '../../host/models.js';
 import { type AgentPool, AgentStartError } from '../../host/pool.js';
 import type { Transcript, TranscriptRecord } from '../../workspace/transcript.js';
 import type { Workspace } from '../../workspace/workspace.js';
-import { floorOf, renderHandoff, tasksSince, type LedgerOptions } from '../context/ledger.js';
+import type { LedgerOptions } from '../context/ledger.js';
 import { summarise, type TaskOutcome } from '../results/outcome.js';
 import { buildBrief, type TaskKind } from './prompts.js';
 
 /**
  * What handsfree remembers about having briefed an agent: which session heard
- * the ground rules, how the last one ended,
- * and where in the record its last task stopped — the line "since your last
- * task" is drawn at.
+ * the ground rules and how its last call ended.
  */
 interface Briefing {
   sessionId: string;
   lastStop: StopReason | 'unresponsive';
-  /** The seq of the agent's last `stop`; handoffs are what came after it. */
-  since: number;
 }
 
 export interface DelegatorDeps {
@@ -48,6 +43,8 @@ export interface Delegation {
   kind: TaskKind;
   /** The brief, as the planner wrote it: what to do, and what done looks like. */
   prompt: string;
+  /** Explicitly selected source replies, attached only when building the wire prompt. */
+  context?: readonly TaskOutcome[];
   /** A few words naming the task, for the screen. */
   title?: string | undefined;
   /** The model the work should run on, as a mention or the planner named it. */
@@ -57,10 +54,10 @@ export interface Delegation {
 
 /**
  * Hands one task to one agent and sees it through: the session, the brief
- * with its ground rules and handoff, the prompt, the stop on the record, and
+ * with its ground rules and selected sources, the stop on the record, and
  * the outcome read back off it. It also keeps what handsfree remembers about
- * briefing — which session has heard the rules, and where its last task
- * stopped — because that is what decides how the next brief is written.
+ * briefing — which session has heard the rules and whether they need to be
+ * repeated after an interrupted call.
  */
 export class Delegator {
   private readonly scheduler: TaskScheduler;
@@ -114,8 +111,7 @@ export class Delegator {
   }
 
   async delegate(delegation: Delegation, signal: AbortSignal): Promise<TaskOutcome> {
-    const profile = this.deps.config.agents[delegation.agentId];
-    const exclusive = delegation.kind === 'change' || !!profile && (profile.nativeTools === 'allow' || nativeToolAdapter(profile));
+    const exclusive = delegation.kind === 'change' || this.deps.pool.usesNativeTools(delegation.agentId);
     const release = await this.scheduler.acquire(delegation.agentId, exclusive, signal);
     const cancel = () => { void this.deps.pool.discard(delegation.agentId); };
     signal.addEventListener('abort', cancel, { once: true });
@@ -133,7 +129,8 @@ export class Delegator {
     // the briefing back afterwards would quietly restore a session's claim to
     // have heard rules that were cleared along with everything else.
     const epoch = this.epoch;
-    const options = this.ledgerOptions();
+    const options = { ...this.ledgerOptions(), kind,
+      contextFrom: delegation.context?.map((source) => source.taskId) };
 
     const failed = (err: unknown): TaskOutcome => {
       const outcome = summarise(taskId, agentId, task, 'unresponsive', [], Date.now() - startedAt, options);
@@ -154,9 +151,8 @@ export class Delegator {
     let lease: UsageLease | undefined;
     try {
       if (signal.aborted) return { ...failed(new Error('Cancelled before starting')), status: 'cancelled' };
-      const problem = pool.executionProblem(agentId);
-      if (problem) throw new Error(problem);
-      lease = this.deps.usage?.begin(agentId, model ?? pool.currentModel(agentId) ?? agentId, config.agents[agentId]?.frontier ?? true);
+      const profile = config.agents[agentId];
+      lease = this.deps.usage?.begin(agentId, model ?? pool.currentModel(agentId) ?? agentId, profile?.frontier ?? true);
       session = await pool.session(agentId);
       if (delegation.sessionId !== undefined && session.sessionId !== delegation.sessionId) throw new Error(`Session ${delegation.sessionId} is no longer active for ${agentId}`);
       if (model !== undefined) chosen = await session.selectModel(model);
@@ -172,22 +168,16 @@ export class Delegator {
       agentId,
       sessionId: session.sessionId,
       task,
+      kind,
+      ...(options.contextFrom?.length ? { contextFrom: options.contextFrom } : {}),
       ...(title === undefined ? {} : { title }),
       // The id is what went on the wire, so the id is what is written down.
       ...(chosen === undefined ? {} : { model: chosen.value }),
     });
 
-    // The ground rules go out to a session that has not heard them — one just
-    // opened, or one that replaced a discarded process — and again to one
-    // that may have lost them: after a turn cut off at max_tokens. What the others
-    // did since is drawn from the record, from this agent's last stop; a
-    // session that remembers nothing is told about its own tasks too.
-    const records = transcript.all();
-    // A session resumed from a previous process is not remembered here, but
-    // the record remembers it: its last task ran in this very session, so it
-    // holds its own work and needs only the rules again, not the account of
-    // itself. The mark stands at that task's stop, as it would have.
-    const known = this.briefed.get(agentId) ?? resumedBriefing(records, agentId, session.sessionId);
+    // Repeat ground rules for a new or interrupted session. The worker keeps
+    // its own session history; all additional result context is explicit.
+    const known = this.briefed.get(agentId);
     const fresh = known === undefined || known.sessionId !== session.sessionId;
     const first =
       fresh ||
@@ -197,23 +187,14 @@ export class Delegator {
       // told again. This is also the case a resumed session lands in: the id
       // is the one from before, so nothing else here would notice.
       known.lastStop === 'unresponsive';
-    const since = fresh ? floorOf(records) : known.since;
-    const handoff = renderHandoff({
-      tasks: tasksSince(records, since, options),
-      agentId,
-      includeOwn: fresh,
-      workspaceDir: workspace.dir,
-      roleOf: (id) => agentRole(config, id),
-      query: task,
-    });
     const stale = sessionMemory(transcript, agentId, session.sessionId).stale;
     const brief = buildBrief({
       task,
       kind,
       workspaceDir: workspace.dir,
       first,
-      handoff: [handoff, durableFacts(transcript, workspace.dir, task),
-        ...(stale.length ? [`Previously seen files changed on disk; re-read if relevant: ${stale.join(', ')}`] : [])].filter(Boolean).join('\n'),
+      context: delegation.context,
+      staleFiles: stale,
     });
 
     // The brief is not on the record — the task is, and the rest is rebuilt
@@ -277,7 +258,7 @@ export class Delegator {
     if (signal.aborted) outcome.status = 'cancelled';
     remember(transcript, outcome, session.sessionId);
 
-    const stopped = transcript.append({
+    transcript.append({
       type: 'stop',
       taskId,
       agentId,
@@ -291,11 +272,6 @@ export class Delegator {
       this.briefed.set(agentId, {
         sessionId: session.sessionId,
         lastStop: stopReason,
-        // The mark only moves for a brief that was actually delivered. A turn
-        // that threw may have died before the prompt went out, and advancing
-        // past a handoff nobody read would lose it for good: what the other
-        // agents changed would sit forever on the wrong side of the line.
-        since: stopReason === 'unresponsive' ? since : stopped.seq,
       });
     }
 
@@ -305,28 +281,4 @@ export class Delegator {
       usage: charged,
     };
   }
-}
-
-/**
- * What a session read back off the record is known to have heard, for an
- * agent this process has not briefed yet. Its last task's stop is the mark;
- * the rules are sent again, since a session that has been away may have
- * compacted them. Mark the briefing as needing a refresh.
- */
-function resumedBriefing(
-  records: readonly TranscriptRecord[],
-  agentId: string,
-  sessionId: string,
-): Briefing | undefined {
-  for (let at = records.length - 1; at >= 0; at--) {
-    const record = records[at]!;
-    if (record.type !== 'stop' || record.agentId !== agentId) continue;
-    if (record.sessionId !== sessionId) return undefined;
-    return {
-      sessionId,
-      lastStop: 'unresponsive',
-      since: record.seq,
-    };
-  }
-  return undefined;
 }

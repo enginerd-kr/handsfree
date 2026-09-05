@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { ConfigSchema } from '../../../config/schema.js';
 import type { Delegator, Delegation } from '../../execution/delegate.js';
 import type { TaskOutcome } from '../../results/outcome.js';
 import { Transcript } from '../../../workspace/transcript.js';
@@ -32,7 +31,6 @@ function tool(roster = ['claude', 'gemini']) {
   const agent = new AgentTool({
     roster: () => roster.map((id) => ({ id, description: `${id} does things` })),
     delegator,
-    config: ConfigSchema.parse({}),
     transcript,
     workspace: { dir: '/ws' } as never,
   });
@@ -95,6 +93,16 @@ describe('AgentTool', () => {
     expect(tool().box.parse('{"action":"call","tool":"agent","input":{"agent":"claude","prompt":""}}').ok).toBe(false);
   });
 
+  it('accepts only positive integer task ids as context references', () => {
+    const { box } = tool();
+    const parse = (context_from: unknown) => box.parse(JSON.stringify({
+      action: 'call', tool: 'agent', input: { agent: 'claude', prompt: 'Review the earlier reply', context_from },
+    }));
+    for (const refs of [[0], [-1], [1.5], ['1'], 1]) expect(parse(refs).ok).toBe(false);
+    for (const refs of [[], [1], [1, 2]]) expect(parse(refs).ok).toBe(true);
+    expect(JSON.stringify(box.jsonSchema().schema)).toContain('context_from');
+  });
+
   it('treats default-model aliases as no override', async () => {
     const { agent, delegated } = tool();
     for (const model of ['default', 'none', 'null']) await agent.run({ agent: 'claude', kind: 'answer', prompt: 'Hi', model }, ctx);
@@ -116,7 +124,7 @@ describe('AgentTool', () => {
     expect(result.halt).toBeFalsy();
     expect(result.text).toContain('Task 1 (claude): done');
     expect(result.text).toContain('summary: Made it so.');
-    expect(result.text).toContain('use task_result for details');
+    expect(result.text).toContain(outcomeOf(delegated[0]!).message);
     const usage = transcript.all().find((record) => record.type === 'usage');
     expect(usage).toMatchObject({ purpose: 'task', taskId: 1, promptChars: 40, relayedChars: result.text.length });
   });

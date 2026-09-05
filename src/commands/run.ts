@@ -12,7 +12,7 @@ export interface RunOptions {
   runId?: string;
   /** Work in this existing directory instead of a fresh sandbox. */
   attachTo?: string;
-  /** The files the settings were read from, strongest first, for `/config` to name. */
+  /** The user settings source, for `/config` to name. */
   configSources?: readonly ConfigLocation[];
   /**
    * The mode to start in; `ask` when unset. Piped or in CI there is no seat,

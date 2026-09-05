@@ -6,6 +6,8 @@ export const TaskRequestSchema = z.object({
   constraints: z.array(z.string().min(1)).default([]),
   acceptanceCriteria: z.array(z.string().min(1)).default([]),
   files: z.array(z.string().min(1)).default([]),
+  /** Saved task replies explicitly selected as source material. */
+  contextFrom: z.array(z.number().int().positive()).default([]),
   /** Earlier task blockers/decisions superseded when this task succeeds. */
   resolves: z.array(z.number().int().positive()).default([]),
   agent: z.string().min(1).optional(),
@@ -23,6 +25,8 @@ export const TaskResultSchema = z.object({
   agent: z.string(),
   status: z.enum(['done', 'blocked', 'incomplete', 'refused', 'cancelled', 'error']),
   summary: z.string(),
+  /** Complete worker reply, preserved alongside status and report metadata. */
+  message: z.string(),
   artifacts: z.array(z.string()),
   blockers: z.array(z.string()),
   resultRef: z.string(),

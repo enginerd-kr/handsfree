@@ -14,9 +14,6 @@ import { sessionMemory } from '../src/orchestrator/context/memory.js';
 // Explicit live integration suite. Never imported by the unit test runner.
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'handsfree-use-cases-'));
 const configured = loadConfig().config;
-// This suite intentionally exercises native Codex tools in a disposable fixture.
-// The opt-in is explicit because the host cannot mediate all those operations.
-if (process.argv.includes('--allow-native')) configured.agents.codex!.nativeTools = 'allow';
 const config = ConfigSchema.parse({ ...configured, workspaceRoot: root, cleanupPeriodDays: 0,
   capabilities: { ...configured.capabilities, terminal: true },
 });
