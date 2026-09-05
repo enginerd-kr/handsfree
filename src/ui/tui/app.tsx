@@ -30,7 +30,7 @@ import {
   sessionsOf,
 } from '../view-model.js';
 import { shortTokens, spendOf, type RunSpend, type Spend } from '../../orchestrator/usage.js';
-import type { ModelChoice } from '../../host/models.js';
+import { matchModel, type ModelChoice } from '../../host/models.js';
 import { agentRole, plannerLabel, type Config } from '../../config/schema.js';
 import {
   findCommand,
@@ -45,6 +45,7 @@ import {
   mentionSpans,
   modelTokenAt,
   ORCHESTRATOR,
+  parseMention,
   plannerTokenAt,
   suggestAgents,
   suggestModels,
@@ -300,7 +301,7 @@ type MenuItem =
   | { kind: 'command'; command: Command }
   // `planner` says the name is being filled in behind `@orchestrator:`, where
   // the row on screen is a `:segment` of an address rather than an `@` of its own.
-  | { kind: 'agent'; id: string; note: string; planner?: true }
+  | { kind: 'agent'; id: string; note: string; model: string; planner?: true }
   | { kind: 'model'; agent: string; choice: ModelChoice };
 
 /**
@@ -603,20 +604,34 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
         });
     }
   }, [agents, runtime]);
-  // The status line under the prompt: each agent as the model it is actually
-  // on, and whether it holds an open task right now. An agent that names no
-  // model anywhere goes by its own id. The roster is a dependency for what it
-  // says about the pool rather than for itself: an entry landing is a session
-  // having answered, which is the moment that session first has a model to name.
-  const agentStatus = useMemo(
-    () =>
-      agents.map((id) => ({
-        id,
-        label: runtime.pool.currentModel(id) ?? id,
-        busy: working.has(id),
-      })),
-    [agents, working, runtime, modelRoster],
-  );
+  // Read the live pool on each render: session updates can change a model
+  // without changing the roster or which agents are busy.
+  const agentStatus = agents.map((id) => ({
+    id,
+    label: runtime.pool.currentModel(id) ?? id,
+    busy: working.has(id),
+  }));
+  const currentModelLabel = (id: string): string => {
+    const state = modelRoster[id];
+    if (state !== undefined && state !== 'ready') return 'unavailable';
+    return runtime.pool.currentModel(id) ??
+      (state === undefined ? 'loading model…' : 'model unknown');
+  };
+  // The routing parser requires a task. Supply one after the leading token
+  // so a completed recipient is visible before the person starts writing it.
+  // Mentions in the task body do not change where this request will go.
+  const address = draft.value.trimStart().split(/\s/, 1)[0] ?? '';
+  const recipient = parseMention(`${address} preview`, agents);
+  const target = recipient && (() => {
+    if (recipient.model === undefined) {
+      return { id: recipient.agent, label: currentModelLabel(recipient.agent) };
+    }
+    const match = matchModel(recipient.model, runtime.pool.models(recipient.agent));
+    const label = match && !Array.isArray(match)
+      ? match.value
+      : `${recipient.model} · ${Array.isArray(match) ? 'ambiguous model' : 'model not available'}`;
+    return { id: recipient.agent, label };
+  })();
   // The planner leads the roll: it is upstream of every agent on it, and where
   // the line runs out of room it is the last thing worth losing. It is working
   // whenever a turn is open and no agent holds a task — choosing what to do
@@ -638,6 +653,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     return suggestAgents(d.value, d.cursor, agents).map((id) => ({
       kind: 'agent',
       id,
+      model: id === ORCHESTRATOR ? plannerLabel(runtime.config) : currentModelLabel(id),
       ...(planner ? { planner: true as const } : {}),
       note:
         id === ORCHESTRATOR
@@ -645,11 +661,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
           : agentRole(runtime.config, id),
     }));
   };
-  const menu = useMemo(
-    () => (ask || dismissed === draft.value ? [] : budgeted(offeredFor(draft))),
-    // offeredFor is rebuilt every render but reads only what is listed here.
-    [ask, dismissed, draft, runtime.commands, agents, rows, modelRoster],
-  );
+  const menu = ask || dismissed === draft.value ? [] : budgeted(offeredFor(draft));
   // What a colon says when it has no rows to show, because an empty menu and a
   // silent one are the same sight and mean different things: an agent still
   // coming up will have models in a moment, and one that answered with none
@@ -1357,6 +1369,7 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
           attachments={attachments}
           agents={agents}
           status={status}
+          target={target}
           spend={spend.models}
           startedAt={startedAt}
           queued={queued.length}
@@ -1973,6 +1986,7 @@ function Prompt({
   attachments,
   agents,
   status,
+  target,
   spend,
   startedAt,
   queued,
@@ -1986,6 +2000,7 @@ function Prompt({
   attachments: Attachments;
   agents: readonly string[];
   status: readonly AgentStatusEntry[];
+  target: { id: string; label: string } | undefined;
   /** What each model has spent over the run, in the order they were first used. */
   spend: RunSpend['models'];
   startedAt: number | undefined;
@@ -2009,8 +2024,19 @@ function Prompt({
         </Box>
       ) : null}
       <Box height={1} paddingLeft={2} paddingRight={1} justifyContent="space-between" gap={2}>
-        <Box>{busy ? <Working startedAt={startedAt} queued={queued} /> : null}</Box>
-        <AgentStatus status={status} />
+        <Box flexShrink={0} maxWidth={target ? '75%' : undefined}>
+          {target ? (
+            <Text wrap="truncate">
+              <Text color={agentColour(target.id)}>{target.id}</Text>
+              <Text color={INK}>{` · ${target.label}`}</Text>
+            </Text>
+          ) : busy ? <Working startedAt={startedAt} queued={queued} /> : null}
+        </Box>
+        {target && busy ? (
+          <Working startedAt={startedAt} queued={queued} />
+        ) : (
+          <AgentStatus status={status} />
+        )}
       </Box>
       <Box
         width="100%"
@@ -2216,6 +2242,7 @@ function Suggestions({
                 {menuLabel(item).padEnd(width)}
               </Text>
               <Text color={INK_FAINT}>
+                {item.kind === 'agent' ? `${item.model}${note ? ' · ' : ''}` : ''}
                 {item.kind === 'command' && item.command.argumentHint
                   ? `${item.command.argumentHint}  `
                   : ''}
