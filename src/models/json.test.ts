@@ -37,6 +37,11 @@ describe('MessageStream', () => {
     expect(drip('{"action":"call","tool":"agent","input":{"agent":"claude","prompt":"do it"}}')).toBe('');
   });
 
+  it('streams only the root commentary when tool inputs contain messages', () => {
+    expect(drip('{"calls":[{"tool":"echo","input":{"message":"private"}}],"message":"Public update","finish":false}')).toBe('Public update');
+    expect(drip('{"review":{"message":"private"},"message":"Public"}')).toBe('Public');
+  });
+
   it('does not mistake a longer key for the message', () => {
     expect(drip('{"messages":"nope","message":"yes"}')).toBe('yes');
   });

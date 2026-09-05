@@ -5,6 +5,7 @@ import type { AgentConnection, ConnectionTarget } from '../host/connection.js';
 import { openAgent } from '../host/open.js';
 import { SessionUnresponsiveError } from '../host/session.js';
 import type { ChatClient, ChatMessage, ChatOptions, JsonSchemaSpec } from './client.js';
+import { modelFinish, ModelError } from './completion.js';
 
 export interface AcpModelOptions {
   /** Which `agents` entry does the planning. Used in error messages. */
@@ -105,8 +106,11 @@ export class AcpModel implements ChatClient {
     }
 
     options.signal?.throwIfAborted();
+    options.onFinish?.(modelFinish(stopReason));
     if (reply.trim() === '') {
-      throw new Error(`${this.options.agentId} ended the planning turn (${stopReason}) without replying`);
+      const finish = modelFinish(stopReason);
+      throw new ModelError(finish === 'refused' ? 'refused' : finish === 'truncated' ? 'truncated' : 'format',
+        `${this.options.agentId} ended the planning turn (${stopReason}) without replying`);
     }
     return reply;
   }

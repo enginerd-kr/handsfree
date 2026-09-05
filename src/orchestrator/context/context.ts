@@ -65,6 +65,12 @@ export class RunContext {
             this.turns.set(record.seq, { request: entry.request });
             this.entries.set(record.seq, { seq: record.seq, kind: 'request', text: entry.request });
             break;
+          case 'update': {
+            const turn = this.turns.get(entry.turn)!;
+            turn.request += `\n\nUSER UPDATE:\n${entry.request}`;
+            this.entries.set(record.seq, { seq: record.seq, kind: 'request', text: entry.request });
+            break;
+          }
           case 'finish': {
             const turn = this.turns.get(entry.turn)!;
             turn.reply = entry.reply || `(${entry.status})`;
@@ -82,6 +88,12 @@ export class RunContext {
           }
           case 'step':
             this.entries.set(record.seq, { seq: record.seq, kind: 'action', text: entry.action });
+            break;
+          case 'plan':
+            this.entries.set(record.seq, { seq: record.seq, kind: 'plan', text: entry.text });
+            break;
+          case 'checkpoint':
+            this.entries.set(record.seq, { seq: record.seq, kind: 'checkpoint', text: 'Exact earlier model messages; read this record to recover sources.' });
             break;
           case 'review':
             this.latestReview = { turn: entry.turn, seq: record.seq, state: entry.state, sources: entry.sources };
@@ -124,6 +136,15 @@ export class RunContext {
     this.sync();
     const sources = [turn, ...[...this.taskSources.values()]];
     this.transcript.append({ type: 'context', entry: { event: 'review', turn, state, sources } });
+  }
+
+  update(turn: number, request: string): void {
+    this.transcript.append({ type: 'context', entry: { event: 'update', turn, request } });
+  }
+
+  checkpoint(turn: number, messages: readonly ChatMessage[]): number {
+    return this.transcript.append({ type: 'context', entry: { event: 'checkpoint', turn,
+      messages: messages.map(({ role, content }) => ({ role, content })) } }).seq;
   }
 
   retainEvidence(turn: number, key: string, text: string): void {
@@ -206,12 +227,13 @@ ${lines.join('\n')}` : '';
       .map(({ entry }) => `[record ${entry.seq}; ${entry.kind}] ${entry.text}`).join('\n');
   }
 
-  read(seq: number, offset: number): { text: string; nextOffset?: number } {
+  read(seq: number, offset: number, maxChars?: number): { text: string; nextOffset?: number } {
     this.sync();
     const record = this.records.get(seq);
     if (!record || seq <= this.floor) throw new Error(`No context record ${seq} in this conversation.`);
     const text = JSON.stringify(record);
-    return { text: text.slice(offset) };
+    const end = maxChars === undefined ? text.length : offset + maxChars;
+    return { text: text.slice(offset, end), ...(end < text.length ? { nextOffset: end } : {}) };
   }
 
   /** A restart reconstructs a small conversational view, not an empty chat. */

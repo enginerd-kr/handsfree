@@ -1,5 +1,6 @@
 import { MessageStream } from '../../models/json.js';
 import { type ChatClient, type ChatMessage } from '../../models/client.js';
+import { ModelError, modelError, type ModelFinish } from '../../models/completion.js';
 import type { ParsedStep, Toolbox } from './tools/tool.js';
 
 export type { ParsedStep, Step } from './tools/tool.js';
@@ -13,7 +14,7 @@ export const STATE_DIVIDER = '---';
  * since is carried separately, in the run state — so an endpoint that caches a
  * prompt by its prefix gets to keep this one.
  *
- * The frame says only what is true of every reply: answer, or call one tool.
+ * The frame defines commentary, tool calls and explicit completion.
  * What each tool is for, and how to call it well, is the tool's own to say,
  * at the foot — so a tool added to the box is a tool the planner knows.
  */
@@ -25,10 +26,12 @@ You are a worker too: reason, explain and synthesize directly. For intermediate 
 You decide the next action from the user's request and the evidence returned so far. A tool's execution status describes that call, not whether the user's objective is satisfied. Calls, including repeated calls to the same agent, are available whenever the work needs them.
 You may include a review with the objective, constraints, completed work, remaining work, next item index and blocker to preserve your current assessment. It is optional and does not schedule, complete or suppress tool calls. Update your assessment as evidence changes. Carry forward user constraints unless the user changes them. Use context for source-linked decisions and findings. Current user corrections override older notes.
 Every tool result returns control to you, including errors. Distinguish a worker finishing from the user's request being complete. Recover through another suitable worker when possible; do not automatically retry refused operations. If the user explicitly asks to retry, delegate a fresh attempt with that instruction; the host still checks current permissions.
-Reply with exactly one JSON object:
-{"action":"answer","message":"answer to the user's current request"}
-{"action":"call","tool":"tool name","input":{}}
-An answer ends the loop. Give it when you have satisfied the request or can explain a concrete obstacle. Perform the necessary calls before answering; a promise to do them later does not execute them.
+Reply with exactly one JSON object, with message, calls and finish:
+{"message":"First I will collect the evidence.","calls":[{"tool":"tool name","input":{}}],"finish":false}
+{"message":"answer to the user's current request","calls":[],"finish":true}
+A message with finish:false is intermediate commentary. It can accompany several tool calls. Calls in one response must be independent: a later response can use the results. Every call receives a result, even if it fails or is skipped after a user correction. Only finish:true ends the loop, and it cannot include calls. Give it when you have satisfied the request or can explain a concrete obstacle. Perform the necessary calls before finishing; a promise to do them later does not execute them.
+Legacy single-call objects with action:call and final objects with action:answer are also accepted.
+USER UPDATE is a new message from the user during this turn. Apply it before choosing more work; preserve the original objective unless the update changes it. It can invalidate calls you had prepared.
 RUN STATE is historical task/session data; the user request follows ---.
 TOOL RESULT reports execution and agent findings. Use them to answer the current request with the relevant explanation, synthesis or comparison. A completion status alone is sufficient only when it answers what the user asked.
 Interpret each new user message in the conversation. Questions about previous results ask you to explain those results, not repeat or reissue the completed task. Corrections clarify the current question; they do not restart earlier work.
@@ -95,9 +98,13 @@ export async function nextStep(
   toolbox: Toolbox,
   signal: AbortSignal,
   stream?: AnswerStream,
+  recoverContext?: (messages: ChatMessage[]) => ChatMessage[] | undefined,
 ): Promise<ParsedStep> {
   const repairs: ChatMessage[] = [];
   const schema = toolbox.jsonSchema();
+  let formatFailures = 0;
+  let truncated = false;
+  let compacted = false;
   for (;;) {
     signal.throwIfAborted();
     const prompt = [...messages, ...repairs];
@@ -110,17 +117,43 @@ export async function nextStep(
         }
       : undefined;
     let reply: string;
+    let finish: ModelFinish = 'unknown';
     try {
-      reply = await llm.chat(prompt, { schema, signal, onDelta });
+      reply = await llm.chat(prompt, { schema, signal, onDelta, onFinish: (reason) => { finish = reason; } });
     } catch (err) {
       stream?.retract();
-      throw err;
+      signal.throwIfAborted();
+      const failure = modelError(err);
+      if (failure.kind === 'context' && !compacted) {
+        compacted = true;
+        const recovered = recoverContext?.(messages);
+        if (recovered) { messages = recovered; repairs.length = 0; continue; }
+      }
+      if (failure.kind === 'truncated' && !truncated) {
+        truncated = true;
+        repairs.push({ role: 'user', content: 'Your response was truncated. Return a shorter complete JSON step; split work across calls.' });
+        continue;
+      }
+      throw failure;
+    }
+    // Callbacks run within chat, but TypeScript cannot see that assignment.
+    const reason = finish as ModelFinish;
+    if (reason === 'refused' || reason === 'cancelled') {
+      stream?.retract();
+      throw new ModelError('refused', `The orchestration model ${reason} the request.`);
+    }
+    if (reason === 'truncated') {
+      stream?.retract();
+      if (truncated) throw new ModelError('truncated', 'The orchestration response was truncated again; no incomplete calls were executed.');
+      truncated = true;
+      repairs.push({ role: 'user', content: 'Your response was truncated. Return a shorter complete JSON step; split work across calls.' });
+      continue;
     }
     const parsed = toolbox.parse(reply);
     if (parsed.ok) return parsed;
+    stream?.retract();
+    if (++formatFailures >= 3) throw new ModelError('format', `The orchestration model repeatedly returned unusable JSON: ${parsed.error}`);
     repairs.push({ role: 'assistant', content: reply }, { role: 'user',
       content: `That reply was unusable: ${parsed.error} Reply with ONLY one JSON object matching the schema.` });
-    // Whatever streamed came from a reply that could not be used.
-    stream?.retract();
   }
 }

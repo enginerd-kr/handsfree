@@ -4,6 +4,7 @@ import { renderOutcome, type TaskOutcome } from '../../results/outcome.js';
 import type { Transcript } from '../../../workspace/transcript.js';
 import type { Workspace } from '../../../workspace/workspace.js';
 import type { Tool, ToolContext, ToolResult } from './tool.js';
+import type { AgentJobs } from '../jobs.js';
 
 export interface AgentCard {
   id: string;
@@ -12,6 +13,7 @@ export interface AgentCard {
 }
 
 export interface AgentToolDeps {
+  jobs?: AgentJobs;
   onOutcome?: (outcome: TaskOutcome) => void;
   readOutcome?: (taskId: number) => TaskOutcome;
   /**
@@ -32,6 +34,7 @@ export type AgentInput = {
   model?: string | undefined;
   /** Full replies from existing tasks, selected by the orchestrator. */
   context_from?: number[];
+  background?: boolean;
 };
 
 /**
@@ -64,6 +67,7 @@ export class AgentTool implements Tool<AgentInput> {
       kind: z.enum(['answer', 'inspect', 'change']).default('change'),
       model: z.string().min(1).optional(),
       context_from: z.array(z.number().int().positive()).optional(),
+      background: z.boolean().optional(),
     });
   }
 
@@ -75,6 +79,7 @@ export class AgentTool implements Tool<AgentInput> {
 Agents:
 ${roster}
 Input: {"agent":"id or an array of ids","kind":"answer|inspect|change","prompt":"brief","model":"optional model","context_from":[1,2]}.
+Set background:true to start asynchronously and receive a jobId immediately. Use agent_job to wait, poll, cancel or send a follow-up. Independent background tasks may overlap; session and workspace locks still apply. Completion notifications carry the full replies back to this loop.
 Returns task ids, execution statuses and complete replies, including the actual arguments and findings. Read those replies before deciding the next action or synthesizing a conclusion. task_result retrieves saved replies later; context_from attaches them to a worker's brief with their source agents and statuses. References must name saved tasks in this run. They do not rerun the source tasks.
 Use the prompt for your own instructions or a summary you wrote after reading earlier results. Use context_from to pass exact earlier replies without copying them through your own response. Both can be combined.
 An agent array sends independent copies of the same brief. Every recipient sees the same selected context; they do not receive each other's new replies within that call.
@@ -91,6 +96,11 @@ Example: {"action":"call","tool":"agent","input":{"agent":"${first}","kind":"ans
   }
 
   async run(input: AgentInput, ctx: ToolContext): Promise<ToolResult> {
+    if (ctx.workMode === 'plan' && input.kind === 'change') return { text: 'Plan mode: use answer or inspect to prepare the plan. The user selects /execute before implementation.', callsUsed: 0 };
+    if (input.background && this.deps.jobs) {
+      const jobId = this.deps.jobs.start(input, ctx, (signal) => this.run({ ...input, background: false }, { ...ctx, signal }));
+      return { text: `Started agent job ${jobId}. Use agent_job with this jobId to wait, poll, cancel or follow up.` };
+    }
     let sources: TaskOutcome[];
     try {
       sources = [...new Set(input.context_from ?? [])].map((taskId) => {

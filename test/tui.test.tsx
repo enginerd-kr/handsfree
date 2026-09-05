@@ -695,6 +695,28 @@ describe('terminal UI', () => {
     }
   });
 
+  it('shows planning work and allows Esc when a plan command starts a turn', async () => {
+    const llm: ChatClient = { async chat(_messages, options) {
+      await new Promise<void>((resolve) => options?.signal?.addEventListener('abort', () => resolve(), { once: true }));
+      throw new Error('cancelled');
+    } };
+    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) }, llm });
+    open = h;
+    const app = render(<App runtime={h.runtime} />);
+    try {
+      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
+      app.stdin.write('/plan Inspect the loop');
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      app.stdin.write('\r');
+      await waitFor(() => app.lastFrame(), 'Working…');
+      await waitFor(() => app.lastFrame(), 'plan mode');
+      app.stdin.write('\x1b');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(h.runtime.conversation.isBusy).toBe(false);
+      expect(app.lastFrame()).not.toContain('Working…');
+    } finally { h.runtime.conversation.cancel(); app.unmount(); }
+  });
+
   it('moves the highlight with the arrows and sends the one it lands on', async () => {
     const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
     open = h;
@@ -709,10 +731,10 @@ describe('terminal UI', () => {
     try {
       await waitFor(() => app.lastFrame(), PROMPT_CHAR);
       // The bare slash offers everything, shortest name first and then by
-      // name: cost, exit, help, clear. Three steps down lands on the fourth.
+      // name: cost, exit, help, plan, clear. Four steps down lands on clear.
       await press('/');
       await waitFor(() => app.lastFrame(), '/clear');
-      await press('\x1b[B', '\x1b[B', '\x1b[B', '\r');
+      await press('\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', '\r');
 
       await waitFor(() => app.lastFrame(), 'cleared');
       expect(app.lastFrame()).not.toContain('Working');
@@ -1165,7 +1187,7 @@ describe('terminal UI', () => {
     }
   });
 
-  it('stays open while a turn runs, and sends what was typed once it ends', async () => {
+  it('stays open while a turn runs and sends new input as steering', async () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => {
       release = resolve;
@@ -1202,8 +1224,8 @@ describe('terminal UI', () => {
       expect(running).toContain(PROMPT_CHAR);
 
       await type('second');
-      await waitFor(() => app.lastFrame(), '1 queued');
-      expect(h.runtime.transcript.all().filter((r) => r.type === 'user')).toHaveLength(1);
+      await waitFor(() => app.lastFrame(), '○ second');
+      expect(h.runtime.transcript.all().filter((r) => r.type === 'user')).toHaveLength(2);
 
       release();
       await waitFor(() => app.lastFrame(), 'second answer.');
@@ -1214,7 +1236,7 @@ describe('terminal UI', () => {
     }
   });
 
-  it('drops what is queued when the turn in front of it is interrupted', async () => {
+  it('cancels the active turn while retaining the user steering in the record', async () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => {
       release = resolve;
@@ -1242,14 +1264,14 @@ describe('terminal UI', () => {
       await type('first');
       await waitFor(() => app.lastFrame(), 'Working…');
       await type('second');
-      await waitFor(() => app.lastFrame(), '1 queued');
+      await waitFor(() => app.lastFrame(), '○ second');
 
       app.stdin.write('\x1b'); // esc
       await new Promise((resolve) => setTimeout(resolve, 200));
 
       expect(app.lastFrame()).not.toContain('queued');
-      // Only the first prompt was ever sent; the queued one left with the turn.
-      expect(h.runtime.transcript.all().filter((r) => r.type === 'user')).toHaveLength(1);
+      // Steering is retained as user input; Esc does not start another turn.
+      expect(h.runtime.transcript.all().filter((r) => r.type === 'user')).toHaveLength(2);
     } finally {
       release();
       app.unmount();

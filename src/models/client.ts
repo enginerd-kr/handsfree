@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import type { Config } from '../config/schema.js';
 import { debug } from '../debug.js';
+import { modelFinish, type ModelFinish } from './completion.js';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -9,6 +10,8 @@ export interface ChatMessage {
   pinned?: boolean;
   /** Required portion of a pinned message, excluding optional run history. */
   requiredContent?: string;
+  /** Provenance used only by the host's active-window recovery. */
+  agents?: string[];
 }
 
 export interface JsonSchemaSpec {
@@ -25,6 +28,7 @@ export interface Usage {
 }
 
 export interface ChatOptions {
+  onFinish?: (reason: ModelFinish) => void;
   /** Ask the endpoint to constrain the reply to this JSON Schema, if it can. */
   schema?: JsonSchemaSpec;
   signal?: AbortSignal;
@@ -121,7 +125,7 @@ export class LocalModel implements ChatClient {
   private async send(
     messages: ChatMessage[],
     mode: Exclude<Mode, 'text'> | undefined,
-    { schema, signal, onDelta, onUsage }: ChatOptions,
+    { schema, signal, onDelta, onUsage, onFinish }: ChatOptions,
   ): Promise<string> {
     const response_format =
       mode === 'json_schema' && schema
@@ -160,18 +164,23 @@ export class LocalModel implements ChatClient {
             return this.client.chat.completions.create({ ...request, stream: true }, { signal });
           });
         let text = '';
+        let finish: ModelFinish = 'unknown';
         for await (const chunk of stream) {
           // The count rides on a final chunk of its own, with no choices in it.
           if (chunk.usage) report(chunk.usage);
+          if (chunk.choices[0]?.finish_reason && finish !== 'refused') finish = modelFinish(chunk.choices[0].finish_reason);
+          if (chunk.choices[0]?.delta?.refusal) finish = 'refused';
           const delta = chunk.choices[0]?.delta?.content ?? '';
           if (delta === '') continue;
           text += delta;
           onDelta(delta);
         }
+        onFinish?.(finish);
         return text;
       }
       const response = await this.client.chat.completions.create(request, { signal });
       report(response.usage);
+      onFinish?.(response.choices[0]?.message.refusal ? 'refused' : modelFinish(response.choices[0]?.finish_reason));
       return response.choices[0]?.message?.content ?? '';
     } catch (err) {
       const error = err as { status?: number; message?: string };

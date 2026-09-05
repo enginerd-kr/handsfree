@@ -46,6 +46,9 @@ export class MessageStream {
   private state: 'seek' | 'colon' | 'quote' | 'string' | 'done' = 'seek';
   private matched = 0;
   private prev = '';
+  private depth = 0;
+  private inJsonString = false;
+  private jsonEscaped = false;
   /** A backslash escape being collected, `\` through `\uXXXX`. */
   private escape: string | undefined;
 
@@ -56,7 +59,7 @@ export class MessageStream {
         case 'done':
           return out;
         case 'seek':
-          this.seek(ch);
+          if (this.depth === 1 && (!this.inJsonString || this.matched > 0)) this.seek(ch);
           break;
         case 'colon':
           if (!/\s/.test(ch)) {
@@ -73,6 +76,13 @@ export class MessageStream {
         case 'string':
           out += this.decode(ch);
           break;
+      }
+      if (this.jsonEscaped) this.jsonEscaped = false;
+      else if (this.inJsonString && ch === '\\') this.jsonEscaped = true;
+      else if (ch === '"') this.inJsonString = !this.inJsonString;
+      else if (!this.inJsonString) {
+        if (ch === '{' || ch === '[') this.depth++;
+        else if (ch === '}' || ch === ']') this.depth--;
       }
       this.prev = ch;
     }

@@ -5,8 +5,10 @@ import type { AuditEntry } from '../policy/types.js';
 import type { TurnUsage, TokenUsage } from '../contracts/usage.js';
 import type { TaskStatus, TaskResult } from '../contracts/task.js';
 import type { ContextEntry } from '../contracts/context.js';
+import type { AgentJobRecord } from '../contracts/agent-job.js';
 
 export type TranscriptBody =
+  | { type: 'agent_job'; job: AgentJobRecord }
   | { type: 'context'; entry: ContextEntry }
   | { type: 'budget_usage'; usage: TokenUsage }
   | { type: 'memory'; agentId: string; sessionId: string; files: { path: string; version: string }[]; topic: string }

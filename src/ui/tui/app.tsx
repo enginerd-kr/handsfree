@@ -898,14 +898,16 @@ export function App({ runtime, settingsHome }: { runtime: Runtime; settingsHome?
     // A command handsfree answers itself is over the moment it runs, so it
     // never queues behind a turn and never wears the spinner.
     if (command?.kind === 'local') {
-      void runtime.conversation.send(outgoing.text, outgoing.shown);
+      if ((command.name === 'plan' || command.name === 'execute') && !runtime.conversation.isBusy) start(outgoing);
+      else void runtime.conversation.send(outgoing.text, outgoing.shown);
       return;
     }
 
-    // Everything else the user sends mid-turn takes its place in line behind
-    // the turn already running.
-    if (busy) {
-      setQueued((line) => [...line, outgoing]);
+    // Ordinary messages steer the active loop at its next boundary. Prompt
+    // commands keep their own expansion/turn and wait until it finishes.
+    if (runtime.conversation.isBusy) {
+      if (parsed) setQueued((line) => [...line, outgoing]);
+      else void runtime.conversation.send(outgoing.text, outgoing.shown);
       return;
     }
     start(outgoing);
@@ -1091,7 +1093,7 @@ export function App({ runtime, settingsHome }: { runtime: Runtime; settingsHome?
     if (key.escape) {
       // A cancelled turn ends in silence, and so does everything queued behind
       // it — one escape stops the whole thing, not just the turn on screen.
-      if (busy) {
+      if (busy || runtime.conversation.isBusy) {
         setQueued([]);
         runtime.conversation.cancel();
       }
@@ -1290,6 +1292,7 @@ export function App({ runtime, settingsHome }: { runtime: Runtime; settingsHome?
             brief={brief}
             cwd={runtime.workspace.dir}
             mode={mode}
+          workMode={runtime.conversation.mode}
           />
         )}
       </Box>
@@ -1944,6 +1947,7 @@ function Prompt({
   brief,
   cwd,
   mode,
+  workMode,
 }: {
   draft: Draft;
   attachments: Attachments;
@@ -1960,6 +1964,7 @@ function Prompt({
   /** The directory the agents work in, drawn at the hint line's right edge. */
   cwd: string;
   mode: PermissionMode;
+  workMode: 'plan' | 'execute';
 }): React.JSX.Element {
   // Where debug lines are going, when they are going anywhere. It cannot
   // change while the UI is up, so reading it at render is enough.
@@ -2035,7 +2040,7 @@ function Prompt({
           this ask me" is always on screen. */}
       <Box height={1} paddingLeft={2} paddingRight={1}>
         <Text color={modeInk(mode)} wrap="truncate">
-          {`${MODE_MARK} ${MODE_LABEL[mode]} · shift+tab to cycle`}
+          {`${MODE_MARK} ${MODE_LABEL[mode]} · shift+tab to cycle${workMode === 'plan' ? ' · plan mode · /execute to implement' : ''}`}
         </Text>
       </Box>
     </Box>

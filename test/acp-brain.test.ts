@@ -12,6 +12,23 @@ import { fakeAgent } from './fake-agent.js';
  * answer the way a planner should.
  */
 describe('acp orchestration', () => {
+  it('retries a truncated ACP response without accepting its apparent final answer', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'handsfree-acp-finish-'));
+    const brain = fakeAgent({ script: (_prompt, turn) => [
+      { do: 'say', text: JSON.stringify({ message: turn === 0 ? 'truncated report' : 'complete report', calls: [], finish: true }) },
+      { do: 'stop', reason: turn === 0 ? 'max_tokens' : 'end_turn' },
+    ] });
+    const config = ConfigSchema.parse({ workspaceRoot: root, orchestration: { provider: 'acp', acp: { agent: 'claude' } },
+      agents: { claude: { command: 'unused' } } });
+    const runtime = createRuntime({ config, createTarget: () => brain.target() });
+    try {
+      await runtime.conversation.send('Give a complete report');
+      expect(brain.prompts).toHaveLength(2);
+      const replies = runtime.transcript.all().filter((r) => r.type === 'assistant').map((r) => r.text);
+      expect(replies).not.toContain('truncated report');
+      expect(replies).toContain('complete report');
+    } finally { await runtime.close(); fs.rmSync(root, { recursive: true, force: true }); }
+  });
   it.each([undefined, 'deny'])('uses Codex as the planner with legacy nativeTools=%s', async (nativeTools) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'handsfree-codex-brain-'));
     const brain = fakeAgent({

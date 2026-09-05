@@ -155,6 +155,8 @@ Agents are spawned directly, not through a shell, so aliases and rc-file tricks 
 }
 ```
 
+Use `/plan [task]` to explore and save a plan, then `/execute [instruction]` to carry it out in the same conversation. This work mode keeps the current permission setting. Messages entered while a task runs steer the orchestrator at its next tool boundary; Esc cancels. The orchestrator can combine commentary with several calls and start background agents when work is independent. See [the agent loop](docs/agent-loop.md) for result transfer and recovery.
+
 Open `/models` (also `/model` or `/settings`) in the terminal UI to set the default models for the orchestrator, Claude, Codex, and Gemini. Use ↑/↓ or Tab to move, Enter to edit a model, and ←/→ on the orchestrator source to choose a local/API endpoint or an ACP agent. Choose an advertised agent model or type a model ID directly; Ctrl+U clears the field. An empty agent model uses its CLI default, and an empty ACP orchestrator model inherits that agent's default. Endpoint models require an ID and use the endpoint already configured in the file.
 
 Ctrl+S or **Save defaults** writes to `~/.handsfree/config.json`; changes apply on the next launch. Escape leaves without saving. Other settings and launch profiles are preserved.

@@ -67,6 +67,10 @@ export function builtins(): Command[] {
       source: 'builtin',
       run: (_args, host) => ({ do: 'say', text: 'cost', lines: cost(host) }),
     },
+    { kind: 'local', name: 'plan', description: 'prepare a plan without implementing changes',
+      argumentHint: '[task]', source: 'builtin', run: (args) => ({ do: 'work-mode', mode: 'plan', prompt: args }) },
+    { kind: 'local', name: 'execute', description: 'leave plan mode and execute the saved plan',
+      argumentHint: '[instruction]', source: 'builtin', run: (args) => ({ do: 'work-mode', mode: 'execute', prompt: args }) },
   ];
 }
 

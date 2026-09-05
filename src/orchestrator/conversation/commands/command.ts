@@ -31,6 +31,7 @@ export type CommandEffect =
   /** Forget the conversation, and take the screen with it. */
   | { do: 'clear' }
   | { do: 'models' }
+  | { do: 'work-mode'; mode: 'plan' | 'execute'; prompt: string }
   | { do: 'quit' };
 
 /**

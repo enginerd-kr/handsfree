@@ -4,7 +4,7 @@ import {
   type ChatMessage,
 } from '../../models/client.js';
 import type { OrchestrationChoice } from '../../models/planner.js';
-import { narrate, renderLedger } from './narrate.js';
+import { renderLedger } from './narrate.js';
 import {
   composeUserMessage,
   nextStep,
@@ -14,7 +14,7 @@ import {
 } from './plan.js';
 import type { AgentPool } from '../../host/pool.js';
 import { AgentTool, type AgentCard } from './tools/agent.js';
-import { Toolbox, type Tool } from './tools/tool.js';
+import { Toolbox, type Tool, type ToolResult } from './tools/tool.js';
 import type { Transcript } from '../../workspace/transcript.js';
 import type { Workspace } from '../../workspace/workspace.js';
 import { expandBody } from './commands/expand.js';
@@ -37,6 +37,11 @@ import type { UsageTracker } from '../usage/meter.js';
 import { ResultTool } from './tools/result.js';
 import { ContextTool } from './tools/context.js';
 import { RunContext } from '../context/context.js';
+import { WorkMode } from '../context/work-mode.js';
+import { PlanTool } from './tools/plan.js';
+import { AgentJobs } from './jobs.js';
+import { JobTool } from './tools/job.js';
+import { recoverWindow } from './window.js';
 
 export interface ConversationDeps {
   executor?: Executor;
@@ -109,10 +114,15 @@ export class Conversation {
   private streamCounter = 0;
   private turn: AbortController | undefined;
   private inflight: Promise<void> | undefined;
+  private finishing = false;
+  private readonly updates: string[] = [];
+  private wake = new AbortController();
+  private readonly jobs: AgentJobs;
   private readonly delegator: Delegator;
   /** What the planner can call: the agent tool, and whatever else was handed in. */
   private readonly toolbox: Toolbox;
   private readonly context: RunContext;
+  private readonly workMode: WorkMode;
   /**
    * Which conversation this is. `/clear` does not queue behind a turn — it is
    * over the moment it runs — so a turn can outlive the history it was
@@ -132,18 +142,24 @@ export class Conversation {
     }
     this.delegator = deps.executor?.delegator ?? new Delegator(deps);
     this.context = new RunContext(deps.transcript);
+    this.workMode = new WorkMode(deps.transcript, deps.workspace.runDir);
+    this.jobs = new AgentJobs(deps.transcript);
     this.messages = this.context.history();
+    const agent = new AgentTool({
+      jobs: this.jobs,
+      roster: () => this.roster(),
+      delegator: this.delegator,
+      transcript: deps.transcript,
+      workspace: deps.workspace,
+      onOutcome: (outcome) => deps.executor?.store(outcome),
+      readOutcome: deps.executor ? (taskId) => deps.executor!.readOutcome(taskId) : undefined,
+    });
     this.toolbox = new Toolbox([
-      new AgentTool({
-        roster: () => this.roster(),
-        delegator: this.delegator,
-        transcript: deps.transcript,
-        workspace: deps.workspace,
-        onOutcome: (outcome) => deps.executor?.store(outcome),
-        readOutcome: deps.executor ? (taskId) => deps.executor!.readOutcome(taskId) : undefined,
-      }),
+      agent,
+      new JobTool(this.jobs, agent),
       ...(deps.executor ? [new ResultTool(deps.executor)] : []),
       new ContextTool(this.context),
+      new PlanTool(this.workMode),
       ...(deps.tools ?? []),
     ]);
   }
@@ -152,6 +168,8 @@ export class Conversation {
     return this.turn !== undefined;
   }
 
+  get mode(): 'plan' | 'execute' { return this.workMode.state().mode; }
+
   cancel(): void {
     this.turn?.abort();
   }
@@ -159,6 +177,8 @@ export class Conversation {
   reset(): void {
     this.epoch++;
     this.messages = [];
+    this.updates.length = 0;
+    this.jobs.reset();
     // The ground rules go with the history: the delegator forgets who has
     // been briefed. The stream counter deliberately does not reset: the view
     // keys rows by it, and a second reply 1 would land on the first one's row.
@@ -173,11 +193,24 @@ export class Conversation {
   async close(): Promise<void> {
     this.turn?.abort();
     await this.inflight?.catch(() => {});
+    await this.jobs.close();
   }
 
   async send(text: string, shown?: string): Promise<void> {
+    if (this.turn?.signal.aborted || this.finishing) {
+      await this.inflight;
+      return this.send(text, shown);
+    }
     const parsed = this.invoked(text);
-    if (this.isBusy && !(parsed && parsed !== 'unknown' && parsed.command.kind === 'local')) throw new Error('A conversation turn is already running');
+    if (this.isBusy && !parsed) {
+      this.deps.transcript.append({ type: 'user', text, ...(shown === undefined ? {} : { shown }) });
+      this.updates.push(text);
+      this.wake.abort();
+      await this.inflight;
+      return;
+    }
+    if (this.isBusy && !(parsed && parsed !== 'unknown' && parsed.command.kind === 'local')) throw new Error('Prompt commands must wait for the current turn.');
+    if (this.isBusy) { await this.run(text, shown); return; }
     const work = this.run(text, shown);
     this.inflight = work;
     try {
@@ -194,7 +227,7 @@ export class Conversation {
     // A command is answered before the agent roster is even consulted:
     // `/help` and `/config` are wanted most on exactly the machine where
     // nothing is configured yet.
-    const invoked = this.invoked(text);
+    let invoked = this.invoked(text);
     transcript.append(said);
     if (invoked === 'unknown') {
       transcript.append({
@@ -206,8 +239,10 @@ export class Conversation {
     }
 
     if (invoked && invoked.command.kind === 'local') {
-      this.local(invoked.command, invoked.args);
-      return;
+      const continuation = this.local(invoked.command, invoked.args);
+      if (!continuation) return;
+      text = continuation;
+      invoked = undefined;
     }
 
     const agents = this.deps.pool.available();
@@ -235,12 +270,7 @@ export class Conversation {
     const outcomes: TaskOutcome[] = [];
     const notes: string[] = [];
     let answered = false;
-    /**
-     * Only a direct @mention closes on the ledger: the named agent owns
-     * that reply. Planner-routed tasks return to the planner for follow-up
-     * work or a final answer, including calls to a group of agents.
-     */
-    let ledgerOnly = false;
+    let recoveredWindow = false;
     /**
      * The turn as the planner will remember it: the line the user typed and
      * the reply that closed it. Everything between — the steps, the task
@@ -257,6 +287,20 @@ export class Conversation {
     let completion: 'reported' | 'cancelled' | 'error' = 'error';
     const epoch = this.epoch;
     let history: ChatMessage[] = this.messages;
+    const consumeUpdates = () => {
+      for (const update of this.updates.splice(0)) {
+        if (turnId !== undefined) this.context.update(turnId, update);
+        history.push({ role: 'user', pinned: true, content: `USER UPDATE:\n${update}` });
+        if (opening) opening = { ...opening, content: `${opening.content}\n\nUSER UPDATE:\n${update}` };
+      }
+      this.wake = new AbortController();
+    };
+    const rememberResult = (result: ToolResult) => {
+      for (const outcome of [...(result.outcomes ?? []), ...(result.outcome ? [result.outcome] : [])]) {
+        if (!outcomes.some((saved) => saved.taskId === outcome.taskId)) outcomes.push(outcome);
+      }
+      if (result.note && !notes.includes(result.note)) notes.push(result.note);
+    };
 
     try {
       // Inside the turn, and holding its signal: expansion can run a command,
@@ -289,14 +333,13 @@ export class Conversation {
       // same conversation whichever way the task was routed.
       const mention = invoked ? undefined : parseMention(prompt, agents);
       if (mention) {
-        ledgerOnly = true;
         const routed = this.toolbox.parse(
           JSON.stringify({
             action: 'call',
             tool: 'agent',
             input: {
               agent: mention.agent,
-              kind: 'change',
+              kind: this.mode === 'plan' ? 'inspect' : 'change',
               prompt: mention.task,
               ...(mention.model === undefined ? {} : { model: mention.model }),
             },
@@ -308,36 +351,63 @@ export class Conversation {
         if (!routed.ok || routed.step.action !== 'call') throw new Error(routed.ok ? 'not a call' : routed.error);
         history.push({ role: 'assistant', content: routed.step.call.json });
         this.context.step(turnId, routed.step.call.json);
-        const result = await routed.step.call.run({ signal: turn.signal, turnId });
+        const result = await routed.step.call.run({ signal: turn.signal, turnId, workMode: this.mode });
         if (result.outcome) outcomes.push(result.outcome);
         if (result.note) notes.push(result.note);
-        history.push({ role: 'user', content: this.relay(routed.step.call.name, result.text) });
+        this.context.retainEvidence(turnId, routed.step.call.json, result.text);
+        history.push({ role: 'user', content: this.relay(routed.step.call.name, result.text),
+          agents: result.outcome ? [result.outcome.agentId] : [] });
         completion = 'reported';
-        return;
+        if (!this.updates.length) return;
       }
 
       for (;;) {
         if (turn.signal.aborted) break;
+        consumeUpdates();
+        for (const result of this.jobs.notifications()) {
+          rememberResult(result);
+          history.push({ role: 'user', content: this.relay('agent_job notification', result.text),
+            agents: [...(result.outcomes ?? []), ...(result.outcome ? [result.outcome] : [])].map((outcome) => outcome.agentId) });
+        }
 
         // Rebuild from durable state after every result or self-analysis.
         // Replace, never mutate, a message a previous model call may retain.
         if (epoch === this.epoch) {
           const at = history.indexOf(sent);
           sent = this.requestMessage(agents, prompt, turnId);
+          if (recoveredWindow) sent = { ...sent, content: sent.requiredContent! };
           if (at >= 0) history[at] = sent;
         }
 
         const stream = this.newStream();
-        const planned = await this.plan(history, turn.signal, stream);
+        const planned = await this.plan(history, turn.signal, stream, (messages) => {
+          const checkpoint = this.context.checkpoint(turnId!, messages);
+          const recovered = recoverWindow(messages, checkpoint);
+          if (recovered) {
+            recoveredWindow = true;
+            // Replace the active view as well, so the next step does not send
+            // the same overflowing history again. Original records remain.
+            history = recovered;
+            sent = history.find((message) => message.pinned)!;
+            transcript.append({ type: 'note', level: 'info', text: `Recovered the model context from checkpoint ${checkpoint}; original evidence remains in the run record.` });
+          }
+          return recovered;
+        });
         if (!planned.ok) {
           stream.retract();
+          if (this.updates.length && !turn.signal.aborted) continue;
           notes.push(`The orchestration model did not produce a usable next step (${planned.error}).`);
           completion = 'error';
           break;
         }
-        if (planned.step.review) this.context.review(turnId, planned.step.review);
+        if (planned.step.review && !this.updates.length) this.context.review(turnId, planned.step.review);
 
-        if (planned.step.action === 'answer') {
+        if (planned.step.action === 'answer' && !this.updates.length && (this.jobs.running || this.jobs.pending)) {
+          stream.retract();
+          await this.jobs.wait([], { signal: turn.signal, wakeSignal: this.wake.signal });
+          continue;
+        }
+        if (planned.step.action === 'answer' && !this.updates.length) {
           history.push({ role: 'assistant', content: JSON.stringify(planned.step) });
           const message = planned.step.message;
           this.context.step(turnId, JSON.stringify(planned.step));
@@ -347,24 +417,42 @@ export class Conversation {
           closing = message;
           break;
         }
-        // The step is a call; anything its JSON streamed was not a reply.
-        stream.retract();
-        const { call } = planned.step;
-        history.push({ role: 'assistant', content: call.json });
-        this.context.step(turnId, call.json);
-        const result = await call.run({ signal: turn.signal, turnId });
-        if (call.name === 'task_result' || call.name === 'context') this.context.retainEvidence(turnId, call.json, result.text);
-        if (result.outcome) outcomes.push(result.outcome);
-        if (result.outcomes) outcomes.push(...result.outcomes);
-        if (result.note && !notes.includes(result.note)) notes.push(result.note);
-        history.push({ role: 'user', content: this.relay(call.name, result.text) });
-
-        if (result.halt) break;
+        const step = planned.step;
+        if (step.action === 'answer') { stream.retract(); continue; }
+        if (step.action === 'continue' && step.message && !this.updates.length) stream.end(step.message);
+        else stream.retract();
+        const calls = step.action === 'call' ? [step.call] : step.calls;
+        const json = step.action === 'call' ? step.call.json : JSON.stringify({
+          message: step.message, calls: calls.map((call) => JSON.parse(call.json)), finish: false,
+        });
+        history.push({ role: 'assistant', content: json });
+        this.context.step(turnId, json);
+        let halted = false;
+        for (const [index, call] of calls.entries()) {
+          const skipped: boolean = turn.signal.aborted || halted || this.updates.length > 0;
+          let result: ToolResult;
+          try {
+            result = skipped ? { text: 'Not executed: cancelled or superseded by a user update. Reassess before calling again.' }
+              : await call.run({ signal: turn.signal, turnId, workMode: this.mode, wakeSignal: this.wake.signal });
+          } catch (err) {
+            result = { text: `Tool error: ${(err as Error).message}` };
+          }
+          this.context.retainEvidence(turnId, call.json, result.text);
+          rememberResult(result);
+          history.push({ role: 'user', content: this.relay(call.name, `${calls.length > 1 ? `Call ${index + 1}:\n` : ''}${result.text}`),
+            agents: [...(result.outcomes ?? []), ...(result.outcome ? [result.outcome] : [])].map((outcome) => outcome.agentId) });
+          halted ||= result.halt === true;
+        }
+        if (halted && !this.updates.length) break;
       }
     } catch (err) {
       completion = 'error';
       if (!turn.signal.aborted) notes.push(`The turn stopped: ${(err as Error).message}`);
     } finally {
+      this.finishing = true;
+      // A stopped planner must not leave unobserved workers running.
+      if (this.jobs.running) await this.jobs.close();
+      for (const result of this.jobs.notifications()) rememberResult(result);
       // A cancelled turn ends where it stood, silently: the delegation and
       // stop records already say what ran, and the user asked for a stop, not
       // a report about stopping. Skipping the summary is also what lets /exit
@@ -377,26 +465,15 @@ export class Conversation {
       // planner call later.
       if (!answered && !turn.signal.aborted) {
         const stream = this.newStream();
-        const summary = ledgerOnly
-          ? {
-              text: renderLedger({ userMessage: prompt, outcomes, notes, workspaceDir: workspace.dir }),
-              ledger: true,
-            }
-          : outcomes.length > 0 || notes.length > 0
-            ? await narrate(
-                this.deps.llm && metered(this.deps.llm, 'narrate', transcript, plannerLabel(config), this.plannerMeter()),
-                { userMessage: prompt, outcomes, notes, workspaceDir: workspace.dir },
-                turn.signal,
-                (piece) => stream.delta(piece),
-              )
-            : { text: 'Nothing to do.', ledger: false };
-        closing = summary.text;
-        stream.end(summary.text, summary.ledger);
+        closing = renderLedger({ userMessage: prompt, outcomes, notes, workspaceDir: workspace.dir });
+        stream.end(closing, true);
       }
+      consumeUpdates();
       if (turnId !== undefined) this.context.finish(turnId, turn.signal.aborted ? 'cancelled' : completion,
         closing ?? '');
       if (sent && opening) this.settle(epoch, history, sent, opening, closing);
       this.turn = undefined;
+      this.finishing = false;
     }
   }
 
@@ -466,13 +543,14 @@ export class Conversation {
     }
   }
 
-  private async plan(history: readonly ChatMessage[], signal: AbortSignal, stream: AnswerStream) {
+  private async plan(history: readonly ChatMessage[], signal: AbortSignal, stream: AnswerStream,
+    recoverContext?: (messages: ChatMessage[]) => ChatMessage[] | undefined) {
     if (!this.deps.llm) {
       return { ok: false as const, error: 'no orchestration model is configured' };
     }
     try {
       const llm = metered(this.deps.llm, 'plan', this.deps.transcript, plannerLabel(this.deps.config), this.plannerMeter());
-      return await nextStep(llm, [...history], this.toolbox, signal, stream);
+      return await nextStep(llm, [...history], this.toolbox, signal, stream, recoverContext);
     } catch (err) {
       return { ok: false as const, error: (err as Error).message };
     }
@@ -502,7 +580,7 @@ export class Conversation {
   }
 
   /** A command handsfree answers itself. No agent is woken, no turn is spent. */
-  private local(command: CommandBase & LocalCommand, args: string): void {
+  private local(command: CommandBase & LocalCommand, args: string): string | undefined {
     const { transcript } = this.deps;
     if (command.interactive) {
       transcript.append({
@@ -515,6 +593,18 @@ export class Conversation {
 
     const effect = command.run(args, this.deps.commandHost(`/${command.name}`));
     switch (effect.do) {
+      case 'work-mode': {
+        this.workMode.select(effect.mode);
+        transcript.append({ type: 'note', level: 'info', text: `Work mode: ${effect.mode}.` });
+        const prompt = effect.prompt || (effect.mode === 'execute' && this.workMode.state().plan
+          ? 'Execute the saved plan, incorporating the current user instructions.' : '');
+        if (this.isBusy) {
+          this.updates.push(`Work mode is now ${effect.mode}. ${prompt}`);
+          this.wake.abort();
+          return;
+        }
+        return prompt || undefined;
+      }
       case 'say':
         transcript.append({
           type: 'note',
@@ -574,10 +664,9 @@ export class Conversation {
    * too — what each agent has open — because it is the half that changes.
    */
   private requestMessage(agents: string[], prompt: string, turnId: number): ChatMessage {
-    const required = [`CURRENT REQUEST SOURCE: record ${turnId}`, this.context.required()].filter(Boolean).join('\n');
+    const required = [`CURRENT REQUEST SOURCE: record ${turnId}`, this.workMode.prompt(), this.context.required()].filter(Boolean).join('\n');
     return { role: 'user', pinned: true,
-      content: composeUserMessage([required, this.runState(agents, turnId),
-        this.context.evidenceView(turnId)].filter(Boolean).join('\n\n'), prompt),
+      content: composeUserMessage([required, this.runState(agents, turnId)].filter(Boolean).join('\n\n'), prompt),
       requiredContent: composeUserMessage(required, prompt) };
   }
 

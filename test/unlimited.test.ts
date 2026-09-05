@@ -25,15 +25,15 @@ describe('execution without configured limits', () => {
     expect(config.orchestration.acp).not.toHaveProperty('timeoutMs');
   });
 
-  it('repairs more than three invalid replies and executes more than 32 planning steps', async () => {
+  it('recovers a malformed reply and executes more than 32 planning steps', async () => {
     const worker = fakeAgent({ script: () => [{ do: 'say', text: 'REPORT\noutcome: done\nsummary: checked' }] });
     const calls = Array.from({ length: 40 }, (_, n) => JSON.stringify({ action: 'call', tool: 'agent',
       input: { agent: 'worker', kind: 'answer', prompt: `Check item ${n}` } }));
-    const llm = scriptedModel([...Array(5).fill('invalid JSON'), ...calls, JSON.stringify({ action: 'answer', message: 'All 40 checked.' })]);
+    const llm = scriptedModel(['invalid JSON', ...calls, JSON.stringify({ action: 'answer', message: 'All 40 checked.' })]);
     open = harness({ agents: { worker }, llm });
     await open.runtime.conversation.send('Check every item.');
     expect(worker.prompts).toHaveLength(40);
-    expect(llm.seen).toHaveLength(46);
+    expect(llm.seen).toHaveLength(42);
     expect(open.runtime.transcript.all().filter((r) => r.type === 'assistant').at(-1)).toMatchObject({ text: 'All 40 checked.' });
   });
 

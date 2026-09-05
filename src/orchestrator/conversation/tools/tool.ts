@@ -15,13 +15,13 @@ import { ReviewSchema, type LoopReview } from '../../../contracts/review.js';
 export interface ToolContext {
   signal: AbortSignal;
   turnId?: number;
+  workMode?: 'plan' | 'execute';
+  /** A user update wakes waiting tools without cancelling the worker. */
+  wakeSignal?: AbortSignal;
 }
 
 export interface ToolResult {
-  /**
-   * What the planner is handed back. Kept within the run's result limit by
-   * the tool itself, which knows what part of its result matters most.
-   */
+  /** What the planner is handed back. Replies remain complete unless it requests a page. */
   text: string;
   /** True when the turn should stop here: what the tool did cannot be built on. */
   halt?: boolean;
@@ -63,15 +63,26 @@ export interface Invocation {
   run(ctx: ToolContext): Promise<ToolResult>;
 }
 
-export type Step = ({ action: 'answer'; message: string } | { action: 'call'; call: Invocation }) & { review?: LoopReview };
+export type Step = (
+  { action: 'answer'; message: string } |
+  { action: 'call'; call: Invocation } |
+  { action: 'continue'; message: string; calls: Invocation[] }
+) & { review?: LoopReview };
 
 export type ParsedStep = { ok: true; step: Step } | { ok: false; error: string };
 
 /** The reply's outer shape: an answer, or a call naming a tool. What the call carries is the tool's to check. */
-const Envelope = z.discriminatedUnion('action', [
+const LegacyEnvelope = z.discriminatedUnion('action', [
   z.object({ review: ReviewSchema.optional(), action: z.literal('answer'), message: z.string().trim().min(1) }),
   z.object({ review: ReviewSchema.optional(), action: z.literal('call'), tool: z.string().min(1), input: z.unknown() }),
 ]);
+const TurnEnvelope = z.object({
+  review: ReviewSchema.optional(),
+  message: z.string().default(''),
+  calls: z.array(z.object({ tool: z.string().min(1), input: z.unknown() })),
+  finish: z.boolean(),
+});
+const Envelope = z.union([LegacyEnvelope, TurnEnvelope]);
 
 export class Toolbox {
   private readonly tools = new Map<string, Tool<unknown>>();
@@ -105,7 +116,10 @@ export class Toolbox {
     const calls = [...this.tools.values()].map((tool) =>
       z.object({ review: ReviewSchema.optional(), action: z.literal('call'), tool: z.literal(tool.name), input: tool.input }),
     );
-    const shape = z.union([z.object({ review: ReviewSchema.optional(), action: z.literal('answer'), message: z.string().trim().min(1) }), ...calls]);
+    const inputs = [...this.tools.values()].map((tool) => z.object({ tool: z.literal(tool.name), input: tool.input }));
+    const item = inputs.length ? z.union(inputs) : z.never();
+    const turn = z.object({ review: ReviewSchema.optional(), message: z.string(), calls: z.array(item), finish: z.boolean() });
+    const shape = z.union([turn, z.object({ review: ReviewSchema.optional(), action: z.literal('answer'), message: z.string().trim().min(1) }), ...calls]);
     return { name: 'handsfree_step', schema: z.toJSONSchema(shape) as Record<string, unknown> };
   }
 
@@ -128,6 +142,21 @@ export class Toolbox {
     const envelope = Envelope.safeParse(raw);
     if (!envelope.success) {
       return { ok: false, error: `Does not match the schema: ${envelope.error.issues[0]?.message}` };
+    }
+    if (!('action' in envelope.data)) {
+      const { message, calls, finish, review } = envelope.data;
+      if (finish && (calls.length || !message.trim())) return { ok: false, error: 'finish requires a nonempty message and no calls.' };
+      if (!finish && !calls.length && !message.trim()) return { ok: false, error: 'A continuation must contain a message or calls.' };
+      const checked: Invocation[] = [];
+      for (const call of calls) {
+        const parsed = this.parse(JSON.stringify({ action: 'call', ...call }));
+        if (!parsed.ok) return parsed;
+        if (parsed.step.action === 'call') checked.push(parsed.step.call);
+      }
+      const state = review ? { review } : {};
+      return { ok: true, step: finish
+        ? { action: 'answer', message, ...state }
+        : { action: 'continue', message, calls: checked, ...state } };
     }
     if (envelope.data.action === 'answer') {
       return { ok: true, step: { action: 'answer', message: envelope.data.message,

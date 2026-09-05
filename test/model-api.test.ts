@@ -9,6 +9,17 @@ import { Transcript } from '../src/workspace/transcript.js';
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe('compatible HTTP routing client', () => {
+  it.each([false, true])('preserves typed completion metadata when streaming=%s', async (streaming) => {
+    vi.stubGlobal('fetch', async () => streaming
+      ? new Response('data: {"choices":[{"delta":{"content":"partial"}}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
+      : Response.json({ choices: [{ message: { content: 'partial' }, finish_reason: 'length' }] }));
+    const finishes: string[] = [];
+    const llm = new LocalModel(ConfigSchema.parse({}).orchestration.local);
+    expect(await llm.chat([{ role: 'user', content: 'hi' }], { onFinish: (reason) => finishes.push(reason),
+      ...(streaming ? { onDelta: () => {} } : {}) })).toBe('partial');
+    expect(finishes).toEqual(['truncated']);
+  });
+
   it('does not add an SDK deadline and still propagates caller cancellation', async () => {
     let entered!: () => void;
     const started = new Promise<void>((resolve) => { entered = resolve; });
