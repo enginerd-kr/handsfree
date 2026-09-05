@@ -871,7 +871,7 @@ describe('Conversation', () => {
       delegate('Do it'),
       answer('done.'),
     ]);
-    const h = harness({ agents: { claude }, llm });
+    const h = harness({ agents: { claude }, llm, config: { orchestration: { maxRepairAttempts: 3 } } });
     open = h;
 
     await h.runtime.conversation.send('do it');
@@ -889,7 +889,7 @@ describe('Conversation', () => {
     const h = harness({
       agents: { claude },
       llm,
-      config: { orchestration: { contextBudgetTokens: 1_400 } },
+      config: { orchestration: { contextBudgetTokens: 1_400, maxOutputTokens: 128 } },
     });
     open = h;
 
@@ -951,7 +951,7 @@ describe('Conversation', () => {
     expect(system).toContain('"gemini": fast on single files');
     // ...and the record, in the part that does, says which one would not
     // have to read the file again.
-    expect(state).toContain('- claude: 1 task this run; already has a.ts open');
+    expect(state).toContain('- claude: 1 task this run; previously saw a.ts');
     // An agent that has done nothing is described, not annotated.
     expect(state).not.toContain('- gemini:');
   });

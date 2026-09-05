@@ -38,8 +38,18 @@ describe('fitBudget', () => {
     expect(fitted[1]?.content.startsWith('u2')).toBe(true);
   });
 
-  it('returns the system prompt and the line alone when nothing else can go', () => {
+  it('refuses to exceed the budget when mandatory messages do not fit', () => {
     const messages = [system, ...turn(1), last];
-    expect(fitBudget(messages, 1)).toEqual([system, last]);
+    expect(() => fitBudget(messages, 1)).toThrow('Required task context');
+    expect(() => fitBudget([system], 1)).toThrow('Required task context');
+  });
+
+  it('preserves the current goal after a tool result evicts older history', () => {
+    const goal: ChatMessage = { role: 'user', content: 'RUN STATE '.repeat(100) + 'Preserve legacy behavior', pinned: true, requiredContent: 'Preserve legacy behavior' };
+    const result: ChatMessage = { role: 'user', content: 'TOOL RESULT: inspection finished' };
+    const fitted = fitBudget([system, ...turn(1), goal, { role: 'assistant', content: 'inspect parser' }, result], 50);
+    expect(fitted.some((m) => m.content === 'Preserve legacy behavior')).toBe(true);
+    expect(fitted.at(-1)).toEqual(result);
+    expect(estimateMessages(fitted)).toBeLessThanOrEqual(50);
   });
 });

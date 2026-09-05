@@ -218,7 +218,7 @@ describe('agentRecords', () => {
     task(transcript, { taskId: 1, agentId: 'claude', task: 'a', edited: ['/ws/a.ts'], read: ['/ws/b.ts'] });
 
     const record = agentRecords(tasksSince(transcript.all(), 0)).get('claude');
-    expect(renderAgentRecord(record, '/ws')).toBe('1 task this run; already has a.ts, b.ts open');
+    expect(renderAgentRecord(record, '/ws')).toBe('1 task this run; previously saw a.ts, b.ts');
   });
 
   it('forgets what an earlier session read, which the one on now never saw', () => {
@@ -246,7 +246,7 @@ describe('agentRecords', () => {
     });
 
     const record = agentRecords(tasksSince(transcript.all(), 0)).get('claude');
-    expect(renderAgentRecord(record, '/ws')).toContain('and 2 more open');
+    expect(renderAgentRecord(record, '/ws')).toContain('and 2 more');
   });
 });
 
@@ -412,7 +412,7 @@ describe('renderRunState with reports', () => {
     const transcript = new Transcript();
     task(transcript, { taskId: 1, agentId: 'gemini', task: 'x', said: 'REPORT\noutcome: blocked\nsummary: Needs a token.' });
     const state = renderRunState(tasksSince(transcript.all(), 0), '/ws');
-    expect(state).toContain('Task 1 (gemini): done');
+    expect(state).toContain('Task 1 (gemini): blocked');
     expect(state).toContain('agent says: blocked');
   });
 

@@ -66,7 +66,8 @@ export async function run(
     await runtime.conversation.send(prompt);
     const failed = runtime.transcript
       .since(before)
-      .some((record) => record.type === 'note' && record.level === 'error');
+      .some((record) => record.type === 'note' && record.level === 'error'
+        || record.type === 'task_result' && record.result.status !== 'done');
     return failed ? 1 : 0;
   } finally {
     process.off('SIGINT', stop);

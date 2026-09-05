@@ -5,9 +5,13 @@ import { LocalModel, type ChatClient } from './brain/client.js';
 import { Planner, type OrchestrationChoice } from './brain/planner.js';
 import { PolicyEngine } from './policy/engine.js';
 import type { Escalator } from './policy/types.js';
+import type { PermissionMode } from './policy/mode.js';
 import { AgentPool, type PoolOptions } from './host/pool.js';
 import { resolveModel } from './host/models.js';
 import { Conversation } from './orchestrator/conversation.js';
+import { Executor } from './orchestrator/executor.js';
+import { BudgetManager } from './orchestrator/budget.js';
+import { workspaceScheduler } from './orchestrator/scheduler.js';
 import { Transcript } from './workspace/transcript.js';
 import { pruneOldRuns } from './workspace/prune.js';
 import { Workspace } from './workspace/workspace.js';
@@ -20,6 +24,7 @@ import type { Command, CommandHost } from './slash/command.js';
 const PRUNE_DELAY_MS = 5_000;
 
 export interface RuntimeOptions {
+  permissionMode?: PermissionMode;
   config: Config;
   /** The files the settings were read from, strongest first, for `/config` to name. */
   configSources?: readonly ConfigLocation[];
@@ -51,6 +56,8 @@ export interface Runtime {
   policy: PolicyEngine;
   pool: AgentPool;
   conversation: Conversation;
+  executor: Executor;
+  budget: BudgetManager;
   /** Every slash command this run knows, built once from disk. */
   commands: readonly Command[];
   /** A context for a command to act in, named after the command doing the asking. */
@@ -80,6 +87,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       transcript.append({ type: 'decision', agentId: entry.request.agentId, entry });
     },
   });
+  if (options.permissionMode) policy.setMode(options.permissionMode);
 
   const pool = new AgentPool({
     config,
@@ -201,6 +209,9 @@ export function createRuntime(options: RuntimeOptions): Runtime {
   }, PRUNE_DELAY_MS);
   prune.unref();
 
+  const budget = new BudgetManager(config, transcript);
+  const scheduling = workspaceScheduler(workspace.dir, config.execution.maxParallel);
+  const executor = new Executor({ config, pool, transcript, workspace, policy, budget, llm: planner, scheduler: scheduling.scheduler });
   const conversation = new Conversation({
     config,
     pool,
@@ -210,6 +221,8 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     useOrchestration,
     commands: registry.commands,
     commandHost,
+    executor,
+    budget,
   });
 
   return {
@@ -220,6 +233,8 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     policy,
     pool,
     conversation,
+    executor,
+    budget,
     commands: registry.commands,
     commandHost,
     setEscalator: (escalator) => policy.setEscalator(escalator),
@@ -230,8 +245,12 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       // period. Only once the turn has settled — nothing left that could
       // append — is the transcript ended.
       const conversationDone = conversation.close();
+      const executionDone = executor.close();
       await Promise.all([pool.closeAll(), planner?.close()]);
       await conversationDone;
+      await executionDone;
+      budget.close();
+      scheduling.release();
       await transcript.close();
     },
   };

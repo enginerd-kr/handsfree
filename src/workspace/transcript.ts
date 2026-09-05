@@ -3,8 +3,15 @@ import { EventEmitter } from 'node:events';
 import type { SessionUpdate, StopReason, ToolCallStatus, ToolKind } from '@agentclientprotocol/sdk';
 import type { AuditEntry } from '../policy/types.js';
 import type { TurnUsage } from '../host/session.js';
+import type { BudgetUsage } from '../orchestrator/budget.js';
+import type { TaskStatus } from '../orchestrator/outcome.js';
+import type { TaskResult } from '../orchestrator/contract.js';
 
 export type TranscriptBody =
+  | { type: 'budget_usage'; usage: BudgetUsage }
+  | { type: 'memory'; agentId: string; sessionId: string; files: { path: string; version: string }[]; topic: string }
+  | { type: 'task_result'; taskId: number; result: TaskResult }
+  | { type: 'resolved'; taskId: number; taskIds: number[] }
   /**
    * `text` is what the model was given. `shown`, where it differs, is the line
    * as the person saw it: a long paste or an image folded to a placeholder,
@@ -77,7 +84,8 @@ export type TranscriptBody =
       taskId: number;
       agentId: string;
       sessionId: string;
-      stopReason: StopReason;
+      stopReason: StopReason | 'unresponsive';
+      status?: TaskStatus;
       usage?: TurnUsage;
       /** The model the session was on when the turn ended, where the agent said. */
       model?: string;
@@ -103,6 +111,9 @@ export type TranscriptBody =
       replyChars: number;
       promptTokens?: number;
       completionTokens?: number;
+      cachedTokens?: number;
+      cachedWriteTokens?: number;
+      estimatedTokens?: number;
       taskId?: number;
       relayedChars?: number;
     };
@@ -195,7 +206,9 @@ export class Transcript extends EventEmitter<TranscriptEvents> {
     if (start === -1) return [];
     const rest = this.records.slice(start);
     const end = rest.findIndex((record) => record.type === 'stop' && record.taskId === taskId);
-    return end === -1 ? rest : rest.slice(0, end + 1);
+    const delegation = this.records[start]!;
+    if (delegation.type !== 'delegation') return [];
+    return taskRecords(end === -1 ? rest : rest.slice(0, end + 1), delegation);
   }
 
   async close(): Promise<void> {
@@ -204,6 +217,16 @@ export class Transcript extends EventEmitter<TranscriptEvents> {
     this.closed = true;
     await new Promise<void>((resolve) => stream.end(resolve));
   }
+}
+
+/** A session may run only one task at a time; unrelated sessions never belong to it. */
+export function taskRecords(records: readonly TranscriptRecord[], task: { taskId: number; agentId: string; sessionId: string }): TranscriptRecord[] {
+  return records.filter((record) => {
+    if ('taskId' in record && record.taskId !== undefined) return record.taskId === task.taskId;
+    if (record.type === 'session_update') return record.agentId === task.agentId && record.sessionId === task.sessionId;
+    if (record.type === 'decision') return record.agentId === task.agentId && record.entry.request.sessionId === task.sessionId;
+    return false;
+  });
 }
 
 /** How a ledger reply opens: the head `renderOutcomeHead` writes for a task. */

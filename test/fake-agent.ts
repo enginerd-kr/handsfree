@@ -14,6 +14,7 @@ import {
   type StopReason,
   type ToolKind,
   type Usage,
+  type SessionUpdate,
 } from '@agentclientprotocol/sdk';
 import type { ClientApp, ClientConnection } from '@agentclientprotocol/sdk';
 import type { ConnectionTarget } from '../src/host/connection.js';
@@ -25,6 +26,7 @@ import type { ConnectionTarget } from '../src/host/connection.js';
  * on demand.
  */
 export type Act =
+  | { do: 'update'; update: SessionUpdate }
   | { do: 'say'; text: string }
   | { do: 'think'; text: string }
   | {
@@ -247,6 +249,9 @@ async function perform(
     if (signal.aborted) return { stopReason: 'cancelled' };
 
     switch (act.do) {
+      case 'update':
+        await client.notify(methods.client.session.update, { sessionId, update: act.update });
+        break;
       case 'say':
         await client.notify(methods.client.session.update, {
           sessionId,

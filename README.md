@@ -2,9 +2,9 @@
 
 # handsfree
 
-**An agent orchestrator for Claude Code, Gemini CLI, and Codex — a single prompt input, routed to the ideal agent.**
+**A token-aware multi-agent tool for Claude Code, Gemini CLI, and Codex, with a lightweight router and reusable worker sessions.**
 
-A lightweight planning model orchestrates each turn, while specialized agents execute the tasks. Each agent maintains its own session memory, preventing redundant re-reading or re-explanation of context.
+A lightweight model selects workers when needed, while specialized agents execute the tasks. Reusable sessions and compact handoffs reduce repeated setup; the host tracks usage and stale context.
 
 [![ci](https://github.com/enginerd-kr/handsfree/actions/workflows/ci.yml/badge.svg)](https://github.com/enginerd-kr/handsfree/actions/workflows/ci.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -25,7 +25,32 @@ A lightweight planning model orchestrates each turn, while specialized agents ex
 
 Coding agents are expensive to initialize and wasteful to re-brief. `handsfree` preserves the stateful, context-heavy components—such as read files, codebase comprehension, and active modifications—within dedicated agent sessions throughout the run. It delegates the lower-cost tasks of routing and state-keeping to a lightweight planning model, which decides the appropriate agent for each step and maintains a minimal, high-level ledger of the conversation.
 
-The result is extreme context efficiency: you state your intent once, and the optimal agent acts on it, building seamlessly upon its accumulated context.
+The structured execution path preserves the original task and constraints in code. Explicit routing skips the planning model; otherwise code ranks a small candidate set and consults the router only when needed. Reports stay short, and full results remain available on demand. Token savings and task quality can be compared with the included benchmark; session reuse alone does not guarantee lower billed usage.
+
+## Use as a multi-agent tool
+
+```bash
+handsfree serve --mcp --permission-mode acceptEdits
+handsfree task '{"task":"Review the parser","kind":"inspect","agent":"claude"}'
+```
+
+Run from the project directory. MCP exposes `delegate`, `batch`, `read_result`, and `usage`. The same executor handles structured CLI requests and the conversation's delegated work. MCP is loaded only when selected.
+
+```json
+{
+  "task": "Fix empty input handling",
+  "kind": "change",
+  "constraints": ["Preserve the legacy flag"],
+  "acceptanceCriteria": ["Existing tests and the empty-input regression pass"],
+  "files": ["src/parser.ts"],
+  "budget": { "maxTokens": 20000 },
+  "requestId": "parser-empty-input-1"
+}
+```
+
+Results include task status, a short summary, blockers, artifacts, verification provenance, token usage, and a `resultRef`. Reusing a request ID returns its recorded result. An interrupted request is not automatically rerun. Fetch full details with `read_result` when the summary is insufficient. Batch requests declare dependencies; independent inspections may overlap while changes run exclusively.
+
+See [execution contracts, budgets, and operating limits](docs/execution.md) for configuration and examples.
 
 ## Install
 
@@ -47,7 +72,7 @@ handsfree run "add a test"                       # one turn, no UI
 handsfree run --permission-mode bypass "..."     # one turn, nothing asked
 ```
 
-Simply describe your goal, and the planner automatically routes it to the most capable agent. The planner works the way a coding agent drives a subagent: every step it either answers you or calls one tool, and the one tool it has is `agent` — it names the agent, writes the brief itself, and reads back a short report when the task ends.
+Simply describe your goal, and the dialogue planner routes it to an agent. Each step either answers you or calls `agent` with a brief and reads back a short report. The `task_result` tool retrieves additional details when needed. Use the structured interface above to preserve explicit requirements without planner rewriting.
 
 ```
 > fix the failing tests
@@ -111,8 +136,12 @@ Use the `/config` command to inspect active settings and their origins. Refer to
 ```bash
 pnpm typecheck
 pnpm test
+pnpm benchmark       # deterministic simulation; no model calls
+pnpm benchmark --live # same artifact checks with the configured worker/model
 pnpm screenshots     # re-shoot every picture in this README, from the real TUI
 ```
+
+The benchmark compares direct, conversational, and structured execution on identical isolated fixtures. It reports artifact success, total/frontier tokens, planning overhead, failed calls, estimation gaps, and latency. Simulation results measure the orchestration path, not real model quality or billing. Live runs enforce a 60,000-token run budget per mode and a 24,000-token per-call budget; reported CLI usage may exceed these before cancellation is possible.
 
 ## License
 

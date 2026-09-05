@@ -4,7 +4,7 @@ import type { HostContext } from '../capabilities/context.js';
 import { AgentConnection, type ConnectionTarget } from '../host/connection.js';
 import { fallbackArgs, spawnTarget } from '../host/launch.js';
 import { SessionUnresponsiveError } from '../host/session.js';
-import type { ChatClient, ChatMessage, ChatOptions, JsonSchemaSpec } from './client.js';
+import { estimateTokens, type ChatClient, type ChatMessage, type ChatOptions, type JsonSchemaSpec } from './client.js';
 
 export interface AcpModelOptions {
   /** Which `agents` entry does the planning. Used in error messages. */
@@ -48,12 +48,14 @@ export class AcpModel implements ChatClient {
     const connection = await this.connect();
 
     let reply = '';
+    const outputLimit = new AbortController();
     let session;
     try {
       session = await connection.newSession((update: SessionUpdate) => {
         if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') {
           reply += update.content.text;
           options.onDelta?.(update.content.text);
+          if (options.maxOutputTokens !== undefined && estimateTokens(reply) > options.maxOutputTokens) outputLimit.abort();
         }
       });
     } catch (err) {
@@ -66,15 +68,15 @@ export class AcpModel implements ChatClient {
     // new one, so each reply is planned on the model the config names. A name
     // the agent will not take fails the turn naming its roster — the
     // connection is fine, it is the name that is wrong, so it is not discarded.
-    if (this.options.model !== undefined) await session.selectModel(this.options.model);
-
     let stopReason;
+    const release = this.options.host.policy.restrict({ agentId: this.options.host.agentId, sessionId: session.sessionId }, 'answer');
     try {
+      if (this.options.model !== undefined) await session.selectModel(this.options.model);
       const end = await session.prompt(render(messages, options.schema), {
         turnTimeoutMs: this.options.timeoutMs,
         idleTimeoutMs: this.options.timeoutMs,
         cancelGraceMs: this.options.cancelGraceMs,
-        signal: options.signal,
+        signal: options.signal ? AbortSignal.any([options.signal, outputLimit.signal]) : outputLimit.signal,
       });
       stopReason = end.stopReason;
       // The agent's own count of the planning turn, in the shape every other
@@ -82,16 +84,23 @@ export class AcpModel implements ChatClient {
       // goes on the prompt side: the figure is what the turn took, not what
       // it was billed.
       if (end.usage) {
-        const { inputTokens, outputTokens, cachedReadTokens = 0, cachedWriteTokens = 0 } = end.usage;
+        const { inputTokens, outputTokens, cachedReadTokens = 0, cachedWriteTokens = 0, thoughtTokens = 0 } = end.usage;
         options.onUsage?.({
           promptTokens: inputTokens + cachedReadTokens + cachedWriteTokens,
-          completionTokens: outputTokens,
+          completionTokens: outputTokens + thoughtTokens,
+          cachedTokens: cachedReadTokens,
+          cachedWriteTokens,
         });
       }
     } catch (err) {
       if (err instanceof SessionUnresponsiveError) await this.discard(connection);
       throw err;
+    } finally {
+      release();
+      connection.releaseSession(session.sessionId);
     }
+
+    if (outputLimit.signal.aborted) throw new Error('Planner output token limit reached');
 
     if (reply.trim() === '') {
       throw new Error(`${this.options.agentId} ended the planning turn (${stopReason}) without replying`);

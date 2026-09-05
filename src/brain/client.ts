@@ -5,6 +5,10 @@ import { debug } from '../debug.js';
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
+  /** Required task context, which history eviction must never discard. */
+  pinned?: boolean;
+  /** Required portion of a pinned message, excluding optional run history. */
+  requiredContent?: string;
 }
 
 export interface JsonSchemaSpec {
@@ -16,9 +20,12 @@ export interface JsonSchemaSpec {
 export interface Usage {
   promptTokens: number;
   completionTokens: number;
+  cachedTokens?: number;
+  cachedWriteTokens?: number;
 }
 
 export interface ChatOptions {
+  maxOutputTokens?: number;
   /** Ask the endpoint to constrain the reply to this JSON Schema, if it can. */
   schema?: JsonSchemaSpec;
   signal?: AbortSignal;
@@ -108,7 +115,7 @@ export class LocalModel implements ChatClient {
   private async send(
     messages: ChatMessage[],
     mode: Exclude<Mode, 'text'> | undefined,
-    { schema, signal, onDelta, onUsage }: ChatOptions,
+    { schema, signal, onDelta, onUsage, maxOutputTokens }: ChatOptions,
   ): Promise<string> {
     const response_format =
       mode === 'json_schema' && schema
@@ -120,12 +127,14 @@ export class LocalModel implements ChatClient {
     const request = {
       model: this.config.model,
       temperature: this.config.temperature,
-      messages,
+      messages: messages.map(({ role, content }) => ({ role, content })),
+      max_tokens: maxOutputTokens ?? this.config.maxOutputTokens,
       ...(response_format ? { response_format } : {}),
     };
-    const report = (usage: { prompt_tokens?: number; completion_tokens?: number } | null | undefined) => {
+    const report = (usage: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } | null } | null | undefined) => {
       if (!onUsage || !usage) return;
-      onUsage({ promptTokens: usage.prompt_tokens ?? 0, completionTokens: usage.completion_tokens ?? 0 });
+      onUsage({ promptTokens: usage.prompt_tokens ?? 0, completionTokens: usage.completion_tokens ?? 0,
+        ...(usage.prompt_tokens_details?.cached_tokens === undefined ? {} : { cachedTokens: usage.prompt_tokens_details.cached_tokens }) });
     };
     try {
       if (onDelta) {
@@ -194,8 +203,8 @@ export function trimHistory(messages: ChatMessage[], max: number): ChatMessage[]
 /**
  * Tokens, roughly, without a tokenizer: four characters each for ASCII, and a
  * character and a half for everything else — CJK, mostly, which the tokenizers
- * that matter here split closer to a token per character. Overestimating is
- * the safe direction: a budget met by this figure is met on the wire too.
+ * that matter here split closer to a token per character. This is a heuristic,
+ * not a tokenizer guarantee; reported usage replaces estimates when available.
  */
 export function estimateTokens(text: string): number {
   let ascii = 0;
@@ -216,23 +225,35 @@ export function estimateMessages(messages: readonly ChatMessage[]): number {
  * The conversation cut to a budget from the middle: the system prompt stays,
  * the last message stays, and the oldest of what lies between goes first, a
  * user/assistant pair at a time so the shape a chat template expects survives.
- * What it cannot make fit — a system prompt and one line that are over on
- * their own — it returns as they are; that is the caller's to shorten.
+ * Required task messages survive eviction. If these cannot fit, fail before
+ * a model call rather than silently discarding the goal or exceeding the cap.
  */
+export class ContextBudgetError extends Error {
+  constructor(readonly required: number, readonly budget: number) {
+    super(`Required task context needs approximately ${required} tokens; input budget is ${budget}. Shorten the request or increase contextBudgetTokens.`);
+    this.name = 'ContextBudgetError';
+  }
+}
+
 export function fitBudget(messages: readonly ChatMessage[], budgetTokens: number): ChatMessage[] {
   if (estimateMessages(messages) <= budgetTokens) return [...messages];
   const system = messages[0]?.role === 'system' ? messages[0] : undefined;
-  const body = system ? messages.slice(1) : [...messages];
+  const body = (system ? messages.slice(1) : [...messages]).map((message) =>
+    message.pinned && message.requiredContent !== undefined ? { ...message, content: message.requiredContent } : message);
   const last = body.at(-1);
-  if (!last) return [...messages];
+  if (!last) throw new ContextBudgetError(estimateMessages(messages), budgetTokens);
   let middle = body.slice(0, -1);
   const frame = () => [...(system ? [system] : []), ...middle, last];
   while (middle.length > 0 && estimateMessages(frame()) > budgetTokens) {
     // Drop from the front, and keep dropping until the front is a user line
     // again: an assistant reply with no user line before it is the shape some
     // templates refuse.
-    middle = middle.slice(1);
-    while (middle.length > 0 && middle[0]!.role === 'assistant') middle = middle.slice(1);
+    const at = middle.findIndex((message) => !message.pinned);
+    if (at === -1) break;
+    middle.splice(at, 1);
+    while (middle[at]?.role === 'assistant' && !middle[at]?.pinned) middle.splice(at, 1);
   }
-  return frame();
+  const result = frame();
+  if (estimateMessages(result) > budgetTokens) throw new ContextBudgetError(estimateMessages(result), budgetTokens);
+  return result;
 }

@@ -35,6 +35,9 @@ import { Delegator } from './delegate.js';
 import { agentRecords, floorOf, LEDGER_TASKS, renderAgentRecord, renderRunState, tasksSince } from './ledger.js';
 import type { TaskOutcome } from './outcome.js';
 import { metered } from './usage.js';
+import type { Executor } from './executor.js';
+import type { BudgetManager } from './budget.js';
+import { ResultTool } from '../tools/result.js';
 
 /**
  * How much of the planner's budget the system prompt, the run state and the
@@ -44,6 +47,8 @@ import { metered } from './usage.js';
 const STATE_SHARE = 0.6;
 
 export interface ConversationDeps {
+  executor?: Executor;
+  budget?: BudgetManager;
   config: Config;
   pool: AgentPool;
   transcript: Transcript;
@@ -136,7 +141,7 @@ export class Conversation {
         this.streamCounter = Math.max(this.streamCounter, record.stream);
       }
     }
-    this.delegator = new Delegator(deps);
+    this.delegator = deps.executor?.delegator ?? new Delegator(deps);
     this.toolbox = new Toolbox([
       new AgentTool({
         roster: () => this.roster(),
@@ -144,7 +149,9 @@ export class Conversation {
         config: deps.config,
         transcript: deps.transcript,
         workspace: deps.workspace,
+        onOutcome: (outcome) => deps.executor?.store(outcome),
       }),
+      ...(deps.executor ? [new ResultTool(deps.executor, deps.config.limits.maxResultChars)] : []),
       ...(deps.tools ?? []),
     ]);
   }
@@ -177,6 +184,8 @@ export class Conversation {
   }
 
   async send(text: string, shown?: string): Promise<void> {
+    const parsed = this.invoked(text);
+    if (this.isBusy && !(parsed && parsed !== 'unknown' && parsed.command.kind === 'local')) throw new Error('A conversation turn is already running');
     const work = this.run(text, shown);
     this.inflight = work;
     try {
@@ -282,7 +291,7 @@ export class Conversation {
       // it — the one thing it must never be asked to do.
       history = this.messages;
       opening = { role: 'user', content: prompt };
-      sent = { role: 'user', content: composeUserMessage(this.runState(agents, prompt), prompt) };
+      sent = { role: 'user', content: composeUserMessage(this.runState(agents, prompt), prompt), pinned: true, requiredContent: prompt };
       history.push(sent);
 
       // A line that leads with "@agent" has already chosen its recipient, so
@@ -377,7 +386,7 @@ export class Conversation {
             }
           : outcomes.length > 0 || notes.length > 0
             ? await narrate(
-                this.deps.llm && metered(this.deps.llm, 'narrate', transcript, plannerLabel(config)),
+                this.deps.llm && metered(this.deps.llm, 'narrate', transcript, plannerLabel(config), this.meterBudget()),
                 { userMessage: prompt, outcomes, notes, workspaceDir: workspace.dir },
                 turn.signal,
                 (piece) => stream.delta(piece),
@@ -467,11 +476,13 @@ export class Conversation {
       return { ok: false as const, error: 'no orchestration model is configured' };
     }
     try {
-      const llm = metered(this.deps.llm, 'plan', this.deps.transcript, plannerLabel(this.deps.config));
+      const llm = metered(this.deps.llm, 'plan', this.deps.transcript, plannerLabel(this.deps.config), this.meterBudget());
       // Cut to the budget on the way out, not in place: the history keeps
       // every message a turn adds, and what is dropped is the oldest of it.
       const budget = contextBudgetTokens(this.deps.config.orchestration);
-      return await nextStep(llm, fitBudget(history, budget), this.toolbox, signal, stream);
+      return await nextStep(llm, [...history], this.toolbox, signal, stream,
+        this.deps.config.orchestration.maxRepairAttempts,
+        { contextTokens: budget, outputTokens: this.deps.config.orchestration.maxOutputTokens });
     } catch (err) {
       return { ok: false as const, error: (err as Error).message };
     }
@@ -479,6 +490,13 @@ export class Conversation {
 
   private newStream(): AssistantStream {
     return new AssistantStream(this.deps.transcript, ++this.streamCounter);
+  }
+
+  private meterBudget() {
+    return this.deps.budget ? { manager: this.deps.budget,
+      frontier: this.deps.config.orchestration.provider !== 'local',
+      contextTokens: contextBudgetTokens(this.deps.config.orchestration),
+      outputTokens: this.deps.config.orchestration.maxOutputTokens } : undefined;
   }
 
   /**

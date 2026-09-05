@@ -1,4 +1,6 @@
-import type { ChatClient, Usage } from '../brain/client.js';
+import { estimateTokens as countTokens, estimateMessages, fitBudget, type ChatClient, type Usage } from '../brain/client.js';
+import { BudgetExceededError, type BudgetManager, type BudgetUsage } from './budget.js';
+import type { TokenBudget } from '../config/schema.js';
 import { debug } from '../debug.js';
 import type { TurnUsage } from '../host/session.js';
 import type { Transcript, TranscriptRecord } from '../workspace/transcript.js';
@@ -15,32 +17,62 @@ export function metered(
   transcript: Transcript,
   /** The planner as the roll call spells it, read when the call is made. */
   model?: string,
+  budget?: { manager: BudgetManager; frontier: boolean; outputTokens: number; contextTokens?: number; limits?: TokenBudget; onCharge?: (usage: BudgetUsage) => void },
 ): ChatClient {
   return {
     async chat(messages, options = {}) {
+      if (budget?.contextTokens) messages = fitBudget(messages, budget.contextTokens - (options.maxOutputTokens ?? budget.outputTokens)
+        - (options.schema ? countTokens(JSON.stringify(options.schema.schema)) : 0) - 64);
       const promptChars = messages.reduce((total, message) => total + message.content.length, 0);
+      const inputEstimate = estimateMessages(messages) + (options.schema ? countTokens(JSON.stringify(options.schema.schema)) : 0);
       let usage: Usage | undefined;
-      const reply = await llm.chat(messages, {
-        ...options,
-        onUsage: (counted) => {
-          usage = counted;
-          options.onUsage?.(counted);
-        },
-      });
-      transcript.append({
-        type: 'usage',
-        purpose,
-        ...(model === undefined ? {} : { model }),
-        promptChars,
-        replyChars: reply.length,
-        ...(usage ? { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens } : {}),
-      });
-      debug(
-        'llm',
-        `${purpose}: ${messages.length} messages, ${promptChars} chars in, ${reply.length} out` +
-          (usage ? ` (${usage.promptTokens} + ${usage.completionTokens} tokens)` : ''),
-      );
-      return reply;
+      let reply = '';
+      let failed = true;
+      const lease = budget?.manager.begin('orchestrator', model ?? 'orchestrator', budget.frontier,
+        inputEstimate + (options.maxOutputTokens ?? budget.outputTokens), budget.limits);
+      try {
+        reply = await llm.chat(messages, {
+          ...options,
+          maxOutputTokens: options.maxOutputTokens ?? budget?.outputTokens,
+          signal: lease ? options.signal ? AbortSignal.any([options.signal, lease.signal]) : lease.signal : options.signal,
+          onDelta: (text) => {
+            reply += text;
+            lease?.observe(inputEstimate + countTokens(reply));
+            options.onDelta?.(text);
+          },
+          onUsage: (counted) => {
+            usage = counted;
+            options.onUsage?.(counted);
+          },
+        });
+        failed = false;
+        return reply;
+      } finally {
+        const estimatedTokens = inputEstimate + countTokens(reply);
+        const charge = lease?.finish({ tokens: usage ? usage.promptTokens + usage.completionTokens : estimatedTokens,
+          inputTokens: usage ? Math.max(0, usage.promptTokens - (usage.cachedTokens ?? 0) - (usage.cachedWriteTokens ?? 0)) : inputEstimate,
+          outputTokens: usage?.completionTokens ?? countTokens(reply), cachedReadTokens: usage?.cachedTokens,
+          cachedWriteTokens: usage?.cachedWriteTokens,
+          estimated: usage === undefined }, failed);
+        if (charge) budget?.onCharge?.(charge);
+        transcript.append({
+          type: 'usage',
+          purpose,
+          ...(model === undefined ? {} : { model }),
+          promptChars,
+          replyChars: reply.length,
+          ...(usage ? { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens } : {}),
+          ...(usage?.cachedTokens === undefined ? {} : { cachedTokens: usage.cachedTokens }),
+          ...(usage?.cachedWriteTokens === undefined ? {} : { cachedWriteTokens: usage.cachedWriteTokens }),
+          estimatedTokens,
+        });
+        debug(
+          'llm',
+          `${purpose}: ${messages.length} messages, ${promptChars} chars in, ${reply.length} out` +
+            (usage ? ` (${usage.promptTokens} + ${usage.completionTokens} tokens)` : ''),
+        );
+        if (!failed && lease?.exceeded()) throw new BudgetExceededError('Planner call exceeded its token or cost budget');
+      }
     },
   };
 }
@@ -121,12 +153,13 @@ export function spendOf(records: readonly TranscriptRecord[]): RunSpend {
             spend.counted++;
             spend.inputTokens += record.promptTokens;
             spend.outputTokens += record.completionTokens ?? 0;
+            spend.cachedTokens += (record.cachedTokens ?? 0) + (record.cachedWriteTokens ?? 0);
             spend.tokens += record.promptTokens + (record.completionTokens ?? 0);
           } else {
             spend.estimated = true;
             spend.inputTokens += estimateTokens(record.promptChars);
             spend.outputTokens += estimateTokens(record.replyChars);
-            spend.tokens += estimateTokens(record.promptChars) + estimateTokens(record.replyChars);
+            spend.tokens += record.estimatedTokens ?? estimateTokens(record.promptChars) + estimateTokens(record.replyChars);
           }
         }
         break;

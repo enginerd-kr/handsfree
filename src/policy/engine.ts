@@ -52,6 +52,13 @@ export class PolicyEngine {
   private readonly now: () => number;
   /** Open questions per agent, so a turn can be told to stop its clocks. */
   private readonly waiting = new Map<string, number>();
+  private readonly access = new Map<string, 'answer' | 'inspect'>();
+
+  restrict(context: RequestContext, kind: 'answer' | 'inspect'): () => void {
+    const key = JSON.stringify([context.agentId, context.sessionId]);
+    this.access.set(key, kind);
+    return () => this.access.delete(key);
+  }
 
   constructor(options: PolicyEngineOptions) {
     this.policy = options.policy;
@@ -146,6 +153,12 @@ export class PolicyEngine {
     signal: AbortSignal | undefined,
   ): Promise<Decision> {
     const summary = describe(request, this.jail);
+    const access = this.access.get(JSON.stringify([request.agentId, request.sessionId]));
+    if (access && !(access === 'inspect' && (request.kind === 'fs.read' || request.kind === 'tool' && request.toolKind === 'read'))) {
+      const decision: Decision = { verdict: 'deny', rule: `task.${access}`, reason: 'This task does not allow side effects or commands' };
+      this.onDecision?.({ ...decision, at: this.now(), request, summary });
+      return decision;
+    }
 
     // The mode has its say here, on the ruling and before anyone is asked, so
     // there is no window between the rule and the question for it to fall in.

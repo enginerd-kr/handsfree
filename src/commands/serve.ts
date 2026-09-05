@@ -17,12 +17,14 @@ import type { ConfigLocation } from '../config/load.js';
 import { createRuntime, type Runtime, type RuntimeOptions } from '../runtime.js';
 import { MODE_DESCRIPTION, MODE_LABEL, MODES, parsePermissionMode } from '../policy/mode.js';
 import type { Escalator, InputField, InputValue } from '../policy/types.js';
-import type { TranscriptRecord } from '../workspace/transcript.js';
+import { agentText, type TranscriptRecord } from '../workspace/transcript.js';
+import { stripReport } from '../orchestrator/report.js';
 import { VERSION } from '../version.js';
 
 interface ServedSession {
   runtime: Runtime;
   forward: (record: TranscriptRecord) => void;
+  cancelled: boolean;
 }
 
 /**
@@ -60,7 +62,7 @@ export function createServeApp(config: Config, overrides: Partial<RuntimeOptions
       // The editor's project is both the jail and where its command files
       // live, which is the one arrangement where the two are the same.
       const runtime = createRuntime({
-        config,
+        config: structuredClone(config),
         attachTo: ctx.params.cwd,
         cwd: ctx.params.cwd,
         ...overrides,
@@ -68,11 +70,16 @@ export function createServeApp(config: Config, overrides: Partial<RuntimeOptions
       runtime.setEscalator(upstreamEscalator(ctx.client, sessionId, upstream));
 
       const forward = (record: TranscriptRecord) => {
+        if (record.type === 'stop') {
+          const answer = stripReport(agentText(runtime.transcript.forTask(record.taskId)));
+          if (answer) void ctx.client.notify(methods.client.session.update, { sessionId,
+            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: answer } } });
+        }
         const update = toUpdate(record);
         if (update) void ctx.client.notify(methods.client.session.update, { sessionId, update });
       };
       runtime.transcript.on('record', forward);
-      sessions.set(sessionId, { runtime, forward });
+      sessions.set(sessionId, { runtime, forward, cancelled: false });
       // The permission mode, as the editor's own mode picker: the same three
       // shift+tab walks in the terminal, and a session opens in `ask` here
       // as it does there.
@@ -114,21 +121,28 @@ export function createServeApp(config: Config, overrides: Partial<RuntimeOptions
       if (!served) throw new Error(`unknown session ${ctx.params.sessionId}`);
 
       const text = ctx.params.prompt
-        .map((block) => (block.type === 'text' ? block.text : ''))
-        .join('')
+        .map((block) => {
+          if (block.type === 'text') return block.text;
+          if (block.type === 'resource' && 'text' in block.resource) return `Attached context (${block.resource.uri}):\n${block.resource.text}`;
+          if (block.type === 'resource_link') return `Attached resource: ${block.uri}`;
+          throw RequestError.invalidParams({}, `Unsupported prompt content: ${block.type}`);
+        })
+        .join('\n\n')
         .trim();
 
       const stop = () => served.runtime.conversation.cancel();
+      served.cancelled = false;
       ctx.signal.addEventListener('abort', stop, { once: true });
       try {
         await served.runtime.conversation.send(text);
       } finally {
         ctx.signal.removeEventListener('abort', stop);
       }
-      return { stopReason: ctx.signal.aborted ? 'cancelled' : 'end_turn' };
+      return { stopReason: ctx.signal.aborted || served.cancelled ? 'cancelled' : 'end_turn' };
     })
     .onNotification(methods.agent.session.cancel, (ctx) => {
-      sessions.get(ctx.params.sessionId)?.runtime.conversation.cancel();
+      const served = sessions.get(ctx.params.sessionId);
+      if (served) { served.cancelled = true; served.runtime.conversation.cancel(); }
     });
 
   return {
@@ -284,7 +298,7 @@ function toUpdate(record: TranscriptRecord) {
       return {
         sessionUpdate: 'tool_call_update' as const,
         toolCallId: `task-${record.taskId}`,
-        status: record.stopReason === 'end_turn' ? ('completed' as const) : ('failed' as const),
+        status: (record.status ? record.status === 'done' : record.stopReason === 'end_turn') ? ('completed' as const) : ('failed' as const),
       };
     case 'decision':
       return record.entry.verdict === 'deny'

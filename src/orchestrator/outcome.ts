@@ -2,14 +2,18 @@ import path from 'node:path';
 import type { StopReason } from '@agentclientprotocol/sdk';
 import { agentText, changedFiles, touchedFiles, type TranscriptRecord } from '../workspace/transcript.js';
 import { DEFAULT_REPORT_LIMITS, parseReport, type Report, type ReportLimits } from './report.js';
+import type { BudgetUsage } from './budget.js';
 
-export type TaskStatus = 'done' | 'incomplete' | 'refused' | 'cancelled' | 'error';
+export type TaskStatus = 'done' | 'blocked' | 'incomplete' | 'refused' | 'cancelled' | 'error' | 'budget_exceeded';
 
 export interface TaskOutcome {
   taskId: number;
   agentId: string;
   task: string;
   status: TaskStatus;
+  stopReason?: StopReason | 'unresponsive';
+  usage?: BudgetUsage;
+  routingUsage?: BudgetUsage;
   /** What the agent said at the end of the turn, whole. */
   message: string;
   /** The agent's account of itself, in the shape it was asked for — or a fallback. */
@@ -30,11 +34,9 @@ export interface TaskOutcome {
 }
 
 /**
- * The status comes from the protocol, not from reading the agent's prose. A turn
- * that ended with `end_turn` finished; one that was refused says so. Denials are
- * reported alongside rather than folded in, because an agent that was refused a
- * shell and wrote the file instead did finish the job — and we know it did,
- * since every refusal in the list is one we issued ourselves.
+ * Protocol termination and reported task outcome are distinct. A clean turn
+ * reporting blocked/partial must not be treated as completed work. Without a
+ * report, end_turn remains a legacy success signal; it is not verification.
  */
 export function summarise(
   taskId: number,
@@ -61,7 +63,8 @@ export function summarise(
   if (options.workspaceDir) {
     for (const named of report.changed) {
       const absolute = path.resolve(options.workspaceDir, named);
-      if (!absolute.startsWith(options.workspaceDir)) continue;
+      const rel = path.relative(options.workspaceDir, absolute);
+      if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) continue;
       if (!changed.includes(absolute)) changed.push(absolute);
     }
   }
@@ -70,7 +73,9 @@ export function summarise(
     taskId,
     agentId,
     task,
-    status: statusOf(stopReason),
+    status: stopReason === 'end_turn' && report.outcome === 'blocked' ? 'blocked'
+      : stopReason === 'end_turn' && report.outcome === 'partial' ? 'incomplete' : statusOf(stopReason),
+    stopReason,
     message,
     report,
     files: touchedFiles(records),
@@ -97,6 +102,7 @@ function statusOf(stopReason: StopReason | 'unresponsive'): TaskStatus {
 }
 
 export interface RenderOptions {
+  maxChars?: number;
   /**
    * Whether the agent's whole message follows the head, the way it used to.
    * Off, what follows is the report's summary and open items — the user has
@@ -117,6 +123,7 @@ export function renderOutcome(
   workspaceDir: string,
   options: RenderOptions = {},
 ): string {
+  if (options.maxChars !== undefined) return renderCompactOutcome(outcome, workspaceDir, options.maxChars, options.relayMessage);
   const lines = [renderOutcomeHead(outcome, workspaceDir)];
   if (options.relayMessage) {
     if (outcome.message) lines.push(outcome.message);
@@ -150,5 +157,31 @@ export function renderOutcomeHead(outcome: TaskOutcome, workspaceDir: string): s
 }
 
 export function relative(file: string, root: string): string {
-  return file.startsWith(root) ? file.slice(root.length).replace(/^\//, '') : file;
+  const rel = path.relative(root, file);
+  return rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel) ? rel : file;
+}
+
+/** Spend space on status and blockers before paths or optional prose. */
+function renderCompactOutcome(outcome: TaskOutcome, root: string, max: number, relay = false): string {
+  const lines = [`Task ${outcome.taskId} (${outcome.agentId}): ${outcome.status}`];
+  if (max < lines[0]!.length + 40) throw new Error('Result budget is too small to preserve task status');
+  const required = [...outcome.denials.map((line) => `refused: ${line}`), ...outcome.report.open.map((line) => `open: ${line}`)];
+  if (outcome.report.summary) required.push(`summary: ${outcome.report.summary}`);
+  for (const line of required) lines.push(line);
+  const essential = lines.join('\n');
+  // If even required fields do not fit, fail visibly instead of implying success.
+  if (essential.length > max) {
+    const head = lines[0]!;
+    const marker = '\n[details omitted; retrieve task result]';
+    return `${head}\n${required.join('\n').slice(0, Math.max(0, max - head.length - marker.length - 1))}${marker}`;
+  }
+  const optional = [
+    ...(outcome.changed.length ? [`changed: ${outcome.changed.map((file) => relative(file, root)).join(', ')}`] : []),
+    ...(relay && outcome.message ? [outcome.message] : []),
+  ];
+  for (const line of optional) {
+    if (lines.join('\n').length + line.length + 1 <= max) lines.push(line);
+    else if (lines.join('\n').length + 29 <= max) lines.push('[details in task result]');
+  }
+  return lines.join('\n');
 }

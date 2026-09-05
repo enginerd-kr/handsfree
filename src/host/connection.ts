@@ -266,6 +266,11 @@ export class AgentConnection {
     await this.target.close();
   }
 
+  /** Release local bookkeeping for a completed ephemeral or replaced session. */
+  releaseSession(sessionId: string): void {
+    if (!this.sessions.get(sessionId)?.isBusy) this.sessions.delete(sessionId);
+  }
+
   private register(
     sessionId: string,
     onUpdate: (update: SessionUpdate) => void = () => {},

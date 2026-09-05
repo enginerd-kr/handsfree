@@ -389,7 +389,7 @@ export function buildView(
             'result',
             'muted',
             stopText(
-              record.stopReason,
+              record.status && record.status !== 'done' ? record.status : record.stopReason,
               taskTools,
               took,
               record.usage ? tokensOf(record.usage) : 0,
@@ -658,7 +658,7 @@ function statusTone(status: ToolCallStatus): Tone {
  * counted says nothing about tokens rather than a zero that would be false.
  */
 function stopText(
-  reason: StopReason,
+  reason: StopReason | 'unresponsive' | 'blocked' | 'incomplete' | 'refused' | 'error' | 'budget_exceeded',
   toolCount: number,
   seconds: number,
   tokens: number,

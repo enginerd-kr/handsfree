@@ -13,33 +13,52 @@
     },
     "maxHistoryMessages": 30,
     "contextBudgetTokens": 8000,
-    "relayAnswers": false
+    "relayAnswers": false,
+    "maxOutputTokens": 768,
+    "maxRepairAttempts": 2
   },
-
   "env": {},
-
   "agents": {
-    "claude": { "command": "npx", "args": ["-y", "@agentclientprotocol/claude-agent-acp"] },
-    "gemini": { "command": "gemini", "args": ["--acp"] },
-    "codex": { "command": "npx", "args": ["-y", "@agentclientprotocol/codex-acp"] }
+    "claude": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@agentclientprotocol/claude-agent-acp"
+      ]
+    },
+    "gemini": {
+      "command": "gemini",
+      "args": [
+        "--acp"
+      ]
+    },
+    "codex": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@agentclientprotocol/codex-acp"
+      ]
+    }
   },
-
   "roles": {
     "claude": "general coding agent, strong at multi-file edits",
     "gemini": "fast, good at bulk text and single-file work",
     "codex": "methodical coding agent, good at tests and refactors"
   },
-
   "capabilities": {
     "readTextFile": true,
     "writeTextFile": true,
     "terminal": true,
     "elicitation": true
   },
-
   "policy": {
     "workspaceOnly": true,
-    "fs": { "read": "allow", "write": "allow", "outside": "deny", "followSymlinks": false },
+    "fs": {
+      "read": "allow",
+      "write": "allow",
+      "outside": "deny",
+      "followSymlinks": false
+    },
     "exec": {
       "enabled": true,
       "mode": "allowlist",
@@ -47,12 +66,19 @@
       "shellOperators": "ask",
       "timeoutMs": 120000,
       "outputByteLimit": 65536,
-      "env": ["PATH", "HOME", "LANG", "TERM", "TMPDIR"]
+      "env": [
+        "PATH",
+        "HOME",
+        "LANG",
+        "TERM",
+        "TMPDIR"
+      ]
     },
-    "escalation": ["user"],
+    "escalation": [
+      "user"
+    ],
     "decisionTimeoutMs": 120000
   },
-
   "limits": {
     "handshakeTimeoutMs": 90000,
     "turnTimeoutMs": 600000,
@@ -64,5 +90,18 @@
     "handoffBudgetChars": 1600,
     "reportSummaryChars": 300,
     "rebriefEveryTasks": 8
-  }
+  },
+  "budget": {
+    "maxTokens": 200000,
+    "maxFrontierTokens": 150000,
+    "maxTaskTokens": 32000,
+    "estimatedTaskTokens": 4096
+  },
+  "execution": {
+    "maxParallel": 2,
+    "maxBatchTasks": 16,
+    "maxCandidates": 3,
+    "rotateContextRatio": 0.85
+  },
+  "prices": {}
 }

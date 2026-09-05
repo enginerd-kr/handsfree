@@ -14,8 +14,10 @@ const USAGE = `handsfree — an ACP host for frontier coding agents
   handsfree                     start the terminal UI
   handsfree run "<prompt>"      one turn, no UI (asks on stderr at a terminal,
                                 denies every escalation when piped or in CI)
+  handsfree task '<JSON>'        structured task request; one compact JSON result
   handsfree doctor              handshake with each configured agent
   handsfree serve --acp         speak ACP on stdio, for an editor to drive
+  handsfree serve --mcp         expose delegate, batch, read_result and usage tools
 
 The directory you start in is the workspace, and the workspace is the boundary
 the agents work inside: this checkout, not your whole disk.
@@ -24,7 +26,7 @@ Options
   --sandbox                     work in an empty scratch workspace instead of this directory
   --json                        with run: emit the transcript as NDJSON
   --run <id>                    reuse an existing run directory
-  --permission-mode <mode>      with run: start in ask (the default), acceptEdits or bypass;
+  --permission-mode <mode>      with run, task or serve --mcp: ask (default), acceptEdits or bypass;
                                 the terminal UI always starts in ask, shift+tab moves it
   --debug                       diagnostics on stderr: launches, environment, handshakes
                                 (also HANDSFREE_DEBUG=1, or =<path> to append to a file;
@@ -34,10 +36,11 @@ Options
 `;
 
 interface Args {
-  command: 'tui' | 'run' | 'doctor' | 'serve' | 'help' | 'version';
+  command: 'tui' | 'run' | 'task' | 'doctor' | 'serve' | 'help' | 'version';
   prompt: string;
   json: boolean;
   debug: boolean;
+  mcp: boolean;
   /** Work in a fresh empty workspace rather than the directory we were started in. */
   sandbox: boolean;
   runId: string | undefined;
@@ -56,6 +59,7 @@ export function parseArgs(argv: string[]): Args {
     prompt: '',
     json: false,
     debug: false,
+    mcp: false,
     sandbox: false,
     runId: undefined,
     permissionMode: undefined,
@@ -68,6 +72,7 @@ export function parseArgs(argv: string[]): Args {
     else if (arg === '--sandbox') args.sandbox = true;
     else if (arg === '--debug') args.debug = true;
     else if (arg === '--acp') args.command = 'serve';
+    else if (arg === '--mcp') { args.command = 'serve'; args.mcp = true; }
     else if (arg === '--run') args.runId = argv[++i];
     else if (arg === '--permission-mode') args.permissionMode = argv[++i];
     else if (arg === '-h' || arg === '--help') args.command = 'help';
@@ -82,6 +87,9 @@ export function parseArgs(argv: string[]): Args {
     const [first, ...tail] = rest;
     if (first === 'run') {
       args.command = 'run';
+      args.prompt = tail.join(' ');
+    } else if (first === 'task') {
+      args.command = 'task';
       args.prompt = tail.join(' ');
     } else if (first === 'doctor') {
       args.command = 'doctor';
@@ -179,6 +187,16 @@ async function main(): Promise<number> {
   );
 
   if (args.command === 'serve') {
+    if (args.mcp) {
+      const refusal = args.sandbox ? undefined : tooBroadToAttach(process.cwd());
+      if (refusal) { process.stderr.write(`${refusal}\n`); return 2; }
+      const { serveMcp } = await import('./commands/mcp.js');
+      const permissionMode = parsePermissionMode(args.permissionMode);
+      if (args.permissionMode && !permissionMode) { process.stderr.write('Invalid permission mode\n'); return 2; }
+      return serveMcp({ config, configSources: sources, cwd: process.cwd(),
+        permissionMode,
+        ...(args.sandbox ? {} : { attachTo: process.cwd() }), ...(args.runId ? { runId: args.runId } : {}) });
+    }
     // stdout belongs to the protocol from here on: nothing else may write to it.
     const { serve } = await import('./commands/serve.js');
     return serve(config, sources);
@@ -215,9 +233,16 @@ async function main(): Promise<number> {
   }
 
   // Said before the UI is chosen, so the flag is never a silent no-op there.
-  if (args.permissionMode !== undefined && args.command !== 'run') {
+  if (args.permissionMode !== undefined && args.command !== 'run' && args.command !== 'task') {
     process.stderr.write('--permission-mode only applies to `handsfree run`; the UI starts in ask.\n');
     return 2;
+  }
+
+  if (args.command === 'task') {
+    const { task } = await import('./commands/task.js');
+    const permissionMode = parsePermissionMode(args.permissionMode);
+    if (args.permissionMode && !permissionMode) { process.stderr.write('Invalid permission mode\n'); return 2; }
+    return task(args.prompt, { config, configSources: sources, cwd: process.cwd(), attachTo, runId: args.runId, permissionMode }, write);
   }
 
   if (args.command === 'run') {

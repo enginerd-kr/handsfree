@@ -1,4 +1,4 @@
-import type { TranscriptRecord } from '../workspace/transcript.js';
+import { taskRecords, type TranscriptRecord } from '../workspace/transcript.js';
 import { relative, renderOutcomeHead, summarise, type TaskOutcome } from './outcome.js';
 import { oneLine, type ReportLimits } from './report.js';
 
@@ -9,6 +9,7 @@ export interface LedgerTask {
   seq: number;
   /** The session it ran in, so a record can say what *this* session is holding. */
   sessionId: string;
+  resolved?: boolean;
 }
 
 /** How many tasks the run state spells out before older ones become a count. */
@@ -54,6 +55,7 @@ export function tasksSince(
 ): LedgerTask[] {
   const open = new Map<number, { at: number; startedAt: number; seq: number }>();
   const tasks: LedgerTask[] = [];
+  const resolvedTasks = new Set(records.flatMap((r) => r.type === 'resolved' ? r.taskIds : []));
   for (let at = 0; at < records.length; at++) {
     const record = records[at]!;
     if (record.type === 'delegation') {
@@ -67,18 +69,14 @@ export function tasksSince(
     const slice = records.slice(start.at, at + 1);
     const delegation = slice[0];
     if (delegation?.type !== 'delegation') continue;
+    const outcome = summarise(record.taskId, record.agentId, delegation.task, record.stopReason,
+      taskRecords(slice, delegation), record.at - start.startedAt, options);
+    if (record.status) outcome.status = record.status;
     tasks.push({
       seq: record.seq,
       sessionId: record.sessionId,
-      outcome: summarise(
-        record.taskId,
-        record.agentId,
-        delegation.task,
-        record.stopReason,
-        slice,
-        record.at - start.startedAt,
-        options,
-      ),
+      outcome,
+      ...(resolvedTasks.has(record.taskId) ? { resolved: true } : {}),
     });
   }
   return tasks;
@@ -116,7 +114,7 @@ export function renderRunState(
     // that ended cleanly but says "blocked" is one the planner should not
     // build on as if it were done.
     const { report } = outcome;
-    if (report.outcome && report.outcome !== 'done' && outcome.status === 'done') {
+    if (report.outcome && report.outcome !== 'done') {
       lines.push(`  agent says: ${report.outcome}`);
     }
     // What the agent said, in its own summary: the one thing the planner
@@ -130,7 +128,7 @@ export function renderRunState(
   for (const { outcome } of tasks) {
     for (const file of outcome.changed) changed.add(relative(file, workspaceDir));
   }
-  if (changed.size > 0) lines.push(`Files changed this run: ${[...changed].join(', ')}`);
+  if (changed.size > 0) lines.push(`Files changed this run: ${[...changed].slice(-24).join(', ')}${changed.size > 24 ? ` (+${changed.size - 24} others)` : ''}`);
   return lines.join('\n');
 }
 
@@ -193,13 +191,14 @@ export function renderAgentRecord(record: AgentRecord | undefined, workspaceDir:
   const more = record.files.length - shown.length;
   const parts = [`${record.tasks} task${record.tasks === 1 ? '' : 's'} this run`];
   if (shown.length > 0) {
-    parts.push(`already has ${shown.join(', ')}${more > 0 ? ` and ${more} more` : ''} open`);
+    parts.push(`previously saw ${shown.join(', ')}${more > 0 ? ` and ${more} more` : ''}`);
   }
   if (record.trouble) parts.push('one of them did not finish');
   return parts.join('; ');
 }
 
 export interface HandoffInput {
+  query?: string;
   tasks: readonly LedgerTask[];
   /** Who is about to be briefed. Its own tasks are left out: its session remembers them. */
   agentId: string;
@@ -236,7 +235,8 @@ export const HANDOFF_BUDGET_CHARS = 1600;
  * truer than being told.
  */
 export function renderHandoff(input: HandoffInput): string {
-  const relevant = input.tasks.filter(({ outcome }) => {
+  const relevant = input.tasks.filter(({ outcome, resolved }) => {
+    if (resolved) return false;
     if (!input.includeOwn && outcome.agentId === input.agentId) return false;
     return (
       outcome.changed.length > 0 ||
@@ -254,7 +254,10 @@ export function renderHandoff(input: HandoffInput): string {
   const budget = input.budgetChars ?? HANDOFF_BUDGET_CHARS;
   const kept = new Set<number>();
   let spent = 0;
-  for (let at = entries.length - 1; at >= 0; at--) {
+  const order = entries.map((entry, at) => ({ at, score: input.query
+    ? [...entry.outcome.changed, ...entry.outcome.files].filter((file) => input.query!.includes(relative(file, input.workspaceDir))).length : 0 }))
+    .sort((a, b) => b.score - a.score || b.at - a.at);
+  for (const { at } of order) {
     const entry = entries[at]!;
     const cost = entry.lines.join('\n').length + 1;
     const troubled = entry.outcome.status !== 'done';
@@ -263,7 +266,7 @@ export function renderHandoff(input: HandoffInput): string {
       kept.add(at);
     } else if (troubled) {
       // On one line: the fact of the failure, not the account of it.
-      entry.lines = entry.lines.slice(0, 1);
+      entry.lines = [entry.lines[0]!, ...entry.outcome.report.open.map((line) => `  open: ${line}`)];
       kept.add(at);
     }
   }

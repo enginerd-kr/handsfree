@@ -125,6 +125,12 @@ function cost(host: CommandHost): string[] {
   } else {
     lines.push('tasks:   none yet');
   }
+  const charges = host.transcript.all().filter((record) => record.type === 'budget_usage').map((record) => record.usage);
+  if (charges.length) {
+    lines.push(`run: ${figure(charges.reduce((n, u) => n + u.tokens, 0))} tokens; ${figure(charges.reduce((n, u) => n + u.frontierTokens, 0))} frontier tokens`);
+    const missing = charges.filter((u) => u.costUsd === undefined && u.tokens > 0).length;
+    lines.push(`known cost: $${charges.reduce((n, u) => n + (u.costUsd ?? 0), 0).toFixed(6)}; ${missing} calls without prices; ${charges.filter((u) => u.estimated).length} estimated calls`);
+  }
   return lines;
 }
 

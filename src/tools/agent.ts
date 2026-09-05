@@ -13,6 +13,7 @@ export interface AgentCard {
 }
 
 export interface AgentToolDeps {
+  onOutcome?: (outcome: TaskOutcome) => void;
   /**
    * Who can be called, read each time the tool is described or a call is
    * checked: an agent switched off mid-run is off the roster from then on.
@@ -28,7 +29,7 @@ export type AgentInput = {
   agent: string;
   prompt: string;
   description?: string | undefined;
-  kind: 'answer' | 'change';
+  kind: 'answer' | 'inspect' | 'change';
   model?: string | undefined;
 };
 
@@ -60,7 +61,7 @@ export class AgentTool implements Tool<AgentInput> {
        * this the only call a planner can imagine is one that writes a file,
        * and "ask claude what it thinks" becomes "create thoughts.txt".
        */
-      kind: z.enum(['answer', 'change']).default('change'),
+      kind: z.enum(['answer', 'inspect', 'change']).default('change'),
       model: z.string().min(1).optional(),
     });
   }
@@ -69,35 +70,16 @@ export class AgentTool implements Tool<AgentInput> {
     const cards = this.deps.roster();
     const roster = cards.map((card) => `- "${card.id}": ${card.description}`).join('\n');
     const first = cards[0]?.id ?? 'claude';
-    return `agent — hand one task to one coding agent.
-Input: {"agent":"<agent id>","kind":"answer|change","description":"<a few words naming the task>","prompt":"<the brief>"}
-
+    return `agent — delegate one task inside ${this.deps.workspace.dir}.
 Agents:
 ${roster}
-
-How the agents work:
-- They share a workspace directory: ${this.deps.workspace.dir}. Everything they create lives there.
-- Every file they touch and every command they run is approved or refused by handsfree, not by them. A refusal is final; asking again will not change it.
-- Each agent keeps its memory between tasks, so a follow-up task can refer to what it just did.
-- Each agent is told which files the other agents changed since it last worked, what they said they did, and what they decided. A brief need not repeat that.
-- They can also just talk. Asking one a question is a task; its reply comes back to you as a short report.
-- Everything an agent says is shown to the user as it is said. You never need to repeat it.
-
-Rules for calling it:
-- Call it for work that needs an agent: changing files or code, and anything the user wants a specific agent to say.
-- Choose the agent by what it is for. Where two would both suit, choose the one that already has the files the task concerns: its session still holds them, so it reads less to begin.
-- "kind" says what you want back. "answer": the agent's words; it creates nothing. Use it whenever the user says ask, tell, question, or wants an agent's opinion. "change": the workspace changed.
-- Write "prompt" as a short imperative brief: exact file names and exact content when the user gave them, what done looks like, and any fact from the conversation the agent needs that the run state does not show.
-- Never invent a file. Name a file only when the user named one or clearly asked for one. A question is not a file.
-- The result tells you the task's status, the files it touched, what was refused, and the agent's own summary and open points.
-
-Examples:
-User: make notes.txt containing hello world
-{"action":"call","tool":"agent","input":{"agent":"${first}","kind":"change","description":"create notes.txt","prompt":"Create notes.txt containing exactly: hello world. Done when notes.txt exists with that content."}}
-User: ask ${first} 안녕?
-{"action":"call","tool":"agent","input":{"agent":"${first}","kind":"answer","description":"greet ${first}","prompt":"안녕?"}}
-User: what does ${first} think of this approach?
-{"action":"call","tool":"agent","input":{"agent":"${first}","kind":"answer","description":"${first}'s view","prompt":"What do you think of this approach?"}}`;
+Input: {"agent":"id","kind":"answer|inspect|change","prompt":"brief","model":"optional model"}.
+answer: reply only; inspect: read files and report, no commands or edits; change: implement and verify.
+Preserve the user's exact requirements and file names. Never invent a file for a question.
+Prefer an agent with relevant unchanged context; sessions are reused and receive relevant handoffs.
+Agent replies are delivered to the user separately; return only a short status, without repeating them.
+Permission refusals are final. Report blockers; an ended turn is not proof of success.
+Example: {"action":"call","tool":"agent","input":{"agent":"${first}","kind":"change","prompt":"Create notes.txt containing exactly hello world."}}`;
   }
 
   async run(input: AgentInput, ctx: ToolContext): Promise<ToolResult> {
@@ -111,12 +93,13 @@ User: what does ${first} think of this approach?
       },
       ctx.signal,
     );
+    this.deps.onOutcome?.(outcome);
     return {
       text: this.relay(outcome),
       outcome,
       // A cancelled task is a turn the user stopped; an agent that died
       // cannot be handed the next task either way.
-      halt: outcome.status === 'cancelled' || outcome.status === 'error',
+      halt: outcome.status === 'cancelled' || outcome.status === 'error' || outcome.status === 'budget_exceeded',
     };
   }
 
@@ -130,11 +113,11 @@ User: what does ${first} think of this approach?
   private relay(outcome: TaskOutcome): string {
     const { config, transcript, workspace } = this.deps;
     const relayMessage = config.orchestration.relayAnswers;
-    const lines = [renderOutcome(outcome, workspace.dir, { relayMessage })];
+    const lines = [renderOutcome(outcome, workspace.dir, { relayMessage, maxChars: config.limits.maxResultChars - 120 })];
     if (!relayMessage && outcome.message) {
       lines.push(`(The user has already seen ${outcome.agentId}'s full reply on screen; do not repeat it.)`);
     }
-    const result = lines.join('\n').slice(0, config.limits.maxResultChars);
+    const result = lines.join('\n');
     transcript.append({
       type: 'usage',
       purpose: 'task',

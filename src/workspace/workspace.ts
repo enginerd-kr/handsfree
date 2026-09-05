@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Jail } from '../policy/jail.js';
 import type { Policy } from '../config/schema.js';
 
@@ -101,5 +101,5 @@ function slug(dir: string): string {
 
 function newRunId(): string {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  return `${stamp}-${process.pid}`;
+  return `${stamp}-${process.pid}-${randomUUID().slice(0, 8)}`;
 }

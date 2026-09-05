@@ -56,6 +56,8 @@ export const AgentProfileSchema = z
      * it only to override that.
      */
     model: z.string().min(1).optional(),
+    /** Local workers do not consume the frontier-token budget. */
+    frontier: z.boolean().default(true),
   })
   .superRefine((profile, ctx) => {
     try {
@@ -262,7 +264,7 @@ export type Policy = z.infer<typeof PolicySchema>;
  * endpoint and a frontier agent is a one-word edit, not a rewrite.
  */
 export const OrchestrationSchema = z.object({
-  provider: z.enum(['local', 'acp']).default('local'),
+  provider: z.enum(['local', 'api', 'acp']).default('local'),
   /** An OpenAI-compatible endpoint: LM Studio, Ollama, llama.cpp. */
   local: z
     .object({
@@ -271,6 +273,7 @@ export const OrchestrationSchema = z.object({
       apiKey: z.string().default('not-needed'),
       temperature: z.number().min(0).max(2).default(0.1),
       timeoutMs: z.number().int().positive().default(120_000),
+      maxOutputTokens: z.number().int().positive().default(768),
     })
     .prefault({}),
   /** A frontier model reached by driving one of the configured agents over ACP. */
@@ -309,6 +312,9 @@ export const OrchestrationSchema = z.object({
    * only handsfree's own replies.
    */
   relayAnswers: z.boolean().default(false),
+  /** API mode also accepts remote OpenAI-compatible small models via `local`. */
+  maxOutputTokens: z.number().int().positive().default(768),
+  maxRepairAttempts: z.number().int().min(1).max(3).default(2),
 });
 
 /** The planner's budget, with the provider deciding it where the config did not. */
@@ -316,6 +322,20 @@ export function contextBudgetTokens(orchestration: Orchestration): number {
   return orchestration.contextBudgetTokens ?? (orchestration.provider === 'acp' ? 32_000 : 8_000);
 }
 export type Orchestration = z.infer<typeof OrchestrationSchema>;
+
+export const TokenBudgetSchema = z.object({
+  maxTokens: z.number().int().positive().optional(),
+  maxFrontierTokens: z.number().int().positive().optional(),
+  maxCostUsd: z.number().positive().optional(),
+});
+export type TokenBudget = z.infer<typeof TokenBudgetSchema>;
+
+export const PriceSchema = z.object({
+  input: z.number().nonnegative(),
+  output: z.number().nonnegative(),
+  cachedRead: z.number().nonnegative().optional(),
+  cachedWrite: z.number().nonnegative().optional(),
+});
 
 export const ConfigSchema = z
   .object({
@@ -328,6 +348,18 @@ export const ConfigSchema = z
      */
     cleanupPeriodDays: z.number().int().nonnegative().default(30),
     orchestration: OrchestrationSchema.prefault({}),
+    budget: TokenBudgetSchema.extend({
+      maxTaskTokens: z.number().int().positive().default(32_000),
+      estimatedTaskTokens: z.number().int().positive().default(4_096),
+    }).prefault({}),
+    /** USD per million tokens, keyed by model id or agent id. No built-in prices. */
+    prices: z.record(z.string(), PriceSchema).default({}),
+    execution: z.object({
+      maxParallel: z.number().int().min(1).max(8).default(2),
+      maxBatchTasks: z.number().int().min(1).max(64).default(16),
+      maxCandidates: z.number().int().min(1).max(8).default(3),
+      rotateContextRatio: z.number().positive().max(1).default(0.85),
+    }).prefault({}),
     env: EnvSchema,
     agents: z.record(z.string(), AgentProfileSchema).prefault(DEFAULT_AGENTS),
     roles: RolesSchema,
@@ -369,7 +401,7 @@ export const ConfigSchema = z
          * Longest a task result handed to the planner is. Small, because what
          * it carries is the report's summary and open items, not the reply.
          */
-        maxResultChars: z.number().int().positive().default(1200),
+        maxResultChars: z.number().int().min(256).default(1200),
         /** Longest the "since your last task" section of a brief is. */
         handoffBudgetChars: z.number().int().positive().default(1600),
         /** Longest a report's summary is kept, from the agent's REPORT block or the fallback. */

@@ -1,5 +1,11 @@
 import type { StopReason } from '@agentclientprotocol/sdk';
-import { agentRole, type Config } from '../config/schema.js';
+import { agentRole, type Config, type TokenBudget } from '../config/schema.js';
+import { estimateTokens } from '../brain/client.js';
+import { BudgetExceededError, type BudgetManager, type BudgetLease, type BudgetUsage } from './budget.js';
+import { tokensOf } from './usage.js';
+import type { PolicyEngine } from '../policy/engine.js';
+import { TaskScheduler } from './scheduler.js';
+import { durableFacts, remember, sessionMemory } from './memory.js';
 import { debug } from '../debug.js';
 import { SessionUnresponsiveError, type TurnUsage } from '../host/session.js';
 import type { ModelChoice } from '../host/models.js';
@@ -30,6 +36,9 @@ export interface DelegatorDeps {
   pool: AgentPool;
   transcript: Transcript;
   workspace: Workspace;
+  budget?: BudgetManager;
+  policy?: PolicyEngine;
+  scheduler?: TaskScheduler;
 }
 
 /** One task, as the planner or an @mention hands it out. */
@@ -43,6 +52,8 @@ export interface Delegation {
   title?: string | undefined;
   /** The model the work should run on, as a mention or the planner named it. */
   model?: string | undefined;
+  budget?: TokenBudget;
+  sessionId?: string;
 }
 
 /**
@@ -53,6 +64,7 @@ export interface Delegation {
  * stopped — because that is what decides how the next brief is written.
  */
 export class Delegator {
+  private readonly scheduler: TaskScheduler;
   private taskCounter = 0;
   private readonly briefed = new Map<string, Briefing>();
   /**
@@ -63,11 +75,12 @@ export class Delegator {
   private epoch = 0;
 
   constructor(private readonly deps: DelegatorDeps) {
+    this.scheduler = deps.scheduler ?? new TaskScheduler(deps.config.execution.maxParallel);
     // A run read back off its file has tasks in it already; the next has to
     // be numbered after them, or the view keys two rows on one id and the
     // ledger reads two tasks as one.
     for (const record of deps.transcript.all()) {
-      if (record.type === 'delegation') this.taskCounter = Math.max(this.taskCounter, record.taskId);
+      if ('taskId' in record && record.taskId !== undefined) this.taskCounter = Math.max(this.taskCounter, record.taskId);
     }
   }
 
@@ -92,7 +105,21 @@ export class Delegator {
     };
   }
 
+  estimate(agentId: string, task: string): number {
+    const charges = this.deps.transcript.all().filter((r) => r.type === 'budget_usage' && r.usage.source === agentId && r.usage.tokens > 0).slice(-8);
+    const average = charges.length
+      ? charges.reduce((n, r) => n + (r.type === 'budget_usage' ? r.usage.tokens : 0), 0) / charges.length
+      : this.deps.config.budget.estimatedTaskTokens;
+    return Math.ceil(Math.max(estimateTokens(task), average));
+  }
+
   async delegate(delegation: Delegation, signal: AbortSignal): Promise<TaskOutcome> {
+    const release = await this.scheduler.acquire(delegation.agentId, delegation.kind === 'change', signal);
+    try { return await this.perform(delegation, signal); }
+    finally { release(); }
+  }
+
+  private async perform(delegation: Delegation, signal: AbortSignal): Promise<TaskOutcome> {
     const { agentId, kind, prompt: task, title, model } = delegation;
     const { config, pool, transcript, workspace } = this.deps;
     const taskId = ++this.taskCounter;
@@ -120,11 +147,23 @@ export class Delegator {
     // the next task rides the same choice until another mention moves it.
     let session;
     let chosen: ModelChoice | undefined;
+    let lease: BudgetLease | undefined;
     try {
+      if (signal.aborted) return { ...failed(new Error('Cancelled before starting')), status: 'cancelled' };
+      const profile = config.agents[agentId];
+      const estimate = this.estimate(agentId, task);
+      lease = this.deps.budget?.begin(agentId, model ?? pool.currentModel(agentId) ?? agentId, profile?.frontier ?? true,
+        estimate, delegation.budget);
       session = await pool.session(agentId);
+      if (delegation.sessionId !== undefined && session.sessionId !== delegation.sessionId) throw new Error(`Session ${delegation.sessionId} is no longer active for ${agentId}`);
+      const memory = sessionMemory(transcript, agentId, session.sessionId);
+      if (!delegation.sessionId && memory.context && memory.context.size > 0
+        && memory.context.used / memory.context.size >= config.execution.rotateContextRatio) session = await pool.rotate(agentId);
       if (model !== undefined) chosen = await session.selectModel(model);
+      lease?.setModel(session.currentModel() ?? agentId);
     } catch (err) {
-      return failed(err);
+      lease?.finish({ tokens: 0, inputTokens: 0, outputTokens: 0, estimated: true }, true);
+      return { ...failed(err), ...(err instanceof BudgetExceededError ? { status: 'budget_exceeded' as const } : {}) };
     }
 
     transcript.append({
@@ -168,13 +207,16 @@ export class Delegator {
       workspaceDir: workspace.dir,
       roleOf: (id) => agentRole(config, id),
       budgetChars: config.limits.handoffBudgetChars,
+      query: task,
     });
+    const stale = sessionMemory(transcript, agentId, session.sessionId).stale;
     const brief = buildBrief({
       task,
       kind,
       workspaceDir: workspace.dir,
       first,
-      handoff,
+      handoff: [handoff, durableFacts(transcript, workspace.dir, task, Math.floor(config.limits.handoffBudgetChars / 3)),
+        ...(stale.length ? [`Previously seen files changed on disk; re-read if relevant: ${stale.slice(0, 12).join(', ')}`] : [])].filter(Boolean).join('\n'),
     });
 
     // The brief is not on the record — the task is, and the rest is rebuilt
@@ -184,12 +226,33 @@ export class Delegator {
 
     let stopReason: StopReason | 'unresponsive';
     let usage: TurnUsage | undefined;
+    let output = '';
+    let observed = 0;
+    const previousUsage = transcript.all().findLast((r) => r.type === 'session_update' && r.agentId === agentId
+      && r.sessionId === session.sessionId && r.update.sessionUpdate === 'usage_update');
+    const previousCost = previousUsage?.type === 'session_update' && previousUsage.update.sessionUpdate === 'usage_update'
+      && previousUsage.update.cost?.currency === 'USD' ? previousUsage.update.cost.amount : 0;
+    let costUsd: number | undefined;
+    const observe = (record: TranscriptRecord) => {
+      if (record.type !== 'session_update' || record.agentId !== agentId || record.sessionId !== session.sessionId) return;
+      if (record.update.sessionUpdate === 'agent_message_chunk' || record.update.sessionUpdate === 'agent_thought_chunk') {
+        if (record.update.content.type === 'text') output += record.update.content.text;
+      }
+      // Context size is not billing usage. It is only a conservative lower-bound signal.
+      if (record.update.sessionUpdate === 'usage_update') {
+        observed = Math.max(observed, record.update.used);
+        if (record.update.cost?.currency === 'USD' && record.update.cost.amount >= previousCost) costUsd = record.update.cost.amount - previousCost;
+      }
+      lease?.observe(Math.max(observed, estimateTokens(brief) + estimateTokens(output)));
+    };
+    transcript.on('record', observe);
+    const releaseAccess = kind === 'change' ? undefined : this.deps.policy?.restrict({ agentId, sessionId: session.sessionId }, kind);
     try {
       const end = await session.prompt(brief, {
         turnTimeoutMs: config.limits.turnTimeoutMs,
         idleTimeoutMs: config.limits.idleTimeoutMs,
         cancelGraceMs: config.limits.cancelGraceMs,
-        signal,
+        signal: lease ? AbortSignal.any([signal, lease.signal]) : signal,
       });
       stopReason = end.stopReason;
       usage = end.usage;
@@ -205,14 +268,31 @@ export class Delegator {
         // one; drop the process so the following task starts clean.
         await pool.discard(agentId);
       }
+    } finally {
+      transcript.off('record', observe);
+      releaseAccess?.();
     }
+
+    const outcome = summarise(taskId, agentId, task, stopReason, transcript.forTask(taskId), Date.now() - startedAt, options);
+    const charged = lease?.finish({
+      tokens: usage ? tokensOf(usage) : Math.max(observed, estimateTokens(brief) + estimateTokens(output)),
+      inputTokens: usage?.inputTokens ?? Math.max(observed - estimateTokens(output), estimateTokens(brief)),
+      outputTokens: usage ? usage.outputTokens + (usage.thoughtTokens ?? 0) : estimateTokens(output),
+      cachedReadTokens: usage?.cachedReadTokens,
+      cachedWriteTokens: usage?.cachedWriteTokens,
+      estimated: usage === undefined,
+      ...(costUsd === undefined ? {} : { costUsd }),
+    }, outcome.status !== 'done');
+    if (lease?.exceeded()) outcome.status = 'budget_exceeded';
+    remember(transcript, outcome, session.sessionId);
 
     const stopped = transcript.append({
       type: 'stop',
       taskId,
       agentId,
       sessionId: session.sessionId,
-      stopReason: stopReason === 'unresponsive' ? 'cancelled' : stopReason,
+      stopReason,
+      status: outcome.status,
       ...(usage === undefined ? {} : { usage }),
       ...(session.currentModel() === undefined ? {} : { model: session.currentModel() }),
     });
@@ -230,8 +310,9 @@ export class Delegator {
     }
 
     return {
-      ...summarise(taskId, agentId, task, stopReason, transcript.forTask(taskId), Date.now() - startedAt, options),
+      ...outcome,
       briefChars: brief.length,
+      usage: charged,
     };
   }
 }

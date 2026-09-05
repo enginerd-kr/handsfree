@@ -1,6 +1,6 @@
 import { REPORT_FORMAT, REPORT_REMINDER } from './report.js';
 
-export type TaskKind = 'answer' | 'change';
+export type TaskKind = 'answer' | 'inspect' | 'change';
 
 export interface BriefInput {
   task: string;
@@ -42,6 +42,7 @@ export function buildBrief(input: BriefInput): string {
       'Do not create, modify or delete any file, and do not run any command.',
     );
   }
+  if (input.kind === 'inspect') lines.push('', 'Inspect the workspace using file reads. Put your findings in your reply. Do not modify files or run commands.');
   if (input.handoff) lines.push('', input.handoff);
   if (input.first) {
     lines.push(

@@ -67,6 +67,21 @@ export class AgentPool {
     return this.connections.has(agentId);
   }
 
+  sessionId(agentId: string): string | undefined { return this.sessions.get(agentId)?.sessionId; }
+
+  async rotate(agentId: string): Promise<HostSession> {
+    const previous = this.sessions.get(agentId);
+    if (previous?.isBusy) throw new Error(`Cannot rotate active session for ${agentId}`);
+    const connection = await this.connection(agentId);
+    const model = this.currentModel(agentId);
+    const session = await connection.newSession();
+    if (model) await session.selectModel(model);
+    if (previous) connection.releaseSession(previous.sessionId);
+    this.sessions.set(agentId, session);
+    this.options.transcript.append({ type: 'session', agentId, sessionId: session.sessionId, how: 'new' });
+    return session;
+  }
+
   /**
    * The model this agent is on: what its live session reports, or the model
    * its profile asks for while no session is open yet. An agent that names no
