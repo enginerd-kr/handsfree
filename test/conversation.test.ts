@@ -39,6 +39,59 @@ function streamingModel(replies: string[]): ChatClient {
 }
 
 describe('Conversation', () => {
+  it('executes every recipient selected by the planner before accepting its answer', async () => {
+    const agents = Object.fromEntries(['claude', 'gemini', 'codex'].map((id) => [id,
+      fakeAgent({ script: () => [{ do: 'say', text: `Hello from ${id}` }] }),
+    ]));
+    const llm = scriptedModel([
+      JSON.stringify({ action: 'call', tool: 'agent', input: { agent: Object.keys(agents), kind: 'answer', prompt: '하이?' } }),
+      answer('Okay.'),
+    ]);
+    const h = harness({ agents, llm });
+    open = h;
+    await h.runtime.conversation.send('모든 에이전트한테 하이?라고 물어봐');
+    expect(llm.seen[0]?.at(-1)?.content).toContain('모든 에이전트한테');
+    for (const [id, agent] of Object.entries(agents)) {
+      expect(agent.prompts).toHaveLength(1);
+      expect(agent.prompts[0]).toContain('하이?');
+      expect(agent.prompts[0]).toContain('Do not create, modify or delete');
+      expect(assistantText(h).at(-1)).toContain(id);
+    }
+    expect(h.runtime.transcript.all().filter((r) => r.type === 'task_result')).toHaveLength(3);
+  });
+
+  it('continues a selected group after an adapter fails', async () => {
+    const failed = fakeAgent({ script: () => [{ do: 'fail', message: 'adapter failed' }] });
+    const healthy = fakeAgent({ script: () => [{ do: 'say', text: 'Hello' }] });
+    const h = harness({ agents: { failed, healthy }, llm: scriptedModel([
+      JSON.stringify({ action: 'call', tool: 'agent', input: { agent: ['failed', 'healthy'], kind: 'answer', prompt: 'Hello?' } }),
+      answer('Done'),
+    ]) });
+    open = h;
+    await h.runtime.conversation.send('둘 다 인사해 줘');
+    expect(healthy.prompts).toHaveLength(1);
+    expect(assistantText(h).at(-1)).toContain('failed');
+    expect(assistantText(h).at(-1)).toContain('healthy');
+    const results = h.runtime.transcript.all().filter((r) => r.type === 'task_result');
+    expect(results).toHaveLength(2);
+    expect(results[0]?.result.status).not.toBe('done');
+    expect(results[1]?.result.status).toBe('done');
+  });
+
+  it('charges grouped recipients against the remaining turn limit and names omissions', async () => {
+    const agents = Object.fromEntries(['a', 'b', 'c'].map((id) => [id, fakeAgent({ script: () => [{ do: 'say', text: 'Hi' }] })]));
+    const h = harness({ agents, config: { limits: { maxDelegationsPerTurn: 2 } }, llm: scriptedModel([
+      JSON.stringify({ action: 'call', tool: 'agent', input: { agent: 'a', kind: 'answer', prompt: 'Hi' } }),
+      JSON.stringify({ action: 'call', tool: 'agent', input: { agent: ['b', 'c'], kind: 'answer', prompt: 'Hi' } }),
+    ]) });
+    open = h;
+    await h.runtime.conversation.send('인사해 줘');
+    expect(agents.a!.prompts).toHaveLength(1);
+    expect(agents.b!.prompts).toHaveLength(1);
+    expect(agents.c!.prompts).toHaveLength(0);
+    expect(assistantText(h).at(-1)).toContain('Not contacted (delegation limit reached): c');
+  });
+
   it('answers directly without touching an agent', async () => {
     const agent = fakeAgent({ script: () => [] });
     const h = harness({ agents: { claude: agent }, llm: scriptedModel([answer('Hi there.')]) });

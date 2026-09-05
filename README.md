@@ -52,7 +52,9 @@ Results include task status, a short summary, blockers, artifacts, verification 
 
 See [execution contracts, budgets, and operating limits](docs/execution.md) for configuration and examples.
 
-Structured routing defaults to local/API selection and skips ACP selection calls. The [measured local 4B path](docs/execution-controls.md) includes real role-selection and worker checks. Known Codex ACP native tools are blocked before execution by default; explicitly accepting adapter-native execution requires `agents.codex.nativeTools: "allow"` and runs those tasks exclusively.
+Structured routing defaults to local/API selection and skips ACP selection calls. The [measured local 4B path](docs/execution-controls.md) includes real role-selection and worker checks. The bundled Codex profile and example configuration set `agents.codex.nativeTools: "allow"`, so Codex runs using its adapter's permissions and sandbox. These tasks run exclusively. Set it to `"deny"` to block Codex execution before prompting.
+
+In conversation, the orchestration model can select several recipients in one `agent` call, for example `"agent": ["claude", "gemini", "codex"]`. It interprets requests such as “ask everyone” from the conversation. The host executes each selected recipient independently and reports every outcome; each recipient counts toward the turn's delegation limit, and any recipients skipped at that limit are named.
 
 ## Install
 

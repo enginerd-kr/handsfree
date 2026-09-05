@@ -6,11 +6,11 @@ This follow-up addresses the three issues found in the [three-agent live run](li
 
 Known Codex ACP launches and handshake identities now fail before session prompting unless their agent profile explicitly sets `nativeTools: "allow"`. Automatic routing excludes known blocked profiles. `doctor` distinguishes a successful handshake from permission to execute. This is a fail-closed compatibility guard for known adapters, not a replacement implementation of Codex's native tools or a certification of unknown adapters.
 
-Native opt-in tasks take the exclusive workspace lock even for inspections, because host read-only restrictions cannot reliably govern their native operations. Use the opt-in only when accepting adapter permissions or supplying external isolation. Default Codex execution remains disabled; it has not become universally host-mediated.
+Native execution tasks take the exclusive workspace lock even for inspections, because host read-only restrictions cannot reliably govern their native operations. The bundled Codex profile and example configuration now set `nativeTools: "allow"` so normal orchestration can run Codex using its adapter's permissions and sandbox. An explicit `"deny"` still blocks execution, and custom profiles that omit the setting default to `"deny"`.
 
 The installed `codex-acp 1.10.0` applies its mode's approval and sandbox policy to each turn. Its `read-only` mode ID actually selects workspace-write behavior in that version. Simply changing a launch environment variable would not restore host command-by-command enforcement. Official Codex configuration also distinguishes the approval reviewer from sandbox permissions: changing the reviewer does not affect actions already allowed inside the sandbox. [Official configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference)
 
-The real control check attempted an explicit Codex task and confirmed rejection with no launched Codex connection and zero charged tokens.
+The original control check, with `nativeTools: "deny"`, attempted an explicit Codex task and confirmed rejection with no launched Codex connection and zero charged tokens.
 
 ## Budgets
 

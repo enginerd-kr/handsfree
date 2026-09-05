@@ -26,7 +26,7 @@ export interface AgentToolDeps {
 }
 
 export type AgentInput = {
-  agent: string;
+  agent: string | string[];
   prompt: string;
   description?: string | undefined;
   kind: 'answer' | 'inspect' | 'change';
@@ -34,7 +34,7 @@ export type AgentInput = {
 };
 
 /**
- * The tool that hands one task to one coding agent, in the shape a model
+ * The tool that hands one task to selected coding agents, in the shape a model
  * uses to brief a subagent: which agent, the prompt it is to work from, a
  * title for the screen, and whether words or a changed workspace are wanted
  * back. The planner writes the whole brief itself — what to do, what done
@@ -52,7 +52,7 @@ export class AgentTool implements Tool<AgentInput> {
     // An empty roster is refused upstream; a schema still has to be buildable.
     const agent = ids.length > 0 ? z.enum(ids as [string, ...string[]]) : z.string().min(1);
     return z.object({
-      agent,
+      agent: z.union([agent, z.array(agent).min(1)], { error: `Expected an agent id or nonempty array from: ${ids.join(', ')}` }),
       prompt: z.string().min(1),
       description: z.string().optional(),
       /**
@@ -73,7 +73,10 @@ export class AgentTool implements Tool<AgentInput> {
     return `agent — delegate one task inside ${this.deps.workspace.dir}.
 Agents:
 ${roster}
-Input: {"agent":"id","kind":"answer|inspect|change","prompt":"brief","model":"optional model"}.
+Input: {"agent":"id or an array of ids","kind":"answer|inspect|change","prompt":"brief","model":"optional model"}.
+For the same request to multiple agents, select every intended recipient in one agent array. For all agents, include every listed id. The host calls each independently before returning; never ask one agent to speak for the others.
+For different tasks, make separate calls with the appropriate briefs.
+Group example: {"action":"call","tool":"agent","input":{"agent":${JSON.stringify(cards.map((card) => card.id))},"kind":"answer","prompt":"Hi? Reply briefly."}}
 answer: reply only; inspect: read files and report, no commands or edits; change: implement and verify.
 Preserve the user's exact requirements and file names. Never invent a file for a question.
 Prefer an agent with relevant unchanged context; sessions are reused and receive relevant handoffs.
@@ -83,6 +86,39 @@ Example: {"action":"call","tool":"agent","input":{"agent":"${first}","kind":"cha
   }
 
   async run(input: AgentInput, ctx: ToolContext): Promise<ToolResult> {
+    if (Array.isArray(input.agent)) {
+      const recipients = [...new Set(input.agent)];
+      const limit = Math.min(ctx.remainingCalls ?? this.deps.config.limits.maxDelegationsPerTurn, this.deps.config.limits.maxDelegationsPerTurn);
+      const outcomes: TaskOutcome[] = [];
+      const replies: string[] = [];
+      const notes: string[] = [];
+      let callsUsed = 0;
+      for (const agent of recipients) {
+        if (ctx.signal.aborted || callsUsed >= limit) break;
+        callsUsed++;
+        try {
+          const result = await this.runSingle({ ...input, agent }, ctx,
+            Math.max(256, Math.floor(this.deps.config.limits.maxResultChars / Math.max(1, Math.min(recipients.length, limit)))));
+          if (result.outcome) outcomes.push(result.outcome);
+          replies.push(result.text);
+        } catch (err) {
+          if (!ctx.signal.aborted) notes.push(`${agent}: ${(err as Error).message}`);
+        }
+      }
+      const skipped = recipients.slice(callsUsed);
+      if (skipped.length) notes.push(`Not contacted (${ctx.signal.aborted ? 'cancelled' : 'delegation limit reached'}): ${skipped.join(', ')}.`);
+      return {
+        text: [...replies, ...notes].join('\n\n'),
+        outcomes,
+        callsUsed,
+        ...(notes.length ? { note: notes.join('\n') } : {}),
+        halt: ctx.signal.aborted || skipped.length > 0,
+      };
+    }
+    return this.runSingle({ ...input, agent: input.agent }, ctx);
+  }
+
+  private async runSingle(input: AgentInput & { agent: string }, ctx: ToolContext, maxChars = this.deps.config.limits.maxResultChars): Promise<ToolResult> {
     const outcome = await this.deps.delegator.delegate(
       {
         agentId: input.agent,
@@ -95,7 +131,7 @@ Example: {"action":"call","tool":"agent","input":{"agent":"${first}","kind":"cha
     );
     this.deps.onOutcome?.(outcome);
     return {
-      text: this.relay(outcome),
+      text: this.relay(outcome, maxChars),
       outcome,
       // A cancelled task is a turn the user stopped; an agent that died
       // cannot be handed the next task either way.
@@ -110,10 +146,10 @@ Example: {"action":"call","tool":"agent","input":{"agent":"${first}","kind":"cha
    * goes out, against what the agent actually said, so `/cost` can say what
    * the report contract saved.
    */
-  private relay(outcome: TaskOutcome): string {
+  private relay(outcome: TaskOutcome, maxChars: number): string {
     const { config, transcript, workspace } = this.deps;
     const relayMessage = config.orchestration.relayAnswers;
-    const lines = [renderOutcome(outcome, workspace.dir, { relayMessage, maxChars: config.limits.maxResultChars - 120 })];
+    const lines = [renderOutcome(outcome, workspace.dir, { relayMessage, maxChars: Math.max(1, maxChars - 120) })];
     if (!relayMessage && outcome.message) {
       lines.push(`(The user has already seen ${outcome.agentId}'s full reply on screen; do not repeat it.)`);
     }

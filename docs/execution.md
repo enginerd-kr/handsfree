@@ -12,7 +12,7 @@ handsfree serve --mcp --permission-mode acceptEdits
 
 Use `ask` to send permission questions to an MCP client that supports form elicitation. Without that support an unresolved permission request is denied. `acceptEdits` and `bypass` retain the existing policy-mode semantics. An `answer` or `inspect` task further restricts its session even in bypass mode.
 
-These restrictions govern operations routed through the host. Known Codex ACP adapters are blocked before prompting by default because they execute native tools without asking the host. Detection checks both launch profiles and handshake identity. Setting `agents.<id>.nativeTools: "allow"` explicitly accepts adapter-native permissions or external isolation; those tasks always run exclusively. This opt-in does not make host restrictions enforceable on native tools. Unknown adapters are not automatically certified safe. See the [live adapter findings](live-use-cases.md) and [follow-up controls](execution-controls.md).
+These restrictions govern operations routed through the host. The bundled Codex profile and example configuration set `nativeTools: "allow"`: Codex runs using adapter-native permissions and sandboxing, and its tasks always run exclusively. Host restrictions do not govern its native tools. Setting `agents.<id>.nativeTools: "deny"` blocks known Codex ACP adapters before prompting; detection checks both launch profiles and handshake identity. Custom profiles that omit this setting still default to `"deny"`. Unknown adapters are not automatically certified safe. See the [live adapter findings](live-use-cases.md) and [follow-up controls](execution-controls.md).
 
 The structured CLI returns one JSON result and a nonzero exit code for unsuccessful tasks:
 

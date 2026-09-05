@@ -13,6 +13,7 @@ import type { TaskOutcome } from '../orchestrator/outcome.js';
  */
 export interface ToolContext {
   signal: AbortSignal;
+  remainingCalls?: number;
 }
 
 export interface ToolResult {
@@ -29,6 +30,9 @@ export interface ToolResult {
    * task to report and leaves it out.
    */
   outcome?: TaskOutcome;
+  /** A grouped call reports every recipient, with no duplicate singular outcome. */
+  outcomes?: TaskOutcome[];
+  callsUsed?: number;
   /** A line for the closing account, from a tool that has no outcome to give it. */
   note?: string;
 }

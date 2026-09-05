@@ -341,9 +341,11 @@ export class Conversation {
 
         if (planned.step.action === 'answer') {
           history.push({ role: 'assistant', content: JSON.stringify(planned.step) });
-          stream.end(planned.step.message);
+          const message = ledgerOnly ? renderLedger({ userMessage: prompt, outcomes, notes, workspaceDir: workspace.dir }) : planned.step.message;
+          if (ledgerOnly) stream.retract();
+          stream.end(message, ledgerOnly);
           answered = true;
-          closing = JSON.stringify(planned.step);
+          closing = JSON.stringify({ action: 'answer', message });
           break;
         }
         // The step is a call; anything its JSON streamed was not a reply.
@@ -355,10 +357,13 @@ export class Conversation {
           notes.push(`Stopped at the limit of ${config.limits.maxDelegationsPerTurn} tool calls per message.`);
           break;
         }
-        calls++;
-
-        const result = await call.run({ signal: turn.signal });
+        const result = await call.run({ signal: turn.signal, remainingCalls: config.limits.maxDelegationsPerTurn - calls });
+        calls += result.callsUsed ?? 1;
         if (result.outcome) outcomes.push(result.outcome);
+        if (result.outcomes) {
+          outcomes.push(...result.outcomes);
+          ledgerOnly = true;
+        }
         if (result.note) notes.push(result.note);
         history.push({ role: 'user', content: this.relay(call.name, result.text) });
 

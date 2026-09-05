@@ -38,7 +38,7 @@
         "-y",
         "@agentclientprotocol/codex-acp"
       ],
-      "nativeTools": "deny"
+      "nativeTools": "allow"
     }
   },
   "roles": {

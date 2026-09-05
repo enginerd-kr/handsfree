@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { AgentProfileSchema } from '../config/schema.js';
+import { AgentProfileSchema, ConfigSchema } from '../config/schema.js';
 import { mediationProblem } from './mediation.js';
 
 describe('known native adapter mediation', () => {
+  it('runs the bundled Codex profile while honoring an explicit deny', () => {
+    const profile = ConfigSchema.parse({}).agents.codex!;
+    expect(mediationProblem(profile)).toBeUndefined();
+    expect(mediationProblem(profile, '@agentclientprotocol/codex-acp')).toBeUndefined();
+    expect(mediationProblem({ ...profile, nativeTools: 'deny' })).toContain('disabled before prompting');
+  });
+
   it('recognizes scoped, versioned, direct and renamed Codex launch profiles', () => {
     for (const launch of [
       { command: 'npx', args: ['-y', '@agentclientprotocol/codex-acp@1.10.0'] },

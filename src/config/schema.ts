@@ -93,6 +93,7 @@ export const DEFAULT_AGENTS: Record<string, z.input<typeof AgentProfileSchema>> 
   codex: {
     command: 'npx',
     args: ['-y', '@agentclientprotocol/codex-acp'],
+    nativeTools: 'allow',
     note: 'methodical coding agent, good at tests and refactors',
   },
 };

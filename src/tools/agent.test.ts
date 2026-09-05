@@ -42,6 +42,30 @@ function tool(roster = ['claude', 'gemini']) {
 const ctx = { signal: new AbortController().signal };
 
 describe('AgentTool', () => {
+  it('validates grouped recipients and delegates duplicates only once', async () => {
+    const { box, delegated } = tool();
+    for (const agent of [[], ['claude', 'missing']]) {
+      expect(box.parse(JSON.stringify({ action: 'call', tool: 'agent', input: { agent, prompt: 'Hi' } })).ok).toBe(false);
+    }
+    const parsed = box.parse(JSON.stringify({ action: 'call', tool: 'agent', input: { agent: ['claude', 'gemini', 'claude'], kind: 'answer', prompt: 'Hi' } }));
+    if (!parsed.ok || parsed.step.action !== 'call') throw new Error('not a call');
+    const result = await parsed.step.call.run(ctx);
+    expect(delegated.map((d) => d.agentId)).toEqual(['claude', 'gemini']);
+    expect(result.outcomes).toHaveLength(2);
+    expect(result.callsUsed).toBe(2);
+  });
+
+  it('stops a group when cancelled and names recipients not contacted', async () => {
+    const { agent, delegated } = tool();
+    const controller = new AbortController();
+    controller.abort();
+    const result = await agent.run({ agent: ['claude', 'gemini'], kind: 'answer', prompt: 'Hi' }, { signal: controller.signal });
+    expect(delegated).toHaveLength(0);
+    expect(result.callsUsed).toBe(0);
+    expect(result.halt).toBe(true);
+    expect(result.note).toContain('Not contacted (cancelled): claude, gemini');
+  });
+
   it('describes the roster and how to call it', () => {
     const { agent } = tool();
     const text = agent.describe();
