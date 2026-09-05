@@ -97,7 +97,7 @@ export const GLYPH: Record<Marker, string> = {
 
 /**
  * The wash behind a task left open on screen — dark enough to sit under the
- * text rather than compete with it. A hover lifts it a step.
+ * text rather than compete with it.
  */
 export const BAND = '#3a3a3a';
 
@@ -113,28 +113,11 @@ export const BAND = '#3a3a3a';
 export const CODE_WASH = '#333333';
 
 /**
- * The wash under the pointer. It used to be the terminal's own `gray`, bright
- * enough that quiet text laid on it had to be recoloured to survive; this is
- * the open task's band lifted just far enough to read as a different row, so
- * the ink above it never has to change.
- */
-export const HOVER_BAND = '#4f4f4f';
-
-/**
  * The wash behind the user's own lines: a faint lift of white, a step above
  * the task band, running the whole width of the pane — so what was asked
  * reads as its own strip before anything done about it is read.
  */
 export const PROMPT_BAND = '#454545';
-
-/**
- * The wash behind the cells a drag has picked up. Blue where the task band is
- * gray, because the two answer different questions: the band says what belongs
- * together, the selection says what is about to be copied. It goes under the
- * characters as a background of its own, so each keeps its colour — inverse
- * video over highlighted code turns every foreground into a different stripe.
- */
-export const SELECTION = '#264f78';
 
 /**
  * The two rules the prompt sits between — the one gray that is not text. They
@@ -159,8 +142,8 @@ export const RESULT_INDENT = ' ';
  * body whose outer nubs are arms riding the top or the bottom of their cell,
  * that same body with its underside opened up for the legs it is sat on, a
  * row of feet, and a row of nothing. Every part keeps the same nine cells, so
- * no pose can shift what sits beside or below the mark; the header's row
- * count is what a click is measured against.
+ * no pose can shift what sits beside or below the mark; the header's and the
+ * stage's row counts are what the live rows are budgeted against.
  *
  * The eyes are what say which way the mark is going. A quadrant is the
  * smallest a pair of eyes can move and the largest they can move and still

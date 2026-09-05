@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Box, Text, Transform, useApp, useInput, usePaste, useStdout } from 'ink';
+import { Box, type DOMElement, measureElement, Static, Text, useApp, useInput, usePaste, useStdout } from 'ink';
 import type { Runtime } from '../../runtime.js';
 import type { InputAnswer, InputField, InputValue } from '../../policy/types.js';
 import { MODE_LABEL, modeAllows, nextMode, type PermissionMode } from '../../policy/mode.js';
@@ -50,30 +50,11 @@ import {
   suggestAgents,
   suggestModels,
 } from '../../mention/mention.js';
-import { copyToClipboard, readClipboardImage } from './clipboard.js';
+import { readClipboardImage } from './clipboard.js';
 import { NOTHING_SENT, recall, remember, settle, type History } from './history.js';
-import {
-  DETAIL_INDENT,
-  GUTTER,
-  itemAt,
-  itemRows,
-  entryText,
-  textWidth,
-  placeItems,
-  totalHeight,
-  visualRows,
-  windowAt,
-} from './layout.js';
+import { DETAIL_INDENT, GUTTER, entryText, heightOf, textWidth, totalHeight } from './layout.js';
 import { type Highlighter, loadHighlighter, renderMarkdown } from './markdown.js';
-import {
-  CURSOR_QUERY,
-  isKittyQueryReply,
-  isMouseReport,
-  parseCursorReport,
-  parseMouseEvent,
-  trackMouse,
-} from './mouse.js';
-import { type Bounds, highlightFor, order, type Point, selectedText } from './selection.js';
+import { isKittyQueryReply } from './keys.js';
 import {
   agentColour,
   BAND,
@@ -84,7 +65,6 @@ import {
   DOT_BUSY,
   DOT_IDLE,
   GLYPH,
-  HOVER_BAND,
   INK,
   INK_FAINT,
   type Look,
@@ -108,7 +88,16 @@ import {
 } from './theme.js';
 import { VERSION } from '../../version.js';
 
-const EXPAND_HINT = 'click or ctrl+o to expand';
+const EXPAND_HINT = 'ctrl+o to expand';
+const COLLAPSE_HINT = 'ctrl+o to collapse';
+
+/**
+ * The screen and its scrollback wiped, cursor home. What the transcript has
+ * printed cannot be redrawn where it stands, so the one way to change it —
+ * ctrl+o refolding every task, or /clear — is to take it all back and print
+ * it again. Claude Code does the same, and for the same reason.
+ */
+const CLEAR_SCREEN = '\u001B[2J\u001B[3J\u001B[H';
 
 /**
  * The blink: how long the eyes stay shut, the range the beat between the two
@@ -175,11 +164,11 @@ const WANDER_ROAM = MASCOT_STAGE - WANDER_SPAN;
 const WANDER_HOME = Math.round(WANDER_ROAM / 2);
 
 /**
- * Rows above the transcript: the welcome mark's three rows and the blank row
- * on either side of it. The mark never wraps, so this stays a constant a
- * click's row can be measured against.
+ * Rows the header takes: the blank row above it, and its three lines in
+ * their box. Every line truncates rather than wraps, so this stays a
+ * constant the greeting's room can be measured against.
  */
-const HEADER_ROWS = 5;
+const HEADER_ROWS = 6;
 
 /**
  * How many suggestions a slash or an at-sign menu offers before it starts
@@ -200,35 +189,17 @@ const MENU_FLOOR = 8;
 const MODEL_FLOOR = 4;
 
 /**
- * Rows below it: the status line, the prompt's two rules with its input between
- * them, the hint, and the permission mode under that. The status line is
- * always drawn — blank when nothing is running — so the transcript's budget
- * never changes as a turn starts, and the mode is always drawn for the same
- * reason: a row that came and went with shift+tab would move the transcript
- * under a click.
+ * Rows under the transcript: the mark's stage, three rows at the right edge;
+ * the status line; the prompt's two rules with its input between them; the
+ * hint; and the permission mode under that. The status line is always drawn
+ * — blank when nothing is running — so the prompt never jumps as a turn
+ * starts, and the mode is always drawn for the same reason: a row that came
+ * and went with shift+tab would move the prompt. The spend line between the
+ * mark and the status line is the one row that comes on its own, once for
+ * the run, and it is counted where it is drawn.
  */
-const PROMPT_ROWS = 6;
+const PROMPT_ROWS = 9;
 
-/**
- * How far one turn of the wheel moves the transcript. Three rows is what a
- * terminal sends per notch when it scrolls itself, so the frame moves at the
- * speed the hand expects.
- */
-const WHEEL_ROWS = 3;
-
-/**
- * The pace the owed scroll is paid out at. A flick of the wheel arrives as a
- * burst of reports — often several fused into one stdin chunk — and paying
- * them all in one render is the lurch the eye reads as jank. They pool
- * instead, and every DRAIN_MS a frame takes three quarters of the debt:
- * never fewer than SCROLL_STEP rows, so the tail comes to a stop rather
- * than crawling, and never more than a viewport, which is as far as a jump
- * can be followed. A single notch is under the step and lands whole. This
- * is the shape of Claude Code's own scroll drain, run at React's cadence
- * because a stock Ink render is the only frame there is.
- */
-const DRAIN_MS = 16;
-const SCROLL_STEP = 4;
 
 /**
  * A question waiting on the person at the keyboard. Both kinds queue in one
@@ -297,6 +268,18 @@ interface Outgoing {
  */
 type RosterState = 'ready' | { failed: string };
 
+/**
+ * One entry of what has gone out to the terminal's scrollback: the air that
+ * stood over the header on the opening screen, the header, the greeting as
+ * it stood on the prompt — each once — and then every finished row of the
+ * transcript in order.
+ */
+type Printed =
+  | { kind: 'spacer'; rows: number }
+  | { kind: 'header' }
+  | { kind: 'greeting'; rows: number }
+  | { kind: 'item'; item: ViewItem };
+
 type MenuItem =
   | { kind: 'command'; command: Command }
   // `planner` says the name is being filled in behind `@orchestrator:`, where
@@ -305,17 +288,20 @@ type MenuItem =
   | { kind: 'model'; agent: string; choice: ModelChoice };
 
 /**
- * How many rows a menu of this kind may take in a window this tall. The frame
- * is a fixed height and one that overflows scrolls the whole UI, so the menu
- * is bounded by what the transcript can spare — MENU_FLOOR for a slash or an
- * at-sign, and MENU_ROWS on top of that, since those lists are long by nature
- * and narrow as the name is typed. A model list gets neither ceiling and the
- * lower floor: it is what the profile declares, all of it, and a list cut
- * short reads as handsfree having an opinion about which models exist.
+ * How many rows a menu of this kind may take in a window this tall, with
+ * `above` rows already spoken for over the transcript — the header, while it
+ * is still drawn live. The live part of the screen has to fit the window — a
+ * frame taller than it is one Ink can only redraw by wiping the screen — so
+ * the menu is bounded by what the transcript can spare: MENU_FLOOR for a
+ * slash or an at-sign, and MENU_ROWS on top of that, since those lists are
+ * long by nature and narrow as the name is typed. A model list gets neither
+ * ceiling and the lower floor: it is what the profile declares, all of it,
+ * and a list cut short reads as handsfree having an opinion about which
+ * models exist.
  */
-export function menuFit(kind: MenuItem['kind'], rows: number): number {
+export function menuFit(kind: MenuItem['kind'], rows: number, above: number): number {
   const models = kind === 'model';
-  const room = rows - 1 - HEADER_ROWS - PROMPT_ROWS - (models ? MODEL_FLOOR : MENU_FLOOR);
+  const room = rows - 1 - above - PROMPT_ROWS - (models ? MODEL_FLOOR : MENU_FLOOR);
   return Math.max(0, models ? room : Math.min(MENU_ROWS, room));
 }
 
@@ -388,9 +374,11 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   };
   const [viewOptions, setViewOptions] = useState<ViewOptions>(() => ({
     expandHint: EXPAND_HINT,
-    collapseHint: 'click to collapse',
+    collapseHint: COLLAPSE_HINT,
   }));
-  const [hoveredFold, setHoveredFold] = useState<string | undefined>();
+  // The view's options as the handlers see them: a ctrl+o fused into a chunk
+  // with another must toggle from what the first one set, not from the frame.
+  const viewOptionsRef = useRef(viewOptions);
   // Who has a task open right now, replayed from the same records the view is.
   const [working, setWorking] = useState<ReadonlySet<string>>(() => new Set());
   // How far the running turn has got, replayed the same way, for the mark to
@@ -433,30 +421,43 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
   /** What the mark has to report: the running turn's phase, or that it is over. */
   const brief: Brief | undefined = busy ? phase : signedOff ? 'done' : undefined;
 
-  // A drag in flight: the cell the button went down on, and whether the
-  // pointer has moved since. Press and release in place is the click it always
-  // was; anything that moved is a selection.
-  const dragRef = useRef<{ anchor: Point; moved: boolean } | undefined>(undefined);
-  // The selection's two ends, as cells of the transcript — rows counted down
-  // the whole transcript rather than down the screen, so the selection keeps
-  // holding the characters it grabbed while the transcript scrolls or grows
-  // under the drag. The ref mirrors it for the input handler, which can run
-  // several times before a render.
-  const [selection, setSelection] = useState<{ anchor: Point; focus: Point } | undefined>();
-  const selectionRef = useRef(selection);
-  const applySelection = (next: { anchor: Point; focus: Point } | undefined) => {
-    selectionRef.current = next;
-    setSelection(next);
+  // Which printing of the transcript this is. Finished rows are written to
+  // the terminal once and left in its scrollback; when what is written has
+  // to change — ctrl+o refolding every task, or /clear — the screen is wiped
+  // and the transcript printed again from the top under the next number.
+  const [generation, setGeneration] = useState(0);
+  // How many rows the current printing has already put in the scrollback.
+  // What is printed is never taken back, so the count only grows within a
+  // printing, whatever the view says about the rows that are already out.
+  const flushed = useRef(0);
+  // The rows of air printed over the header when the first row went out —
+  // what stood between the header and the greeting on the opening screen,
+  // moved above the header so the transcript could take its place. Printed
+  // once per printing, at the height that frame needed.
+  const spacer = useRef(0);
+  // The room the greeting was drawn in on the opening screen, while it was
+  // up, so it can be printed exactly as it stood; nothing when this printing
+  // never showed one — a resumed run opens on its transcript.
+  const greeted = useRef<number | undefined>(undefined);
+  // How tall the live part of the screen stood last frame, measured once it
+  // was drawn, and how many rows this printing had put out by then. The live
+  // part is never let shrink except by what went out above it: a frame that
+  // shrank on its own — a streamed reply retracted for a tool call, a menu
+  // closing — would leave its rows blank under the prompt, and the prompt
+  // would climb the screen. Instead the rows are kept as air over the live
+  // rows, and what arrives next fills them.
+  const frame = useRef<DOMElement>(null);
+  const lastFrame = useRef(0);
+  const printedRows = useRef(0);
+  /** Wipes the screen and its scrollback; the next frame prints everything over. */
+  const reprint = () => {
+    flushed.current = 0;
+    spacer.current = 0;
+    greeted.current = undefined;
+    printedRows.current = 0;
+    setGeneration((current) => current + 1);
+    if (stdout?.isTTY) stdout.write(CLEAR_SCREEN);
   };
-  // How many lines the last drag put on the clipboard, for as long as the hint
-  // line says so.
-  const [copied, setCopied] = useState<number | undefined>();
-  const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  useEffect(() => () => clearTimeout(copiedTimer.current), []);
-
-  // Reporting has to be turned back off, or the terminal keeps sending drags
-  // here instead of selecting text long after handsfree has exited.
-  useEffect(() => trackMouse(stdout), [stdout]);
 
   // The transcript is the model; the view is a pure function of it.
   useEffect(() => {
@@ -470,10 +471,15 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       setSessions(sessionsOf(records));
       setSpend(spendOf(records));
     };
+    // The screen starts over on a clear, and what was printed goes with it.
+    const arrived = (record: { type: string }) => {
+      if (record.type === 'clear') reprint();
+      render();
+    };
     render();
-    runtime.transcript.on('record', render);
+    runtime.transcript.on('record', arrived);
     return () => {
-      runtime.transcript.off('record', render);
+      runtime.transcript.off('record', arrived);
     };
   }, [runtime, viewOptions]);
 
@@ -556,8 +562,10 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
 
   // `cli-highlight` drags highlight.js behind it, so it is fetched in the
   // background and code blocks render plain until it arrives — one extra
-  // render, a moment after launch.
-  const [highlighter, setHighlighter] = useState<Highlighter | null>(null);
+  // render, a moment after launch. Nothing is printed for good before then:
+  // a resumed run has a transcript to print on its first frame, and a code
+  // block printed plain in that moment would stay plain in the scrollback.
+  const [highlighter, setHighlighter] = useState<Highlighter | null | undefined>(undefined);
   useEffect(() => {
     let live = true;
     void loadHighlighter().then((loaded) => {
@@ -570,13 +578,55 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
 
   const rows = stdout?.rows ?? 30;
   const columns = stdout?.columns ?? 80;
+  // An agent's own words arrive as markdown, so they are drawn as markdown.
+  // This sits here rather than inside `Entry` because a row printed to the
+  // scrollback is printed once: what goes out has to be the finished text.
+  const drawn = useMemo(
+    () =>
+      items.map((item) => {
+        if (item.prose !== true) return item;
+        return {
+          ...item,
+          text: renderMarkdown(item.key, item.text, {
+            width: textWidth(item, columns),
+            highlight: highlighter,
+            // A thought stays the quieter register, so the quiet ink is baked
+            // into the styling rather than painted over it.
+            dim: item.tone === 'muted',
+          }),
+          // The ANSI carries every colour it needs; an outer one would end at
+          // the first reset inside it.
+          tone: 'normal' as Tone,
+        };
+      }),
+    [items, highlighter, columns],
+  );
+
+  // Where the finished rows end and the live ones begin. Everything before the
+  // first row that can still change is printed to the scrollback and left
+  // there; that row and everything after it are drawn above the prompt and
+  // redrawn as they change. The boundary never moves back within a printing
+  // — a row already out stays out — and nothing goes out before the code
+  // highlighter has loaded, or a block printed in the first moment of a
+  // resumed run would stay plain for good.
+  const firstLive = drawn.findIndex((item) => item.live);
+  const settledCount =
+    highlighter === undefined
+      ? flushed.current
+      : Math.max(flushed.current, firstLive === -1 ? drawn.length : firstLive);
+  // Whether this is the frame that prints the header: the first of a printing
+  // with a finished row to put under it.
+  const opening = settledCount > 0 && flushed.current === 0;
+  flushed.current = settledCount;
+  const live = drawn.slice(settledCount);
   // What the menu may claim before it starts eating the transcript's floor. On
   // a short terminal that is nothing at all: losing the menu is much the
-  // cheaper of the two ways a fixed frame can fail.
+  // cheaper of the two ways the live part of the screen can fail to fit.
+  // Spoken for already: the header while it is still drawn live, and the
+  // spend line once there is one.
+  const spoken = (settledCount === 0 ? HEADER_ROWS : 0) + (spend.models.length > 0 ? 1 : 0);
   const budgeted = (offered: MenuItem[]): MenuItem[] =>
-    offered.length === 0
-      ? offered
-      : offered.slice(0, menuFit(offered[0]!.kind, rows - (spend.models.length > 0 ? 1 : 0)));
+    offered.length === 0 ? offered : offered.slice(0, menuFit(offered[0]!.kind, rows, spoken));
   // Who a mention can name. The roster is fixed for the life of the run, so
   // reading it once is enough.
   const agents = useMemo(() => runtime.pool.available(), [runtime]);
@@ -693,173 +743,94 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     (menu.length > 0 ? menu.length + 1 : modelNote ? 2 : 0) +
     (spend.models.length > 0 ? 1 : 0) +
     (lineCount(draft.value) - 1);
-  // An agent's own words arrive as markdown, so they are drawn as markdown.
-  // This sits above the windowing rather than inside `Entry` because the rows a
-  // block occupies are what the viewport below and every click are measured
-  // against — both have to see the same text the terminal will.
-  const drawn = useMemo(
-    () =>
-      items.map((item, index) => {
-        // The transcript's first row sits against the header, which already
-        // ends in a blank line, so it gives up the gap it would have had
-        // anywhere further down.
-        const placed = index === 0 && item.gap ? { ...item, gap: false } : item;
-        if (placed.prose !== true) return placed;
-        return {
-          ...placed,
-          text: renderMarkdown(placed.key, placed.text, {
-            width: textWidth(placed, columns),
-            highlight: highlighter,
-            // A thought stays the quieter register, so the quiet ink is baked
-            // into the styling rather than painted over it.
-            dim: placed.tone === 'muted',
-          }),
-          // The ANSI carries every colour it needs; an outer one would end at
-          // the first reset inside it.
-          tone: 'normal' as Tone,
-        };
-      }),
-    [items, highlighter, columns],
-  );
-
-  // The rows the transcript gets: everything the header and the prompt leave,
-  // the menu's rows included — an open menu shortens the pane rather than
-  // spilling over it. The floor is the one the menu was budgeted against, so
-  // the two agree and the frame stays inside the window; a window too small to
-  // hold even that spills rather than the transcript vanishing.
-  const viewport = Math.max(
-    rows - 1 - HEADER_ROWS - promptRows,
-    menu[0]?.kind === 'model' ? MODEL_FLOOR : MENU_FLOOR,
-  );
-  const height = useMemo(() => totalHeight(drawn, columns), [drawn, columns]);
   // Whether the transcript has anything to show. Empty and with nothing being
   // asked, the pane carries the greeting instead — this run's first frame, and
   // the only one it appears on: the first record sent or received retires it.
   const greeting = items.length === 0 && ask === undefined;
-  const furthest = Math.max(0, height - viewport);
-  // How far down the transcript the top of the viewport sits, or `undefined`
-  // while it follows the end — which is not the same number: pinned to the
-  // bottom, the view keeps up as the transcript grows under it, and a fixed
-  // offset would fall behind by whatever arrived.
-  const [scrolled, setScrolled] = useState<number | undefined>(undefined);
-  const from = Math.min(scrolled ?? furthest, furthest);
-  // What a scroll is measured against, for the handler below: several wheel
-  // reports can arrive in one stdin chunk and all be handled before a render,
-  // so the bounds are read from here rather than from the closure.
-  const bounds = useRef({ furthest, viewport, from, height });
-  bounds.current = { furthest, viewport, from, height };
-  /** Moves the viewport by `delta` rows, and re-pins it at the end. */
-  const moveBy = (delta: number) =>
-    setScrolled((current) => {
-      const { furthest: end } = bounds.current;
-      const next = Math.min(Math.max((current ?? end) + delta, 0), end);
-      return next >= end ? undefined : next;
-    });
-  // Rows asked for but not yet shown, and the timer paying them off. Both are
-  // refs: the drain reads and writes them between renders, and a render owes
-  // nothing to either.
-  const owed = useRef(0);
-  const drainTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const drain = () => {
-    const debt = owed.current;
-    const size = Math.abs(debt);
-    const cap = Math.max(1, bounds.current.viewport - 1);
-    const step = Math.min(cap, Math.max(SCROLL_STEP, (size * 3) >> 2));
-    const paid = size <= step ? debt : Math.sign(debt) * step;
-    owed.current = debt - paid;
-    if (paid !== 0) moveBy(paid);
-    drainTimer.current = owed.current === 0 ? undefined : setTimeout(drain, DRAIN_MS);
-  };
-  /** Owes the viewport `delta` rows; the drain pays them out over frames. */
-  const scrollBy = (delta: number) => {
-    owed.current += delta;
-    // The first payment waits a beat rather than running here, so a burst
-    // fused into one stdin chunk pools in full before any of it is drawn.
-    drainTimer.current ??= setTimeout(drain, 0);
-  };
-  // A timer still owed rows must not outlive the component it scrolls.
-  useEffect(() => () => clearTimeout(drainTimer.current), []);
 
-  // Placement and rendering share the window, or a click would be aimed at a
-  // different frame than the one on screen.
-  const { items: shown, top } = useMemo(
-    () => windowAt(drawn, viewport, columns, from),
-    [drawn, viewport, columns, from],
+  // What the live rows may take: the window less the header while it is
+  // still drawn live, and the prompt — or the question standing in for the
+  // prompt — under them. The live rows are pinned to their end and
+  // clipped at the top: what is arriving is what is being watched, and what
+  // was clipped comes back whole once it settles into the scrollback. A frame
+  // taller than the window is the one thing to avoid — Ink can only redraw
+  // one by wiping the screen and printing the whole scrollback again.
+  const chrome = (settledCount === 0 ? HEADER_ROWS : 0) + (ask ? questionRows(ask, form) : promptRows);
+  const budget = Math.max(0, rows - 1 - chrome);
+  const liveHeight = totalHeight(live, columns);
+  const shownHeight = Math.min(liveHeight, budget);
+  // The opening screen fills the window with the header at the top, air, and
+  // the greeting on the prompt. The first row to go out is printed under the
+  // greeting, which stays where it stood, and the air goes out over the
+  // header instead — as much of it as still fits, so the prompt still ends
+  // at the bottom of the window and the header has moved up by exactly what
+  // arrived. Everything from then on pushes the screen up the way a
+  // conversation does, the header first. Sized on this frame: what is
+  // printed, what is live and what is drawn under it have to add up to the
+  // window, and there is nothing to spare once the transcript is taller.
+  if (greeting) greeted.current = budget;
+  if (opening) {
+    const greetingRows = greeted.current === undefined ? 0 : welcomeHeight(runtime, agents, greeted.current);
+    spacer.current = Math.max(
+      0,
+      rows -
+        1 -
+        HEADER_ROWS -
+        greetingRows -
+        totalHeight(drawn.slice(0, settledCount), columns) -
+        shownHeight -
+        chrome,
+    );
+  }
+  // The header goes out with the first finished row, so it has had the run's
+  // opening — which agents came back on a session — to settle first. Until
+  // then it is drawn live at the top, where it will be printed.
+  const printed = useMemo<Printed[]>(
+    () =>
+      settledCount === 0
+        ? []
+        : [
+            ...(spacer.current > 0 ? [{ kind: 'spacer' as const, rows: spacer.current }] : []),
+            { kind: 'header' as const },
+            ...(greeted.current === undefined
+              ? []
+              : [{ kind: 'greeting' as const, rows: greeted.current }]),
+            ...drawn.slice(0, settledCount).map((item) => ({ kind: 'item' as const, item })),
+          ],
+    // A new printing starts from nothing even when the rows are the same.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [drawn, settledCount, generation],
   );
-  const placements = useMemo(
-    () => placeItems(shown, columns, HEADER_ROWS + top),
-    [shown, columns, top],
-  );
-
-  // "All" includes the transcript outside the viewport. Otherwise opening a
-  // large result can push the remaining folded blocks out of the toggle set.
-  const folds = items.flatMap((item) => item.fold ? [item.fold] : []);
-  const allOpen = folds.length > 0 && folds.every((fold) => fold.expanded);
-  // Mouse rows are screen rows, but the frame starts wherever the shell prompt
-  // left it — so where it sits is measured, not assumed. After each layout
-  // settles the terminal is asked where its cursor is; Ink parks it on the
-  // line under the frame, and the frame is a fixed rows-1 tall, so the answer
-  // minus that height is the frame's first row. Until the first answer lands,
-  // clicks assume a fresh terminal: the frame immediately below the command
-  // that launched us.
-  const frameTop = useRef<number | undefined>(undefined);
-  useEffect(() => {
-    if (!stdout?.isTTY) return;
-    // Past Ink's render throttle, so the answer describes this frame.
-    const timer = setTimeout(() => stdout.write(CURSOR_QUERY), 80);
-    return () => clearTimeout(timer);
-  }, [stdout, placements]);
-
-  const toggleFold = (fold: NonNullable<ViewItem['fold']>) => {
-    applySelection(undefined);
-    setHoveredFold(undefined);
-    setViewOptions((current) => {
-      const next = new Map(current.folds);
-      const opening = !(next.get(fold.id) ?? fold.expanded);
-      next.set(fold.id, opening);
-      // Opening the conversation reveals its list of calls, with their
-      // results folded even if an earlier "expand all" had opened them.
-      if (opening && fold.id.startsWith('task:')) {
-        for (const item of buildView(runtime.transcript.all(), runtime.workspace.dir, { expanded: true })) {
-          if (`task:${item.taskId}` === fold.id && item.marker === 'tool') next.set(item.key, false);
+  // What the printing stands at now, in screen rows, and so what went out
+  // with this frame — the rows the live part may give up without a gap.
+  const printedNow = useMemo(
+    () =>
+      printed.reduce((rows_, entry) => {
+        switch (entry.kind) {
+          case 'spacer':
+            return rows_ + entry.rows;
+          case 'header':
+            return rows_ + HEADER_ROWS;
+          case 'greeting':
+            return rows_ + welcomeHeight(runtime, agents, entry.rows);
+          case 'item':
+            return rows_ + heightOf(entry.item, columns);
         }
-      }
-      return { ...current, folds: next };
-    });
-  };
-
-  // Mouse reports arrive through Ink's input parser. Do not attach a `data`
-  // listener to stdin here: it switches the stream to flowing mode and races
-  // Ink's `readable` listener, which can freeze keyboard input after a render.
-  const layout = useRef(placements);
-  layout.current = placements;
-
-  /**
-   * Ends the selection: the characters it crossed go to the clipboard,
-   * counted. A selection holding nothing but air — a drag across a gap — is
-   * let go without a word.
-   */
-  const copySelection = () => {
-    const held = selectionRef.current;
-    applySelection(undefined);
-    if (!held) return;
-    const text = selectedText(visualRows(drawn, columns), order(held.anchor, held.focus));
-    if (text.trim() === '') return;
-    copyToClipboard(text, stdout);
-    clearTimeout(copiedTimer.current);
-    setCopied(text.split('\n').length);
-    copiedTimer.current = setTimeout(() => setCopied(undefined), 2500);
-  };
-
-  // The selection as the renderer needs it: put in reading order, and moved
-  // from transcript rows to screen rows — the coordinates every placement and
-  // every repainted line is measured in.
-  const shownSelection = useMemo(() => {
-    if (!selection) return undefined;
-    const { start, end } = order(selection.anchor, selection.focus);
-    const shift = (point: Point): Point => ({ row: point.row - from + HEADER_ROWS, col: point.col });
-    return { start: shift(start), end: shift(end) };
-  }, [selection, from]);
+      }, 0),
+    [printed, runtime, agents, columns],
+  );
+  const floor = Math.min(
+    rows - 1,
+    Math.max(printed.length === 0 ? rows - 1 : 0, lastFrame.current - Math.max(0, printedNow - printedRows.current)),
+  );
+  useEffect(() => {
+    printedRows.current = printedNow;
+    if (frame.current) lastFrame.current = measureElement(frame.current).height;
+  });
+  const allOpen = viewOptions.expanded === true;
+  /** The row drawn above the one at `index` of the live rows, wherever it is drawn. */
+  const above = (index: number): ViewItem | undefined =>
+    index > 0 ? live[index - 1] : drawn[settledCount - 1];
 
   const start = (line: Outgoing) => {
     setStartedAt(Date.now());
@@ -900,12 +871,6 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     // form beside it, where it differs, so what is drawn is what was seen.
     const trimmed = expand(shown, attachmentsRef.current);
     const outgoing: Outgoing = { text: trimmed, ...(trimmed === shown ? {} : { shown }) };
-    // Whatever was being read further up, the answer to what was just sent is
-    // what matters now: sending follows the end again — and forgives whatever
-    // scroll was still owed, or the drain would drag the view straight back.
-    owed.current = 0;
-    setScrolled(undefined);
-
     const parsed = parseSlashCommand(trimmed);
     const command = parsed ? findCommand(parsed.name, runtime.commands) : undefined;
 
@@ -973,8 +938,8 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
 
   // The prompt is edited here, not by a text-input component. A second
   // component would keep its own cursor state and see every keypress this
-  // handler sees — including the mouse and cursor reports above — and there is
-  // no way to stop Ink handing it a report it would type into the value.
+  // handler sees — the terminal's answers to Ink's queries included — and
+  // there is no way to stop Ink handing it one it would type into the value.
   useInput((char, key) => {
     if (key.ctrl && char === 'c') {
       void runtime.conversation.close();
@@ -984,13 +949,6 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     // The terminal answering Ink's kitty keyboard query, on its way through
     // the input as well as to Ink: not something anyone typed.
     if (isKittyQueryReply(char)) return;
-    const cursorRow = parseCursorReport(char);
-    if (cursorRow !== undefined) {
-      // The frame fills the window whatever it holds, so the answer minus its
-      // fixed height is the frame's first row — even while an ask is up.
-      frameTop.current = Math.max(0, cursorRow - (rows - 1));
-      return;
-    }
     // Shift+Tab moves the permission mode, from anywhere — a question up on
     // screen included, since the mode is the answer to some of them. It sits
     // above the question block, which takes every other key, and above the
@@ -1009,10 +967,8 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       }
       return;
     }
-    // A question owns the screen while it is up — it is taller than the prompt
-    // it stands in for, so the transcript above it gives up rows and no longer
-    // sits where a click was measured against. Answering it is the only input
-    // that lands.
+    // A question owns the keyboard while it is up: answering it is the only
+    // input that lands.
     if (ask) {
       if (ask.kind === 'ask') {
         if (char === 'y' || char === 'Y') ask.answer(true);
@@ -1025,9 +981,6 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
         ask.answer({ action: 'decline' });
         return;
       }
-      // A mouse report is printable text, and a form has a text field in it:
-      // without this, moving the pointer types coordinates into the answer.
-      if (isMouseReport(char)) return;
       const state = formRef.current;
       const field = state && ask.fields[state.index];
       if (!state || !field) return;
@@ -1036,67 +989,6 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       // last field must not write over it on the way out.
       if (next.done) ask.answer({ action: 'accept', content: next.values });
       else applyForm(next.state);
-      return;
-    }
-    if (isMouseReport(char)) {
-      const mouse = parseMouseEvent(char);
-      if (!mouse) return;
-      if (mouse.type === 'wheel') {
-        scrollBy(mouse.direction === 'up' ? -WHEEL_ROWS : WHEEL_ROWS);
-        return;
-      }
-      // A clipped item reaches above the viewport and below it, so a row
-      // outside the transcript is nobody's — the header and the prompt are not
-      // clickable, and the item hanging over their edge must not be either.
-      const row = mouse.row - (frameTop.current ?? (stdout?.isTTY ? 1 : 0));
-      const inside = row >= HEADER_ROWS && row < HEADER_ROWS + bounds.current.viewport;
-      if (mouse.type === 'hover') {
-        setHoveredFold(inside ? itemAt(layout.current, row)?.fold?.id : undefined);
-        return;
-      }
-      // A mouse row, taken into the transcript: clamped into the pane first —
-      // a drag that wanders over the header or the prompt keeps its grip on
-      // the nearest row — and then onto a row the transcript actually has.
-      const cellAt = (at: number, column: number): Point | undefined => {
-        const { viewport: rows_, from: from_, height: height_ } = bounds.current;
-        if (height_ === 0) return undefined;
-        const pane = Math.min(Math.max(at, HEADER_ROWS), HEADER_ROWS + rows_ - 1);
-        return {
-          row: Math.min(Math.max(pane - HEADER_ROWS + from_, 0), height_ - 1),
-          col: column,
-        };
-      };
-      if (mouse.type === 'press') {
-        applySelection(undefined);
-        const anchor = inside ? cellAt(row, mouse.column) : undefined;
-        dragRef.current = anchor && { anchor, moved: false };
-        return;
-      }
-      if (mouse.type === 'drag') {
-        const drag = dragRef.current;
-        if (!drag) return;
-        const focus = cellAt(row, mouse.column);
-        if (!focus) return;
-        // Terminals in drag mode can report a motion that never left the
-        // anchor's cell; taking it would turn a plain click into a one-cell
-        // selection. Once the drag is real, motion back over the anchor still
-        // counts — that is how a selection is pulled back in.
-        if (!drag.moved && focus.row === drag.anchor.row && focus.col === drag.anchor.col) return;
-        drag.moved = true;
-        applySelection({ anchor: drag.anchor, focus });
-        return;
-      }
-      // The release: a drag that moved is a selection, finished by copying it;
-      // one that never moved is the click it always was, and folds or unfolds
-      // the block it landed on.
-      const drag = dragRef.current;
-      dragRef.current = undefined;
-      if (drag?.moved) {
-        copySelection();
-        return;
-      }
-      const fold = inside ? itemAt(layout.current, row)?.fold : undefined;
-      if (fold !== undefined) toggleFold(fold);
       return;
     }
     // An image off the clipboard, where the terminal leaves ctrl+v to us —
@@ -1109,35 +1001,23 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
       });
       return;
     }
-    // Rebuild from the current choices so repeated chords in one input batch
-    // toggle correctly, even before React has rendered the first one.
+    // Every task and every tool result, opened or folded together. The rows
+    // already in the scrollback cannot be redrawn where they stand, so the
+    // screen is wiped and the whole transcript printed again the new way —
+    // the one moment the scrollback is taken back. The view is rebuilt here
+    // rather than left to the effect, so the refold and the reprint land in
+    // one frame: a frame between them would print the old folds again.
     if (key.ctrl && char === 'o') {
-      applySelection(undefined);
-      dragRef.current = undefined;
-      setHoveredFold(undefined);
-      setViewOptions((current) => {
-        const targets = buildView(runtime.transcript.all(), runtime.workspace.dir, current)
-          .flatMap((item) => item.fold ? [item.fold] : []);
-        if (targets.length === 0) return current;
-        return { ...current, expanded: !targets.every((fold) => fold.expanded), folds: new Map() };
-      });
+      const next = { ...viewOptionsRef.current, expanded: viewOptionsRef.current.expanded !== true };
+      viewOptionsRef.current = next;
+      setViewOptions(next);
+      setItems(buildView(runtime.transcript.all(), runtime.workspace.dir, next));
+      reprint();
       return;
     }
-    // Scrolling the transcript, for the times the wheel is not where the hands
-    // are. This sits above the menu because the menu owns the plain arrows for
-    // its own selection: the shift is what says the transcript is meant, and
-    // the page keys never belong to a list five rows tall.
-    if (key.shift && (key.upArrow || key.downArrow)) {
-      scrollBy(key.upArrow ? -1 : 1);
-      return;
-    }
-    if (key.pageUp || key.pageDown) {
-      // A page keeps one row of what was on screen, so the eye has somewhere
-      // to land.
-      const page = Math.max(1, bounds.current.viewport - 1);
-      scrollBy(key.pageUp ? -page : page);
-      return;
-    }
+    // The page keys scroll the terminal, where the transcript now lives. A
+    // terminal that hands them over instead has nothing here for them to do.
+    if (key.pageUp || key.pageDown) return;
     // The menu, worked out here rather than read from the memo above: several
     // keys can arrive in one chunk, and the memo still describes the draft as
     // it was before any of them were handled.
@@ -1298,90 +1178,135 @@ export function App({ runtime }: { runtime: Runtime }): React.JSX.Element {
     }
   });
 
-  // The frame takes the whole window minus the line Ink keeps the cursor on:
-  // the transcript's pane takes every row the header and the prompt leave, so
-  // the prompt stays at the bottom while what is above it scrolls, the way
-  // Claude Code's chat sits under its welcome mark.
+  // Two parts. What is finished is printed once, above, and is the
+  // terminal's from then on: its scrollback holds it, its wheel scrolls it and
+  // its own selection copies it. What can still change is drawn under that
+  // and redrawn in place — and has to fit the window, since a frame taller
+  // than the window is one Ink can only redraw by wiping the screen. So the
+  // live rows are pinned to their end and clipped at the top, until they
+  // settle and move up into the scrollback. The opening screen stands the
+  // full height of the window, greeting on the prompt; from the first row
+  // printed the prompt is at the bottom because what was printed put it
+  // there, every row after pushes the screen up, and the live part never
+  // shrinks on its own, so the prompt never climbs.
   return (
-    <Box flexDirection="column" height={rows - 1}>
-      <Header runtime={runtime} brief={brief} sessions={sessions} />
+    <>
+      <Static key={generation} items={printed}>
+        {(entry, index) =>
+          entry.kind === 'spacer' ? (
+            <Box key="spacer" height={entry.rows} />
+          ) : entry.kind === 'header' ? (
+            <Header key="header" runtime={runtime} sessions={sessions} />
+          ) : entry.kind === 'greeting' ? (
+            <Welcome key="greeting" runtime={runtime} agents={agents} rows={entry.rows} />
+          ) : (
+            <Entry
+              key={entry.item.key}
+              item={entry.item}
+              band={entry.item.fold?.expanded === true ? BAND : undefined}
+              bridged={sameFold(printedItem(printed[index - 1]), entry.item)}
+              agents={agents}
+              columns={columns}
+            />
+          )
+        }
+      </Static>
+      <Box ref={frame} flexDirection="column" minHeight={floor} maxHeight={rows - 1}>
+        {printed.length === 0 ? <Header runtime={runtime} sessions={sessions} /> : null}
+        {/* The greeting, or the live rows, laid against the foot of the
+            space above the prompt: what is arriving is what is being
+            watched, and on an empty screen the hello sits on the input. */}
+        <Box flexDirection="column" flexGrow={1} flexShrink={1} justifyContent="flex-end">
+          {greeting ? (
+            <Welcome runtime={runtime} agents={agents} rows={budget} />
+          ) : (
+            <Box flexDirection="column" height={shownHeight} flexShrink={1} overflowY="hidden">
+              {/* Nudged up by the rows over budget, so the end is what shows. */}
+              <Box flexDirection="column" flexShrink={0} marginTop={shownHeight - liveHeight}>
+                {live.map((item, index) => (
+                  <Entry
+                    key={item.key}
+                    item={item}
+                    band={item.fold?.expanded === true ? BAND : undefined}
+                    bridged={sameFold(above(index), item)}
+                    agents={agents}
+                    columns={columns}
+                  />
+                ))}
+              </Box>
+            </Box>
+          )}
+        </Box>
 
-      {/*
-        The transcript's window: a fixed pane the prompt sits under, with the
-        drawn column nudged up by the rows scrolled past its top. An item at
-        either edge is drawn whole and clipped here, so the view moves a row at
-        a time instead of jumping a message at a time.
+        {menu.length > 0 ? (
+          <Suggestions items={menu} selected={selected} />
+        ) : modelNote ? (
+          <MenuNote text={modelNote} />
+        ) : null}
 
-        It gives up rows only to a question, which is taller than the prompt it
-        replaces; nothing is clickable while one is up, so the rows it takes
-        cost no aim.
-      */}
-      <Box
-        flexDirection="column"
-        height={viewport}
-        flexShrink={ask ? 1 : 0}
-        overflowY="hidden"
-        // Nothing has been said yet: the greeting is laid against the foot of
-        // the pane, so it sits on the prompt rather than adrift at the top of
-        // an empty screen. A transcript fills the pane from the top as ever.
-        justifyContent={greeting ? 'flex-end' : 'flex-start'}
-      >
-        {greeting ? (
-          <Welcome runtime={runtime} agents={agents} rows={viewport} />
+        {ask ? (
+          ask.kind === 'ask' ? (
+            <Ask ask={ask} />
+          ) : (
+            <Elicit question={ask} form={form} />
+          )
         ) : (
-          <Box flexDirection="column" flexShrink={0} marginTop={top}>
-            {shown.map((item, index) => {
-              const hovered = hoveredFold !== undefined && item.fold?.id === hoveredFold;
-              const opened = item.fold?.expanded === true;
-              const band = hovered ? HOVER_BAND : opened ? BAND : undefined;
-              return (
-                <Entry
-                  key={item.key}
-                  item={item}
-                  band={band}
-                  bridged={band !== undefined && shown[index - 1]?.fold?.id === item.fold?.id}
-                  agents={agents}
-                  top={placements[index]?.top ?? 0}
-                  columns={columns}
-                  selection={shownSelection}
-                />
-              );
-            })}
-          </Box>
+          <Prompt
+            draft={draft}
+            attachments={attachments}
+            agents={agents}
+            status={status}
+            target={target}
+            spend={spend.models}
+            startedAt={startedAt}
+            queued={queued.length}
+            allOpen={allOpen}
+            brief={brief}
+            cwd={runtime.workspace.dir}
+            mode={mode}
+          />
         )}
       </Box>
-
-      {menu.length > 0 ? (
-        <Suggestions items={menu} selected={selected} />
-      ) : modelNote ? (
-        <MenuNote text={modelNote} />
-      ) : null}
-
-      {ask ? (
-        ask.kind === 'ask' ? (
-          <Ask ask={ask} />
-        ) : (
-          <Elicit question={ask} form={form} />
-        )
-      ) : (
-        <Prompt
-          draft={draft}
-          attachments={attachments}
-          agents={agents}
-          status={status}
-          target={target}
-          spend={spend.models}
-          startedAt={startedAt}
-          queued={queued.length}
-          allOpen={allOpen}
-          following={scrolled === undefined}
-          copied={copied}
-          cwd={runtime.workspace.dir}
-          mode={mode}
-        />
-      )}
-    </Box>
+    </>
   );
+}
+
+/**
+ * Rows a question takes in place of the prompt, near enough: the rows that
+ * cannot wrap, counted. A long summary that does wrap costs the live rows a
+ * row of clipping, which is the cheaper of the two ways to be wrong.
+ */
+function questionRows(ask: Question, form: FormState | undefined): number {
+  // The margin above, the border above and below, the question, the blank
+  // row and the row of keys under it.
+  const frame = 1 + 2 + 1 + 1 + 1;
+  if (ask.kind === 'ask') return frame + (ask.detail ? 1 : 0);
+  const state = form ?? blankForm(ask.fields);
+  const field = ask.fields[state.index];
+  if (!field) return frame + state.index;
+  const typed = field.kind === 'string' || field.kind === 'number' || field.kind === 'integer';
+  return (
+    frame +
+    state.index +
+    1 +
+    (field.description ? 1 : 0) +
+    (field.options?.length ?? 0) +
+    (typed ? 1 : 0) +
+    (state.error ? 1 : 0)
+  );
+}
+
+/** The transcript row a printed entry holds, if it is one. */
+function printedItem(entry: Printed | undefined): ViewItem | undefined {
+  return entry?.kind === 'item' ? entry.item : undefined;
+}
+
+/**
+ * Whether the row above belongs to the same open block, so the blank line
+ * between them wears the block's band rather than breaking it.
+ */
+function sameFold(above: ViewItem | undefined, item: ViewItem): boolean {
+  return item.fold?.expanded === true && above?.fold?.id === item.fold.id;
 }
 
 /**
@@ -1426,13 +1351,14 @@ type Pose = {
 
 /**
  * The mark's wandering, one timer at a time, chained: a breather at the
- * middle of its stage, then an outing — a clean exit off the left edge, a
- * peek back, a hop to anywhere on the stage, a word thrown from right where
- * it stands, a jump on the spot, a sit on the ground, or a spell at ease
- * with its arms dropped — and as long as the mood holds, another. A saying
- * goes out the side the mark has space on, so it lands left of the mark as
- * readily as right. The stage itself never moves — `stage` clips the walk
- * at its left edge — so the margin holds however far the mark goes.
+ * middle of its stage, then an outing — a clean exit off the right edge,
+ * which is the screen's edge, a peek back, a hop to anywhere on the stage,
+ * a word thrown from right where it stands, a jump on the spot, a sit on
+ * the ground, or a spell at ease with its arms dropped — and as long as the
+ * mood holds, another. A saying goes out the side the mark has space on, so
+ * it lands left of the mark as readily as right. The stage itself never
+ * moves — its fixed width clips the walk at the edge — so the roll call
+ * beside it holds however far the mark goes.
  *
  * `brief` is what there is to report, if anything. While it is set the mark
  * speaks the phase rather than its own idle sayings, breathes shorter
@@ -1474,7 +1400,7 @@ function useWander(brief?: Brief): Pose {
     // from an empty stage reads as a glitch rather than a joke, so offstage
     // the mark first comes home.
     const seen = (deed: (then: () => void) => void, then: () => void) => {
-      if (at < 0) return walk(WANDER_HOME, () => deed(then));
+      if (at < 0 || at > WANDER_ROAM) return walk(WANDER_HOME, () => deed(then));
       deed(then);
     };
     // A word goes out from wherever the mark already stands — the stage
@@ -1531,9 +1457,9 @@ function useWander(brief?: Brief): Pose {
       if (roll < 0.56) return seen(ease, onward);
       const target =
         roll < 0.72
-          ? -WANDER_SPAN
+          ? MASCOT_STAGE
           : roll < 0.82
-            ? 2 - WANDER_SPAN
+            ? MASCOT_STAGE - 2
             : Math.floor(Math.random() * (WANDER_ROAM + 1));
       walk(target, onward);
     };
@@ -1547,30 +1473,29 @@ function useWander(brief?: Brief): Pose {
 }
 
 /**
- * The welcome mark, in the shape Claude Code opens with: the condensed logo on
- * the left and three facts beside it — what this is, what is answering, and the
- * run's own directory under the handsfree root, where the transcript and the
- * session ids are kept and, on a sandbox run, the workspace itself sits. The
- * directory the agents actually work in is not here: it belongs beside the
- * prompt, on the line the work is typed on. No box and no tips column; the
- * shortcuts already live under the prompt. A blank row and a column of air sit
- * on every side of it.
+ * The welcome, in a box the way Claude Code opens: three facts — what this
+ * is, what is answering, and the run's own directory under the handsfree
+ * root, where the transcript and the session ids are kept and, on a sandbox
+ * run, the workspace itself sits. The box runs the width of the window, and
+ * a row of air is kept under it by whatever comes next. The directory the agents actually
+ * work in is not here: it belongs beside the prompt, on the line the work is
+ * typed on. No mark and no tips column; the mark lives on its stage at the
+ * prompt, and the shortcuts already live under it.
  *
- * Kept to exactly HEADER_ROWS rows — that constant is what a click's row is
- * measured against — so every line truncates rather than wraps, and the tail
- * of the path is the part worth keeping.
+ * It is printed once, with the first finished row of the transcript, and
+ * scrolls away with it the way Claude Code's does.
+ *
+ * Kept to exactly HEADER_ROWS rows — that constant is what the greeting's
+ * room is measured against — so every line truncates rather than wraps, and
+ * the tail of the path is the part worth keeping.
  */
 function Header({
   runtime,
-  brief,
   sessions = {},
 }: {
   runtime: Runtime;
-  brief?: Brief;
   sessions?: Record<string, 'new' | 'resumed'>;
 }): React.JSX.Element {
-  const { x, stance, look, say, side } = useWander(brief);
-  const mark = stage(mascot(stance, useBlink(), look), x, say, side);
   const agents = Object.entries(runtime.config.agents)
     .filter(([, profile]) => profile.enabled)
     .map(([id]) => id);
@@ -1580,33 +1505,54 @@ function Header({
       ? `${orchestration.acp.agent} (acp)`
       : orchestration.local.model;
   return (
-    <Box margin={1} gap={2} flexShrink={0}>
-      <Box flexDirection="column" flexShrink={0} width={MASCOT_STAGE}>
-        {mark.map((line, index) => (
-          <Text key={index} wrap="truncate">
-            {line}
+    <Box
+      flexDirection="column"
+      flexShrink={0}
+      width="100%"
+      marginTop={1}
+      paddingX={1}
+      borderStyle="round"
+      borderColor={RULE_INK}
+    >
+      <Text wrap="truncate">
+        <Text bold>handsfree</Text>
+        <Text color={INK}>{` v${VERSION}`}</Text>
+      </Text>
+      <Text color={INK} wrap="truncate">
+        {`${brain} · `}
+        {agents.map((id, index) => (
+          <Text key={id}>
+            {index > 0 ? ', ' : ''}
+            <Text color={agentColour(id)}>{id}</Text>
           </Text>
         ))}
-      </Box>
-      <Box flexDirection="column" flexShrink={1}>
-        <Text wrap="truncate">
-          <Text bold>handsfree</Text>
-          <Text color={INK}>{` v${VERSION}`}</Text>
+        {resumedLine(agents.filter((id) => sessions[id] === 'resumed'))}
+      </Text>
+      <Text color={INK} wrap="truncate-start">
+        {tildify(runtime.workspace.runDir)}
+      </Text>
+    </Box>
+  );
+}
+
+/**
+ * The mark on its stage, alive: wandering, blinking, and briefing the turn.
+ * It stands at the prompt's right shoulder, over the figures — the spend
+ * line and the roll call — and off the transcript's column, so its rows
+ * never read as text; and in the live part of the screen, which is the only
+ * place something that moves can live. The stage's width is fixed, so
+ * however far the mark roams and whatever it says, nothing around it moves.
+ */
+function Mark({ brief }: { brief?: Brief }): React.JSX.Element {
+  const { x, stance, look, say, side } = useWander(brief);
+  const mark = stage(mascot(stance, useBlink(), look), x, say, side);
+  return (
+    <Box flexDirection="column" flexShrink={0} width={MASCOT_STAGE}>
+      {mark.map((line, index) => (
+        <Text key={index} wrap="truncate">
+          {line}
         </Text>
-        <Text color={INK} wrap="truncate">
-          {`${brain} · `}
-          {agents.map((id, index) => (
-            <Text key={id}>
-              {index > 0 ? ', ' : ''}
-              <Text color={agentColour(id)}>{id}</Text>
-            </Text>
-          ))}
-          {resumedLine(agents.filter((id) => sessions[id] === 'resumed'))}
-        </Text>
-        <Text color={INK} wrap="truncate-start">
-          {tildify(runtime.workspace.runDir)}
-        </Text>
-      </Box>
+      ))}
     </Box>
   );
 }
@@ -1616,10 +1562,10 @@ function Header({
  * call and what it printed — arrives here already shaped; this only decides
  * where it sits and what colour it wears.
  *
- * A task left open wears a faint wash so it reads as one continuous block, and
- * hovering it brightens the band. The blank line above an item belongs to the
- * band only when the row before it is part of the same task — `bridged` — so
- * the block never bleeds upward into whatever it was delegated from.
+ * A task left open wears a faint wash so it reads as one continuous block.
+ * The blank line above an item belongs to the band only when the row before
+ * it is part of the same task — `bridged` — so the block never bleeds upward
+ * into whatever it was delegated from.
  *
  * A delegated row spends its agent's own colour wherever the house accent
  * would otherwise go — the bullet and the name — so two tasks running one
@@ -1630,49 +1576,26 @@ function Entry({
   band,
   bridged,
   agents,
-  top,
   columns,
-  selection,
 }: {
   item: ViewItem;
   band: string | undefined;
   bridged: boolean;
   agents: readonly string[];
-  /** The item's first screen row, from the same placement a click is aimed by. */
-  top: number;
   columns: number;
-  /** The selection in screen rows, already in reading order. */
-  selection: Bounds | undefined;
 }): React.JSX.Element {
   const accent = item.agentId ? agentColour(item.agentId) : undefined;
   // The user's own line wears its faint wash whether or not anything else is
-  // going on; a task's band and the hover still win, because they only exist
-  // on rows that are not the user's.
+  // going on; a task's band still wins, because it only exists on rows that
+  // are not the user's.
   const wash = band ?? (item.marker === 'prompt' ? PROMPT_BAND : undefined);
   const indent = item.depth * 2;
-  const rows = itemRows(item, columns);
   const gutter = GLYPH[item.marker];
-  // Where a block's first *rendered* line sits. The pane clips an item
-  // straddling its top edge before Ink hands the surviving lines to a
-  // transform, so a block reaching above the pane starts, as far as its
-  // repainter can see, at the pane's own first row.
-  const at = (row: number) => Math.max(top + row, HEADER_ROWS);
   return (
     <Box flexDirection="column">
       {item.gap ? <Box height={1} backgroundColor={bridged ? band : undefined} /> : null}
       <Box flexDirection="column" paddingLeft={indent} backgroundColor={wash}>
-        <Row
-          gutter={gutter}
-          tone={item.markerTone}
-          accent={accent}
-          // A gutterless row's text starts where the marks do, so its cells
-          // are measured from there.
-          highlight={highlightFor(
-            selection,
-            at(rows.headline),
-            indent + (gutter === '' ? 0 : GUTTER),
-          )}
-        >
+        <Row gutter={gutter} tone={item.markerTone} accent={accent}>
           {item.label ? (
             <Text bold={item.prose === true} {...paint(accent && item.marker !== 'tool' ? 'brand' : 'muted', accent)}>{`${item.label}  `}</Text>
           ) : null}
@@ -1688,11 +1611,6 @@ function Entry({
             indent={DETAIL_INDENT}
             gutter={index === 0 ? RESULT_GUTTER : RESULT_INDENT}
             tone="muted"
-            highlight={highlightFor(
-              selection,
-              at(rows.details[index] ?? 0),
-              indent + DETAIL_INDENT + GUTTER,
-            )}
           >
             <Text {...paint(line.tone)}>{line.text}</Text>
           </Row>
@@ -1703,9 +1621,9 @@ function Entry({
 }
 
 /**
- * The colour a row's text is set in. The hover band is dark enough for the
- * quiet ink to hold on it, so a row reads the same whether or not the pointer
- * is over it — nothing here has to know.
+ * The colour a row's text is set in. The bands are dark enough for the quiet
+ * ink to hold on them, so a row reads the same on one as off it — nothing
+ * here has to know.
  *
  * An accent stands in for the house brand only — everything a tone says about
  * status stays exactly as loud as it was, so a failed call inside a Gemini
@@ -1769,19 +1687,12 @@ function Row({
   tone,
   accent,
   indent = 0,
-  highlight,
   children,
 }: {
   gutter: string;
   tone: Tone;
   accent?: string;
   indent?: number;
-  /**
-   * Repaints the selection's wash onto each wrapped line of the text. The
-   * gutter stays outside it, the way an editor's glyph column stays outside a
-   * selection — it is furniture, and the copy will not carry it either.
-   */
-  highlight?: (line: string, index: number) => string;
   children: React.ReactNode;
 }): React.JSX.Element {
   return (
@@ -1793,13 +1704,7 @@ function Row({
         </Box>
       )}
       <Box flexGrow={1}>
-        {highlight ? (
-          <Transform transform={highlight}>
-            <Text wrap="wrap">{children}</Text>
-          </Transform>
-        ) : (
-          <Text wrap="wrap">{children}</Text>
-        )}
+        <Text wrap="wrap">{children}</Text>
       </Box>
     </Box>
   );
@@ -1811,11 +1716,12 @@ function Row({
  * has one, and the shapes a line can take — sat directly on top of the input,
  * so the first thing read is the first thing that can be typed.
  *
- * It is not a transcript row. Nothing here is clickable, selectable or
- * scrollable, and the moment the first record lands the pane goes back to
- * being the transcript — which is why the pane, not this, owns the rows.
+ * It is not a transcript row, but it is printed with the header the moment
+ * the first record lands, exactly as it stood, and the conversation goes on
+ * under it — the pane, not this, owns the rows it was drawn in.
  *
- * `rows` is what the pane can spare, and the block is trimmed to it from the
+ * `rows` is what the window can spare — the blank row that keeps the hello
+ * off the header's rule counted in — and the block is trimmed to it from the
  * bottom up: the sentence about the run goes first, then the examples that
  * matter least. A short window keeps the hello and something to type, rather
  * than the tail of a block whose head has been clipped away.
@@ -1829,14 +1735,7 @@ function Welcome({
   agents: readonly string[];
   rows: number;
 }): React.JSX.Element {
-  const examples = openings(runtime, agents);
-  // What is left for the sentence about the run and the examples themselves,
-  // once the hello, the invitation, the blank rows between them and the margin
-  // have all taken theirs. The invitation stays whatever the window does — a
-  // list of quotes nobody offered is a list of quotes nobody reads.
-  const room = rows - GREETING.length - 1 - 1 - 1 - WELCOME_MARGIN;
-  const about = room >= 1 + examples.length;
-  const shown = examples.slice(0, Math.max(1, room - (about ? 1 : 0)));
+  const { about, shown } = welcomeLines(runtime, agents, rows);
   // A line's width on screen is its own plus the two quotes drawn around it.
   const cells = (line: string): number => columns(line) + 2;
   const width = Math.max(...shown.map(({ line }) => cells(line)));
@@ -1844,6 +1743,7 @@ function Welcome({
     <Box
       flexDirection="column"
       flexShrink={0}
+      paddingTop={1}
       paddingLeft={2}
       paddingRight={1}
       paddingBottom={WELCOME_MARGIN}
@@ -1889,6 +1789,30 @@ function Welcome({
       ))}
     </Box>
   );
+}
+
+/**
+ * What the greeting says in `rows`: whether the sentence about the run fits,
+ * and which examples do. What is left for them is what the hello, the
+ * invitation, the blank rows between them and the margins leave; the
+ * invitation stays whatever the window does — a list of quotes nobody offered
+ * is a list of quotes nobody reads.
+ */
+function welcomeLines(
+  runtime: Runtime,
+  agents: readonly string[],
+  rows: number,
+): { about: boolean; shown: readonly Opening[] } {
+  const examples = openings(runtime, agents);
+  const room = rows - 1 - GREETING.length - 1 - 1 - 1 - WELCOME_MARGIN;
+  const about = room >= 1 + examples.length;
+  return { about, shown: examples.slice(0, Math.max(1, room - (about ? 1 : 0))) };
+}
+
+/** How many rows the greeting takes when drawn in `rows`: everything `Welcome` draws. */
+function welcomeHeight(runtime: Runtime, agents: readonly string[], rows: number): number {
+  const { about, shown } = welcomeLines(runtime, agents, rows);
+  return 1 + GREETING.length + 1 + (about ? 1 : 0) + 1 + 1 + shown.length + WELCOME_MARGIN;
 }
 
 /** The rows of air the greeting keeps between itself and the prompt below it. */
@@ -1969,17 +1893,17 @@ function openings(runtime: Runtime, agents: readonly string[]): readonly Opening
  * stays; the input's rows come and go with what is typed into it. The
  * permission mode has the last row, whichever mode it is.
  *
- * The hint line is also where the transcript says it has stopped following the
- * end — scrolled up, what arrives next lands off screen, and only this says so
- * — and where a finished drag says how much of the transcript it copied. At its
- * right edge sits the directory the agents work in, so where a line lands is
- * read on the line it is typed on. The hint keeps its whole line and the path
- * is what gives way, front first: the tail is the part worth keeping.
+ * At the hint line's right edge sits the directory the agents work in, so
+ * where a line lands is read on the line it is typed on. The hint keeps its
+ * whole line and the path is what gives way, front first: the tail is the
+ * part worth keeping.
  *
  * The agents' roll call sits at the right edge of the status line above the
  * input — each agent as the model it is on, a dot per agent, filled while that
  * agent holds an open task — so who is working reads right beside the running
- * turn it belongs to rather than under the shortcuts.
+ * turn it belongs to rather than under the shortcuts. Over the figures, at
+ * the same edge, stands the mark: it is the one thing here that moves, and
+ * at the prompt's shoulder it moves where nothing else is read.
  */
 function Prompt({
   draft,
@@ -1991,8 +1915,7 @@ function Prompt({
   startedAt,
   queued,
   allOpen,
-  following,
-  copied,
+  brief,
   cwd,
   mode,
 }: {
@@ -2006,8 +1929,8 @@ function Prompt({
   startedAt: number | undefined;
   queued: number;
   allOpen: boolean;
-  following: boolean;
-  copied: number | undefined;
+  /** What the mark has to report, if anything. */
+  brief: Brief | undefined;
   /** The directory the agents work in, drawn at the hint line's right edge. */
   cwd: string;
   mode: PermissionMode;
@@ -2018,6 +1941,10 @@ function Prompt({
   const busy = startedAt !== undefined;
   return (
     <Box flexDirection="column" flexShrink={0}>
+      {/* The mark's stage, at the right edge over the figures. */}
+      <Box paddingLeft={2} paddingRight={1} justifyContent="flex-end">
+        <Mark brief={brief} />
+      </Box>
       {spend.length > 0 ? (
         <Box height={1} paddingLeft={2} paddingRight={1} justifyContent="flex-end">
           <SpendLine spend={spend} />
@@ -2056,13 +1983,9 @@ function Prompt({
       <Box paddingLeft={2} paddingRight={1} justifyContent="space-between" gap={2}>
         <Box flexShrink={0}>
           <Text color={INK} wrap="truncate">
-            {copied !== undefined
-              ? `copied ${copied} line${copied === 1 ? '' : 's'} to the clipboard`
-              : !following
-                ? 'scrolled up · page down or the wheel to follow again'
-                : busy
-                  ? `esc to interrupt · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all`
-                  : `/ for commands · @ for agents · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all · /exit`}
+            {busy
+              ? `esc to interrupt · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all`
+              : `/ for commands · @ for agents · ctrl+o to ${allOpen ? 'collapse' : 'expand'} all · /exit`}
           </Text>
         </Box>
         <Box gap={2}>
@@ -2194,9 +2117,9 @@ function SpendLine({ spend }: { spend: RunSpend['models'] }): React.JSX.Element 
  * rather than in place of it — unlike `Ask`, which takes the keyboard with it.
  * The prompt stays live the whole time: this is a hint, not a mode.
  *
- * Every suggestion is exactly one screen row. A description that wrapped would
- * grow the frame by a line, and the frame is a fixed height — ink would answer
- * by scrolling the whole UI.
+ * Every suggestion is exactly one screen row: the live part of the screen is
+ * budgeted by the row, and a description that wrapped would take one the
+ * budget never gave it.
  */
 function Suggestions({
   items,
@@ -2207,8 +2130,8 @@ function Suggestions({
 }): React.JSX.Element {
   const width = Math.max(...items.map((item) => menuLabel(item).length)) + 1;
   return (
-    // The transcript's pane already gave up these rows, so the menu keeps every
-    // one of them rather than being squeezed back into the prompt.
+    // The live rows above give way before the menu does: what is being typed
+    // is what the menu is for, and the rows come back the moment it closes.
     <Box flexDirection="column" flexShrink={0} marginTop={1}>
       {items.map((item, index) => {
         const chosen = index === Math.min(selected, items.length - 1);

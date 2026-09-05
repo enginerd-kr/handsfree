@@ -1,43 +1,63 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="842" height="571" viewBox="0 0 842 571" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="14">
-<rect width="842" height="571" rx="10" fill="#1c1e22" stroke="#2c2f36"/>
-<rect x="1" y="30" width="840" height="540" fill="#141619"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="842" height="628" viewBox="0 0 842 628" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="14">
+<rect width="842" height="628" rx="10" fill="#1c1e22" stroke="#2c2f36"/>
+<rect x="1" y="30" width="840" height="597" fill="#141619"/>
 <circle cx="20" cy="15" r="5.5" fill="#ff5f57"/><circle cx="37" cy="15" r="5.5" fill="#febc2e"/><circle cx="54" cy="15" r="5.5" fill="#28c840"/>
 <text x="421" y="19" fill="#8b8f98" font-size="12" text-anchor="middle">handsfree — the decision it will not take for you</text>
-<rect x="18.0" y="139.0" width="8.4" height="19" fill="rgb(69,69,69)"/>
-<rect x="26.4" y="139.0" width="798.0" height="19" fill="rgb(69,69,69)"/>
-<text x="18.0" y="77.0" fill="#e4e6ea" textLength="252.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">           ▐▛███▜▌            </text>
-<text x="270.0" y="77.0" fill="#e4e6ea" font-weight="600" textLength="75.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">handsfree</text>
-<text x="345.6" y="77.0" fill="rgb(155,155,155)" textLength="58.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> v0.2.0</text>
-<text x="18.0" y="96.0" fill="#e4e6ea" textLength="252.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">          ▝▜█████▛▘           </text>
-<text x="270.0" y="96.0" fill="rgb(155,155,155)" textLength="176.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">google/gemma-3-12b · </text>
-<text x="446.4" y="96.0" fill="rgb(217,119,87)" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">claude</text>
-<text x="496.8" y="96.0" fill="rgb(155,155,155)" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">, </text>
-<text x="513.6" y="96.0" fill="rgb(111,194,168)" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">codex</text>
-<text x="555.6" y="96.0" fill="rgb(155,155,155)" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">, </text>
-<text x="572.4" y="96.0" fill="rgb(138,180,248)" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">gemini</text>
-<text x="18.0" y="115.0" fill="#e4e6ea" textLength="252.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">            ▘▘ ▝▝             </text>
-<text x="270.0" y="115.0" fill="rgb(155,155,155)" textLength="361.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">~/.handsfree/runs/2026-08-28T09-12-10-12658</text>
-<text x="18.0" y="153.0" fill="rgb(155,155,155)" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">○</text>
-<text x="26.4" y="153.0" fill="#e4e6ea" textLength="798.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> untangle the escape handling in the tokenizer, then run the tests                             </text>
-<text x="18.0" y="191.0" fill="rgb(217,119,87)" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">⏺</text>
-<text x="34.8" y="191.0" fill="rgb(217,119,87)" textLength="67.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">claude  </text>
-<text x="102.0" y="191.0" fill="#e4e6ea" textLength="529.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">untangle the escape handling in src/parser.ts and run the tests</text>
-<text x="18.0" y="229.0" fill="rgb(155,155,155)" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">✻</text>
-<text x="34.8" y="229.0" fill="rgb(155,155,155)" textLength="378.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">The tests will tell me whether the lift held.</text>
-<text x="18.0" y="457.0" fill="#e5c07b" textLength="806.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">╭──────────────────────────────────────────────────────────────────────────────────────────────╮</text>
-<text x="18.0" y="476.0" fill="#e5c07b" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
-<text x="34.8" y="476.0" fill="rgb(217,119,87)" font-weight="600" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">claude</text>
-<text x="85.2" y="476.0" fill="#e4e6ea" textLength="730.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> wants to read src/parser.ts                                                           </text>
-<text x="816.0" y="476.0" fill="#e5c07b" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
-<text x="18.0" y="495.0" fill="#e5c07b" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
-<text x="816.0" y="495.0" fill="#e5c07b" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
-<text x="18.0" y="514.0" fill="#e5c07b" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
-<text x="34.8" y="514.0" fill="#98c379" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">y</text>
-<text x="51.6" y="514.0" fill="rgb(155,155,155)" textLength="84.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">allow once</text>
-<text x="135.6" y="514.0" fill="rgb(122,122,122)" textLength="58.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   ·   </text>
-<text x="194.4" y="514.0" fill="#e06c75" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">n</text>
-<text x="211.2" y="514.0" fill="rgb(155,155,155)" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">refuse</text>
-<text x="261.6" y="514.0" fill="rgb(122,122,122)" textLength="294.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   ·   shift+tab to change the mode</text>
-<text x="816.0" y="514.0" fill="#e5c07b" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
-<text x="18.0" y="533.0" fill="#e5c07b" textLength="806.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">╰──────────────────────────────────────────────────────────────────────────────────────────────╯</text>
+<rect x="18.0" y="405.0" width="8.4" height="19" fill="rgb(69,69,69)"/>
+<rect x="26.4" y="405.0" width="621.6" height="19" fill="rgb(69,69,69)"/>
+<text x="18.0" y="77.0" fill="rgb(106,106,106)" textLength="630.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">╭─────────────────────────────────────────────────────────────────────────╮</text>
+<text x="18.0" y="96.0" fill="rgb(106,106,106)" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="34.8" y="96.0" fill="#e4e6ea" font-weight="600" textLength="75.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">handsfree</text>
+<text x="110.4" y="96.0" fill="rgb(155,155,155)" textLength="58.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> v0.2.0</text>
+<text x="639.6" y="96.0" fill="rgb(106,106,106)" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="18.0" y="115.0" fill="rgb(106,106,106)" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="34.8" y="115.0" fill="rgb(155,155,155)" textLength="176.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">google/gemma-3-12b · </text>
+<text x="211.2" y="115.0" fill="rgb(217,119,87)" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">claude</text>
+<text x="261.6" y="115.0" fill="rgb(155,155,155)" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">, </text>
+<text x="278.4" y="115.0" fill="rgb(111,194,168)" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">codex</text>
+<text x="320.4" y="115.0" fill="rgb(155,155,155)" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">, </text>
+<text x="337.2" y="115.0" fill="rgb(138,180,248)" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">gemini</text>
+<text x="639.6" y="115.0" fill="rgb(106,106,106)" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="18.0" y="134.0" fill="rgb(106,106,106)" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="34.8" y="134.0" fill="rgb(155,155,155)" textLength="361.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">~/.handsfree/runs/2026-08-28T09-12-10-12658</text>
+<text x="639.6" y="134.0" fill="rgb(106,106,106)" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="18.0" y="153.0" fill="rgb(106,106,106)" textLength="630.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">╰─────────────────────────────────────────────────────────────────────────╯</text>
+<text x="18.0" y="191.0" fill="#e4e6ea" textLength="67.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  Hello.</text>
+<text x="18.0" y="210.0" fill="#e4e6ea" textLength="260.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  What are we working on today?</text>
+<text x="18.0" y="248.0" fill="#e4e6ea" textLength="260.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  Try a line like one of these.</text>
+<text x="34.8" y="286.0" fill="rgb(217,217,217)" textLength="193.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">"fix the failing tests"</text>
+<text x="228.0" y="286.0" fill="rgb(155,155,155)" textLength="411.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">                // the planner picks who takes it</text>
+<text x="34.8" y="305.0" fill="rgb(217,217,217)" textLength="243.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">"@orchestrator plan this out"</text>
+<text x="278.4" y="305.0" fill="rgb(155,155,155)" textLength="319.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">          // call the planner yourself</text>
+<text x="34.8" y="324.0" fill="rgb(217,217,217)" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">"</text>
+<text x="43.2" y="324.0" fill="rgb(217,119,87)" textLength="58.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">@claude</text>
+<text x="102.0" y="324.0" fill="rgb(217,217,217)" textLength="176.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> summarise this file"</text>
+<text x="278.4" y="324.0" fill="rgb(155,155,155)" textLength="277.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">          // straight to an agent</text>
+<text x="34.8" y="343.0" fill="rgb(217,217,217)" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">"</text>
+<text x="43.2" y="343.0" fill="rgb(111,194,168)" textLength="117.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">@codex:gpt-5.6</text>
+<text x="160.8" y="343.0" fill="rgb(217,217,217)" textLength="168.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> write a test first"</text>
+<text x="328.8" y="343.0" fill="rgb(155,155,155)" textLength="294.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">    // name a model after the colon</text>
+<text x="18.0" y="419.0" fill="rgb(155,155,155)" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">○</text>
+<text x="26.4" y="419.0" fill="#e4e6ea" textLength="621.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> untangle the escape handling in the tokenizer, then run the tests        </text>
+<text x="18.0" y="457.0" fill="rgb(217,119,87)" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">⏺</text>
+<text x="34.8" y="457.0" fill="rgb(217,119,87)" textLength="67.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">claude  </text>
+<text x="102.0" y="457.0" fill="#e4e6ea" textLength="529.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">untangle the escape handling in src/parser.ts and run the tests</text>
+<text x="18.0" y="495.0" fill="rgb(155,155,155)" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">✻</text>
+<text x="34.8" y="495.0" fill="rgb(155,155,155)" textLength="378.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">The tests will tell me whether the lift held.</text>
+<text x="18.0" y="533.0" fill="#e5c07b" textLength="806.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">╭──────────────────────────────────────────────────────────────────────────────────────────────╮</text>
+<text x="18.0" y="552.0" fill="#e5c07b" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="34.8" y="552.0" fill="rgb(217,119,87)" font-weight="600" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">claude</text>
+<text x="85.2" y="552.0" fill="#e4e6ea" textLength="730.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> wants to read src/parser.ts                                                           </text>
+<text x="816.0" y="552.0" fill="#e5c07b" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="18.0" y="571.0" fill="#e5c07b" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="816.0" y="571.0" fill="#e5c07b" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="18.0" y="590.0" fill="#e5c07b" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="34.8" y="590.0" fill="#98c379" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">y</text>
+<text x="51.6" y="590.0" fill="rgb(155,155,155)" textLength="84.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">allow once</text>
+<text x="135.6" y="590.0" fill="rgb(122,122,122)" textLength="58.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   ·   </text>
+<text x="194.4" y="590.0" fill="#e06c75" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">n</text>
+<text x="211.2" y="590.0" fill="rgb(155,155,155)" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">refuse</text>
+<text x="261.6" y="590.0" fill="rgb(122,122,122)" textLength="294.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   ·   shift+tab to change the mode</text>
+<text x="816.0" y="590.0" fill="#e5c07b" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="18.0" y="609.0" fill="#e5c07b" textLength="806.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">╰──────────────────────────────────────────────────────────────────────────────────────────────╯</text>
 </svg>

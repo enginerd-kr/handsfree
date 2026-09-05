@@ -199,10 +199,14 @@ async function permission(): Promise<void> {
  * the other pictures do rather than a cast of its own.
  */
 async function welcome(): Promise<void> {
+  // Five rows taller than the other shots: the mark's stage stands above the
+  // prompt and the header's rule keeps a row of air on either side, and at
+  // twenty-four the greeting would give up the command example — the one
+  // that says the slash is the other thing the prompt answers to.
   await shot(
     'welcome',
     96,
-    24,
+    29,
     'handsfree — before a word is typed',
     () =>
       stage({

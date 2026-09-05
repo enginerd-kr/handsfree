@@ -6,17 +6,15 @@ import { render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { disableDebug, enableDebug } from '../src/debug.js';
 import { App, menuFit } from '../src/ui/tui/app.js';
-import { copyToClipboard, readClipboardImage } from '../src/ui/tui/clipboard.js';
+import { readClipboardImage } from '../src/ui/tui/clipboard.js';
 import { DOT_BUSY, DOT_IDLE, PLAN_BUSY, PLAN_IDLE, PROMPT_CHAR } from '../src/ui/tui/theme.js';
 import { fakeAgent } from './fake-agent.js';
 import { harness, scriptedModel, type Harness } from './harness.js';
 import type { ChatClient } from '../src/brain/client.js';
 
-// The one road out of the process a drag takes: a test must watch it, and must
-// never put its scraps on the machine's real clipboard.
+// A paste must never reach for the machine's real clipboard.
 vi.mock('../src/ui/tui/clipboard.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/ui/tui/clipboard.js')>()),
-  copyToClipboard: vi.fn(),
   readClipboardImage: vi.fn(),
 }));
 
@@ -55,14 +53,9 @@ describe('terminal UI', () => {
       content: [{ type: 'content', content: { type: 'text', text } }],
     },
   });
-  const clickLine = (app: ReturnType<typeof render>, text: string) => {
-    const row = (app.lastFrame() ?? '').split('\n').findIndex((line) => line.includes(text));
-    expect(row).toBeGreaterThan(0);
-    app.stdin.write(`\x1b[<0;5;${row + 1}M`);
-    app.stdin.write(`\x1b[<0;5;${row + 1}m`);
-  };
+  const pad = (n: number) => String(n).padStart(2, '0');
 
-  it('opens the conversation from the final answer with tool results folded, even after expand all', async () => {
+  it('prints a finished task folded, and prints it again open on ctrl+o', async () => {
     const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
     open = h;
     h.runtime.transcript.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'inspect tools' });
@@ -77,33 +70,32 @@ describe('terminal UI', () => {
     h.runtime.transcript.append({ type: 'stop', taskId: 1, agentId: 'claude', sessionId: 's', stopReason: 'end_turn' });
     const app = render(<App runtime={h.runtime} />);
     try {
-      await waitFor(() => app.lastFrame(), 'final answer');
-      clickLine(app, 'final answer');
-      let frame = await waitFor(() => app.lastFrame(), 'earlier message');
-      expect(frame).toContain('Run first');
-      expect(frame).toContain('Run second');
-      expect(frame).not.toContain('first output');
-      expect(frame).not.toContain('second output');
-      clickLine(app, 'Run first');
-      frame = await waitFor(() => app.lastFrame(), 'first output');
-      expect(frame).not.toContain('second output');
-      app.stdin.write('\x0f');
-      await waitFor(() => app.lastFrame(), 'second output');
-      clickLine(app, 'final answer');
-      frame = await waitFor(() => app.lastFrame(), 'Done (2 tool calls · 1s · click or');
+      // Folded: the answer and the closing line, with the way back on the latter.
+      let frame = await waitFor(() => app.lastFrame(), 'Done (2 tool calls · 1s · ctrl+o to expand');
+      expect(frame).toContain('final answer');
       expect(frame).not.toContain('earlier message');
-      clickLine(app, 'final answer');
+      expect(frame).not.toContain('Run first');
+      // ctrl+o prints the whole transcript again with everything open — the
+      // rows already in the scrollback cannot be redrawn where they stand.
+      app.stdin.write('\x0f');
       frame = await waitFor(() => app.lastFrame(), 'earlier message');
       expect(frame).toContain('Run first');
-      expect(frame).toContain('Run second');
-      expect(frame).not.toContain('first output');
-      expect(frame).not.toContain('second output');
+      expect(frame).toContain('first output');
+      expect(frame).toContain('second output');
+      expect(frame).toContain('ctrl+o to collapse');
+      // And again, everything folded — and each row once, however many times
+      // the transcript has been printed.
+      app.stdin.write('\x0f');
+      frame = await waitFor(() => app.lastFrame(), 'ctrl+o to expand');
+      expect(frame).not.toContain('earlier message');
+      expect(frame.split('final answer')).toHaveLength(2);
+      expect(frame.split('handsfree v')).toHaveLength(2);
     } finally {
       app.unmount();
     }
   });
 
-  it('automatically folds completed tool output and lets a click reopen it', async () => {
+  it('folds a tool result once it completes, and ctrl+o opens it', async () => {
     const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
     open = h;
     appendTool(h, 'finish', 'streaming output');
@@ -117,7 +109,7 @@ describe('terminal UI', () => {
       const folded = await waitFor(() => app.lastFrame(), '… +2 lines');
       expect(folded).not.toContain('final output');
       expect(folded).not.toContain('streaming output');
-      clickLine(app, 'Run finish');
+      app.stdin.write('\x0f');
       const expanded = await waitFor(() => app.lastFrame(), 'final output');
       expect(expanded).toContain('last detail');
     } finally {
@@ -125,58 +117,25 @@ describe('terminal UI', () => {
     }
   });
 
-  it('clicks a short tool result independently and keeps it folded as new output arrives', async () => {
-    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
-    open = h;
-    h.runtime.transcript.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'inspect tools' });
-    appendTool(h, 'first', 'first output');
-    appendTool(h, 'second', 'second output');
-    const app = render(<App runtime={h.runtime} />);
-    try {
-      await waitFor(() => app.lastFrame(), 'second output');
-      clickLine(app, 'first output');
-      let frame = await waitFor(() => app.lastFrame(), '… +1 line');
-      expect(frame).not.toContain('first output');
-      expect(frame).toContain('second output');
-      expect(frame).toContain('  ↳ claude  Run first');
-      h.runtime.transcript.append({ type: 'session_update', agentId: 'claude', sessionId: 's', update: {
-        sessionUpdate: 'tool_call_update', toolCallId: 'first',
-        content: [{ type: 'content', content: { type: 'text', text: 'updated output\nnew detail' } }],
-      } });
-      frame = await waitFor(() => app.lastFrame(), '… +2 lines');
-      expect(frame).not.toContain('updated output');
-      clickLine(app, 'Run first');
-      frame = await waitFor(() => app.lastFrame(), 'updated output');
-      expect(frame).toContain('new detail');
-      expect(frame).toContain('second output');
-    } finally {
-      app.unmount();
-    }
-  });
-
-  it('expands a preview and then hides every result line on the next click', async () => {
+  it('caps a running result at its head, and ctrl+o gives the rest back', async () => {
     const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
     open = h;
     appendTool(h, 'long', Array.from({ length: 20 }, (_, n) => `output-${n + 1}`).join('\n'));
     const app = render(<App runtime={h.runtime} />);
     try {
       await waitFor(() => app.lastFrame(), '… +8 lines');
-      clickLine(app, '… +8 lines');
+      app.stdin.write('\x0f');
       await waitFor(() => app.lastFrame(), 'output-20');
-      clickLine(app, 'click to collapse');
+      app.stdin.write('\x0f');
       const frame = await waitFor(() => app.lastFrame(), '… +20 lines');
       expect(frame).not.toContain('output-');
       expect(frame).toContain('Run long');
-      app.stdin.write('\x0f');
-      await waitFor(() => app.lastFrame(), 'output-20');
-      app.stdin.write('\x0f');
-      await waitFor(() => app.lastFrame(), '… +20 lines');
     } finally {
       app.unmount();
     }
   });
 
-  it('expands and collapses every task, including tasks outside the viewport', async () => {
+  it('expands and collapses every task, the ones already in the scrollback included', async () => {
     const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
     open = h;
     for (let taskId = 1; taskId <= 12; taskId++) {
@@ -186,45 +145,18 @@ describe('terminal UI', () => {
     }
     const app = render(<App runtime={h.runtime} />);
     try {
-      await waitFor(() => app.lastFrame(), 'Done');
+      const folded = await waitFor(() => app.lastFrame(), 'Done');
+      expect(folded).not.toContain('brief-');
       app.stdin.write('\x0f');
-      await waitFor(() => app.lastFrame(), 'result-12');
-      for (let n = 0; n < 40; n++) app.stdin.write('\x1b[<64;3;10M');
-      await waitFor(() => app.lastFrame(), 'brief-1');
-      expect(app.lastFrame()).toContain('result-1');
+      const opened = await waitFor(() => app.lastFrame(), 'result-12');
+      expect(opened).toContain('brief-1');
+      expect(opened).toContain('result-1');
       app.stdin.write('\x0f');
-      await waitFor(() => app.lastFrame(), 'click or ctrl+o to expand');
-      expect(app.lastFrame()).not.toContain('result-');
-      for (let n = 0; n < 40; n++) app.stdin.write('\x1b[<65;3;10M');
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await waitFor(() => app.lastFrame(), 'ctrl+o to expand');
       expect(app.lastFrame()).not.toContain('result-');
       expect(app.lastFrame()).not.toContain('brief-');
     } finally {
       app.unmount();
-    }
-  });
-
-  it('copies a drag inside a tool result without collapsing it', async () => {
-    vi.mocked(copyToClipboard).mockClear();
-    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
-    open = h;
-    appendTool(h, 'copy', 'select this output');
-    const app = render(<App runtime={h.runtime} />);
-    try {
-      const frame = await waitFor(() => app.lastFrame(), 'select this output');
-      const lines = frame.split('\n');
-      const row = lines.findIndex((line) => line.includes('select this output')) + 1;
-      const column = lines[row - 1]!.indexOf('select this output') + 1;
-      app.stdin.write(`\x1b[<0;${column};${row}M`);
-      app.stdin.write(`\x1b[<32;${column + 17};${row}M`);
-      app.stdin.write(`\x1b[<0;${column + 17};${row}m`);
-      await waitFor(() => app.lastFrame(), 'copied');
-      expect(copyToClipboard).toHaveBeenCalledWith('select this output', expect.anything());
-      expect(app.lastFrame()).toContain('select this output');
-      expect(app.lastFrame()).not.toContain('… +1 line');
-    } finally {
-      app.unmount();
-      vi.mocked(copyToClipboard).mockClear();
     }
   });
 
@@ -369,11 +301,12 @@ describe('terminal UI', () => {
       expect(frame).toContain('@orchestrator');
       await waitFor(() => app.lastFrame(), '@claude:opus');
 
-      // It is the empty transcript standing in, and nothing more: the first
-      // line sent takes the pane back.
+      // The first line sent goes under it, and the greeting stays where it
+      // stood — printed with the header, the way a conversation opens.
       await h.runtime.conversation.send('hi');
       const after = await waitFor(() => app.lastFrame(), 'Hello there.');
-      expect(after).not.toContain('What are we working on today?');
+      expect(after.indexOf('What are we working on today?')).toBeGreaterThan(-1);
+      expect(after.indexOf('What are we working on today?')).toBeLessThan(after.indexOf('Hello there.'));
     } finally {
       app.unmount();
     }
@@ -394,7 +327,7 @@ describe('terminal UI', () => {
       // The user's line opens on a hollow dot rather than a `>`, so its text
       // starts in the column the reply's does.
       const lines = frame.split('\n');
-      const asked = lines.find((line) => line.includes('hi') && !line.includes('Hello'));
+      const asked = lines.find((line) => line.includes('○ hi'));
       const answered = lines.find((line) => line.includes('Hello there.'));
       expect(asked).toContain('○ hi');
       expect(asked?.indexOf('hi')).toBe(answered?.indexOf('Hello there.'));
@@ -483,122 +416,6 @@ describe('terminal UI', () => {
       expect(name).toBeGreaterThan(-1);
       // The block's lines share a column, the first no further right than the rest.
       expect(lines[name]?.indexOf('function')).toBe(lines[name + 2]?.indexOf('}'));
-    } finally {
-      app.unmount();
-    }
-  });
-
-  it('opens the task a click lands on, and leaves the prompt alone', async () => {
-    const h = harness({
-      agents: {
-        claude: fakeAgent({ script: () => [{ do: 'say', text: 'the long agent answer' }] }),
-      },
-      llm: scriptedModel([
-        JSON.stringify({ action: 'call', tool: 'agent', input: { agent: 'claude', kind: 'answer', prompt: '안녕?' } }),
-        JSON.stringify({ action: 'answer', message: 'claude answered.' }),
-      ]),
-    });
-    open = h;
-
-    const app = render(<App runtime={h.runtime} />);
-    try {
-      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
-      await h.runtime.conversation.send('who are you');
-      await waitFor(() => app.lastFrame(), 'claude answered.');
-      expect(app.lastFrame()).not.toContain('안녕?');
-
-      // Type first: a click must not disturb what is half-written.
-      app.stdin.write('half typed');
-      await waitFor(() => app.lastFrame(), 'half typed');
-
-      // Where the closing line actually landed, which is what the layout maths
-      // has to agree with for a click to be aimed at the right task.
-      const row = (app.lastFrame() ?? '').split('\n').findIndex((line) => line.includes('⎿'));
-      expect(row).toBeGreaterThan(0);
-
-      app.stdin.write(`\u001B[<0;3;${row + 1}M`); // press
-      app.stdin.write(`\u001B[<0;3;${row + 1}m`); // release
-      const frame = await waitFor(() => app.lastFrame(), '안녕?');
-      expect(frame).toContain('half typed');
-      expect(frame).not.toContain('[<0;3;');
-    } finally {
-      app.unmount();
-    }
-  });
-
-  it('copies what a drag crossed, and says so under the prompt', async () => {
-    const h = harness({
-      agents: { claude: fakeAgent({ script: () => [] }) },
-      llm: scriptedModel([JSON.stringify({ action: 'answer', message: 'Hello there.' })]),
-    });
-    open = h;
-
-    const app = render(<App runtime={h.runtime} />);
-    try {
-      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
-      await h.runtime.conversation.send('hi');
-      await waitFor(() => app.lastFrame(), 'Hello there.');
-
-      // The user's line sits one gutter in, like every other row.
-      const lines = (app.lastFrame() ?? '').split('\n');
-      const from = lines.findIndex((line) => line.includes('hi') && !line.includes('Hello'));
-      const to = lines.findIndex((line) => line.includes('Hello there.'));
-      expect(from).toBeGreaterThan(0);
-      expect(to).toBeGreaterThan(from);
-
-      // Down on the h of hi, across to past the end of the answer.
-      app.stdin.write(`\u001B[<0;3;${from + 1}M`); // press
-      app.stdin.write(`\u001B[<32;15;${to + 1}M`); // drag
-      // The crossed cells wear the selection wash while the button is down.
-      await waitFor(() => app.lastFrame(), '48;2;38;79;120');
-      app.stdin.write(`\u001B[<0;15;${to + 1}m`); // release
-      // The blank row between the two is on screen, so the copy keeps it.
-      const frame = await waitFor(() => app.lastFrame(), 'copied 3 lines to the clipboard');
-      expect(frame).not.toContain('48;2;38;79;120');
-
-      const copy = vi.mocked(copyToClipboard);
-      expect(copy).toHaveBeenCalledTimes(1);
-      expect(copy.mock.calls[0]?.[0]).toBe('hi\n\nHello there.');
-    } finally {
-      app.unmount();
-    }
-  });
-
-  it('keeps accepting prompt input after a hover report', async () => {
-    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
-    open = h;
-
-    const app = render(<App runtime={h.runtime} />);
-    try {
-      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
-      app.stdin.write('\u001B[<35;3;1M'); // all-motion, with no button held
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      app.stdin.write('still works');
-      await waitFor(() => app.lastFrame(), 'still works');
-    } finally {
-      app.unmount();
-    }
-  });
-
-  it('keeps characters in typing order after a hover report', async () => {
-    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
-    open = h;
-
-    const app = render(<App runtime={h.runtime} />);
-    try {
-      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
-      // A hover report is swallowed before it reaches the prompt, but it must
-      // also leave no trace in whatever cursor state the input keeps: typed
-      // one keypress at a time, "/exit" once came out as "exit/".
-      app.stdin.write('[<35;3;1M');
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      for (const char of '/exit') {
-        app.stdin.write(char);
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
-      const frame = await waitFor(() => app.lastFrame(), 'exit');
-      expect(frame).toContain('/exit');
-      expect(frame).not.toContain('exit/');
     } finally {
       app.unmount();
     }
@@ -864,15 +681,15 @@ describe('terminal UI', () => {
     const app = render(<App runtime={h.runtime} />);
     try {
       await waitFor(() => app.lastFrame(), PROMPT_CHAR);
-      const closed = (app.lastFrame() ?? '').split('\n').length;
 
       app.stdin.write('/');
       await waitFor(() => app.lastFrame(), '/clear');
       expect(app.lastFrame()).toContain('/help');
 
-      // The frame is a fixed height. A menu that grew it would scroll the
-      // whole UI, so the rows it takes have to come out of the transcript.
-      expect((app.lastFrame() ?? '').split('\n').length).toBe(closed);
+      // The live part of the screen has to fit the window — the test renderer
+      // has no rows, and the UI assumes thirty — so the rows the menu takes
+      // come out of the greeting above it, never out of the window.
+      expect((app.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(29);
     } finally {
       app.unmount();
     }
@@ -943,15 +760,14 @@ describe('terminal UI', () => {
     const app = render(<App runtime={h.runtime} />);
     try {
       await waitFor(() => app.lastFrame(), PROMPT_CHAR);
-      const closed = (app.lastFrame() ?? '').split('\n').length;
 
       app.stdin.write('@');
       const frame = await waitFor(() => app.lastFrame(), '@gemini');
       expect(frame).toContain('@claude');
 
-      // Same rule as the command menu: the rows come out of the transcript,
-      // never out of the frame's height.
-      expect((app.lastFrame() ?? '').split('\n').length).toBe(closed);
+      // Same rule as the command menu: the rows come out of what is above,
+      // never out of the window.
+      expect((app.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(29);
     } finally {
       app.unmount();
     }
@@ -1061,8 +877,8 @@ describe('terminal UI', () => {
       // The roll call stays names and dots: the model it shows is the one
       // claude is on now, which is not the one most of the spend went to.
       expect(frame).toContain(`${PLAN_IDLE} google/gemma-3-12b · ${DOT_IDLE} opus · ${DOT_IDLE} gemini`);
-      // And the header roster stays names only.
-      expect(frame).toContain('google/gemma-3-12b · claude, gemini\n');
+      // And the header roster stays names only, up to the box's edge.
+      expect(frame).toMatch(/google\/gemma-3-12b · claude, gemini\s*│/);
     } finally {
       app.unmount();
     }
@@ -1077,8 +893,15 @@ describe('terminal UI', () => {
       const frame = await waitFor(() => app.lastFrame(), `${DOT_IDLE} claude`);
       const lines = frame.split('\n');
       const roll = lines.findIndex((line) => line.includes(`${DOT_IDLE} claude`));
-      // The row above the roll call is the transcript's, and it is blank.
-      expect(lines[roll - 1]?.trim()).toBe('');
+      // The rows above the roll call carry nothing but the mark, at the right
+      // edge: no spend line yet, and nothing to the mark's left.
+      const beside = (line: string | undefined) => {
+        const at = line?.search(/[▐▝▗▘▛▜█]/) ?? -1;
+        expect(at).toBeGreaterThan(0);
+        return line?.slice(0, at).trim();
+      };
+      expect(beside(lines[roll - 1])).toBe('');
+      expect(beside(lines[roll - 2])).toBe('');
       // The roll call is the sixth row from the bottom: the two rules with the
       // input between them, the hints, and the permission mode under those.
       expect(lines.length - roll).toBe(6);
@@ -1121,13 +944,16 @@ describe('terminal UI', () => {
 
   it('spares a model roster the crowding limit the other menus keep to', () => {
     // A twenty-four row terminal — the short window that used to cut a
-    // six-model roster to five rows, losing the last one.
-    expect(menuFit('model', 24)).toBeGreaterThanOrEqual(6);
+    // six-model roster to five rows, losing the last one. With the header
+    // printed and gone, the roster has the room; while the header is still
+    // up it is the greeting under it that gives way, not the roster.
+    expect(menuFit('model', 24, 0)).toBeGreaterThanOrEqual(6);
+    expect(menuFit('model', 24, 6)).toBe(4);
     // A slash still yields to the transcript at the same height, because its
     // list narrows as the name is typed and a cut there loses nothing.
-    expect(menuFit('command', 24)).toBe(4);
+    expect(menuFit('command', 24, 0)).toBe(6);
     // Shorter still, and the menu goes rather than the frame overflowing.
-    expect(menuFit('model', 14)).toBe(0);
+    expect(menuFit('model', 14, 6)).toBe(0);
   });
 
   it('says why a colon has nothing to offer, rather than showing nothing', async () => {
@@ -1430,256 +1256,116 @@ describe('terminal UI', () => {
     }
   });
 
-  it('folds an open task from a click anywhere inside it', async () => {
-    const h = harness({
-      agents: {
-        claude: fakeAgent({ script: () => [{ do: 'say', text: 'the long agent answer' }] }),
-      },
-      llm: scriptedModel([
-        JSON.stringify({ action: 'call', tool: 'agent', input: { agent: 'claude', kind: 'answer', prompt: '안녕?' } }),
-        JSON.stringify({ action: 'answer', message: 'claude answered.' }),
-      ]),
-    });
-    open = h;
-
-    const app = render(<App runtime={h.runtime} />);
-    try {
-      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
-      await h.runtime.conversation.send('who are you');
-      await waitFor(() => app.lastFrame(), 'claude answered.');
-
-      app.stdin.write('\x0f'); // ctrl+o, so the block has inner rows
-      await waitFor(() => app.lastFrame(), '안녕?');
-
-      // The agent's answer is neither the opening row nor the closing one,
-      // but it belongs to the task, so a click on it folds the task back up.
-      const row = (app.lastFrame() ?? '')
-        .split('\n')
-        .findIndex((line) => line.includes('the long agent answer'));
-      expect(row).toBeGreaterThan(0);
-      app.stdin.write(`\u001B[<0;3;${row + 1}m`);
-      const deadline = Date.now() + 2_000;
-      while ((app.lastFrame() ?? '').includes('안녕?')) {
-        if (Date.now() > deadline) throw new Error('the click never folded the task');
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
-    } finally {
-      app.unmount();
-    }
-  });
-
-  it('scrolls the transcript with the wheel while the prompt stays put', async () => {
+  it('leaves scrolling to the terminal: finished rows are printed once, and the live rows fit the window', async () => {
     const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
     open = h;
     // Far more than one screen: each of these rows carries a blank line above
-    // it, so forty of them are eighty rows in a viewport nineteen tall.
+    // it, so forty of them are eighty rows in a window thirty tall.
     for (let n = 1; n <= 40; n++) {
-      h.runtime.transcript.append({ type: 'user', text: `line-${String(n).padStart(2, '0')}` });
+      h.runtime.transcript.append({ type: 'user', text: `line-${pad(n)}` });
     }
 
     const app = render(<App runtime={h.runtime} />);
     try {
-      const start = await waitFor(() => app.lastFrame(), 'line-40');
-      expect(start).not.toContain('line-01');
-      const height = start.split('\n').length;
+      // Every finished row goes out, however many there are: the terminal's
+      // scrollback is the transcript now, and nothing here windows it. The
+      // test renderer replays everything printed in front of each frame.
+      const printed = await waitFor(() => app.lastFrame(), 'line-01');
+      expect(printed).toContain('line-40');
+      expect(printed).toContain(PROMPT_CHAR);
+      // And nothing asks the terminal to report the mouse: its own selection
+      // and its own wheel have to keep working over what was printed.
+      expect(app.frames.join('')).not.toContain('[?1000h');
 
-      // Enough turns of the wheel to reach the top of the transcript.
-      for (let turn = 0; turn < 30; turn++) app.stdin.write('\u001B[<64;3;10M');
-      const top = await waitFor(() => app.lastFrame(), 'line-01');
-      expect(top).not.toContain('line-40');
-      // The prompt does not move, and neither does the mark above it — and the
-      // hint under it says the view has stopped following what arrives.
-      expect(top).toContain(PROMPT_CHAR);
-      expect(top).toContain('handsfree');
-      expect(top).toContain('scrolled up');
-      expect(top.split('\n')).toHaveLength(height);
+      // A task still running is live, and drawn above the prompt — pinned to
+      // its end and clipped at the top, so the frame never outgrows the window.
+      h.runtime.transcript.append({ type: 'delegation', taskId: 1, agentId: 'claude', sessionId: 's', task: 'say a lot' });
+      for (let n = 1; n <= 40; n++) {
+        h.runtime.transcript.append({ type: 'session_update', agentId: 'claude', sessionId: 's', update: {
+          sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `chunk-${pad(n)}\n` },
+        } });
+      }
+      const live = await waitFor(() => app.lastFrame(), 'chunk-40');
+      expect(live).not.toContain('chunk-01');
+      expect(live).toContain(PROMPT_CHAR);
+      expect(live).toContain('line-40');
 
-      // And back down to where it was.
-      for (let turn = 0; turn < 30; turn++) app.stdin.write('\u001B[<65;3;10M');
-      const end = await waitFor(() => app.lastFrame(), 'line-40');
-      expect(end).not.toContain('line-01');
-
-      // Once it is following the end again, whatever arrives next is on screen.
-      h.runtime.transcript.append({ type: 'user', text: 'line-41' });
-      await waitFor(() => app.lastFrame(), 'line-41');
+      // Once the task ends its rows are finished, and go out whole.
+      h.runtime.transcript.append({ type: 'stop', taskId: 1, agentId: 'claude', sessionId: 's', stopReason: 'end_turn' });
+      const settled = await waitFor(() => app.lastFrame(), 'chunk-01');
+      expect(settled).toContain('chunk-40');
     } finally {
       app.unmount();
     }
   });
 
-  it('pays a whole burst of wheel reports out, even fused into one chunk', async () => {
+  it('never lets the live part shrink on its own, so the prompt stays put', async () => {
     const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
     open = h;
-    for (let n = 1; n <= 40; n++) {
-      h.runtime.transcript.append({ type: 'user', text: `line-${String(n).padStart(2, '0')}` });
+    for (let n = 1; n <= 20; n++) {
+      h.runtime.transcript.append({ type: 'user', text: `line-${pad(n)}` });
     }
-
     const app = render(<App runtime={h.runtime} />);
     try {
-      await waitFor(() => app.lastFrame(), 'line-40');
+      await waitFor(() => app.lastFrame(), 'line-20');
+      const height = () => (app.lastFrame() ?? '').split('\n').length;
+      const settled = height();
 
-      // A fast flick: the terminal fuses the reports into one stdin chunk.
-      // The rows pool and drain over frames rather than landing in one
-      // render, but every one of them lands — the flick still reaches the
-      // top, not most of the way to it.
-      app.stdin.write('\u001B[<64;3;10M'.repeat(30));
-      const top = await waitFor(() => app.lastFrame(), 'line-01');
-      expect(top).not.toContain('line-40');
+      // A reply streams in, and the live part grows with it.
+      for (let n = 1; n <= 6; n++) {
+        h.runtime.transcript.append({ type: 'assistant_delta', stream: 1, text: `word-${n}\n` });
+      }
+      await waitFor(() => app.lastFrame(), 'word-6');
+      const grown = height();
+      expect(grown).toBeGreaterThan(settled);
 
-      // And a fused flick back down re-pins the view to the end.
-      app.stdin.write('\u001B[<65;3;10M'.repeat(30));
-      await waitFor(() => app.lastFrame(), 'line-40');
-      h.runtime.transcript.append({ type: 'user', text: 'line-41' });
-      await waitFor(() => app.lastFrame(), 'line-41');
+      // Retracted — what streamed was a tool call's preamble, not the answer.
+      // The rows it took stay in the frame as air rather than leaving the
+      // prompt to climb the screen.
+      h.runtime.transcript.append({ type: 'assistant', stream: 1, text: '' });
+      const deadline = Date.now() + 2_000;
+      while ((app.lastFrame() ?? '').includes('word-6')) {
+        if (Date.now() > deadline) throw new Error('the retraction never drew');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(height()).toBe(grown);
+
+      // The same when a menu closes: the rows it took stay.
+      app.stdin.write('/');
+      await waitFor(() => app.lastFrame(), '/clear');
+      const withMenu = height();
+      app.stdin.write('\u001B');
+      const gone = Date.now() + 2_000;
+      while ((app.lastFrame() ?? '').includes('/clear')) {
+        if (Date.now() > gone) throw new Error('the menu never closed');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(height()).toBe(withMenu);
     } finally {
       app.unmount();
     }
   });
 
-  it('scrolls a page at a time from the keyboard, and a row at a time with shift', async () => {
-    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
-    open = h;
-    for (let n = 1; n <= 40; n++) {
-      h.runtime.transcript.append({ type: 'user', text: `line-${String(n).padStart(2, '0')}` });
-    }
-
-    const app = render(<App runtime={h.runtime} />);
-    try {
-      await waitFor(() => app.lastFrame(), 'line-40');
-
-      // A page is the viewport less the row it keeps for the eye to land on:
-      // eight and a half of these two-row items.
-      app.stdin.write('\u001B[5~'); // page up
-      const paged = await waitFor(() => app.lastFrame(), 'line-23');
-      expect(paged).not.toContain('line-40');
-
-      // Shift and an arrow move a single row, which is half of one item: two
-      // of them bring the next one fully into view.
-      app.stdin.write('\u001B[1;2B'); // shift+down
-      app.stdin.write('\u001B[1;2B');
-      const nudged = await waitFor(() => app.lastFrame(), 'line-32');
-      expect(nudged).not.toContain('line-23');
-
-      app.stdin.write('\u001B[6~'); // page down, back to the end
-      const end = await waitFor(() => app.lastFrame(), 'line-40');
-      expect(end).not.toContain('line-24');
-    } finally {
-      app.unmount();
-    }
-  });
-
-  it('does not highlight unrelated rows before a task is hovered', async () => {
-    const h = harness({ agents: { claude: fakeAgent({ script: () => [] }) } });
-    open = h;
-
-    const app = render(<App runtime={h.runtime} />);
-    try {
-      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
-      // The test renderer exposes ANSI styling in its frame; no hover state
-      // must be inferred from two undefined task ids.
-      expect(app.lastFrame()).not.toContain('\u001B[100m');
-    } finally {
-      app.unmount();
-    }
-  });
-
-  it('still aims true when the rows above the target wrap', async () => {
-    // Korean is double-width and the answer is long enough to wrap several
-    // times: if the row maths counted characters the click would miss.
-    const answer = '워크스페이스 안에 파일을 만들고 그 안에 정확히 다음 문장을 적었습니다: '.repeat(3);
+  it('starts the screen over on /clear', async () => {
     const h = harness({
-      agents: {
-        claude: fakeAgent({ script: () => [{ do: 'say', text: answer }] }),
-      },
-      llm: scriptedModel([
-        JSON.stringify({ action: 'call', tool: 'agent', input: { agent: 'claude', kind: 'answer', prompt: '안녕?' } }),
-        JSON.stringify({ action: 'answer', message: 'claude answered.' }),
-      ]),
+      agents: { claude: fakeAgent({ script: () => [] }) },
+      llm: scriptedModel([JSON.stringify({ action: 'answer', message: 'Hello there.' })]),
     });
     open = h;
 
     const app = render(<App runtime={h.runtime} />);
     try {
       await waitFor(() => app.lastFrame(), PROMPT_CHAR);
-      await h.runtime.conversation.send('길게 물어봐');
-      await waitFor(() => app.lastFrame(), 'claude answered.');
+      await h.runtime.conversation.send('hi');
+      await waitFor(() => app.lastFrame(), 'Hello there.');
 
-      const row = (app.lastFrame() ?? '').split('\n').findIndex((line) => line.includes('⎿'));
-      expect(row).toBeGreaterThan(3); // the answer really did wrap
-
-      app.stdin.write(`[<0;3;${row + 1}m`);
-      await waitFor(() => app.lastFrame(), '안녕?');
-    } finally {
-      app.unmount();
-    }
-  });
-
-  it('re-anchors clicks where the terminal says the frame is', async () => {
-    const h = harness({
-      agents: {
-        claude: fakeAgent({ script: () => [{ do: 'say', text: 'the long agent answer' }] }),
-      },
-      llm: scriptedModel([
-        JSON.stringify({ action: 'call', tool: 'agent', input: { agent: 'claude', kind: 'answer', prompt: '안녕?' } }),
-        JSON.stringify({ action: 'answer', message: 'claude answered.' }),
-      ]),
-    });
-    open = h;
-
-    const app = render(<App runtime={h.runtime} />);
-    try {
-      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
-      await h.runtime.conversation.send('who are you');
-      await waitFor(() => app.lastFrame(), 'claude answered.');
-
-      const lines = (app.lastFrame() ?? '').replace(/\n$/, '').split('\n');
-      const row = lines.findIndex((line) => line.includes('⎿'));
-      expect(row).toBeGreaterThan(0);
-
-      // The terminal answers as if the frame began four rows down the screen:
-      // the cursor rests on the line under the frame, so its row is the frame
-      // top plus the frame's height. Four, so that a click aimed by the old
-      // anchor falls past the whole task — its name row, its gap — onto the
-      // person's own line.
-      app.stdin.write(`[${lines.length + 4 + 1};1R`);
-      await new Promise((resolve) => setTimeout(resolve, 0));
-
-      // A click aimed by the old anchor now lands on nothing.
-      app.stdin.write(`[<0;3;${row + 1}m`);
-      await new Promise((resolve) => setTimeout(resolve, 60));
-      expect(app.lastFrame()).not.toContain('안녕?');
-
-      // Aimed four rows lower, it opens the task again.
-      app.stdin.write(`[<0;3;${row + 4 + 1}m`);
-      const frame = await waitFor(() => app.lastFrame(), '안녕?');
-      expect(frame).not.toContain(';1R');
-    } finally {
-      app.unmount();
-    }
-  });
-
-  it('ignores a click that lands on nothing clickable', async () => {
-    const h = harness({
-      agents: {
-        claude: fakeAgent({ script: () => [{ do: 'say', text: 'the long agent answer' }] }),
-      },
-      llm: scriptedModel([
-        JSON.stringify({ action: 'call', tool: 'agent', input: { agent: 'claude', kind: 'answer', prompt: '안녕?' } }),
-        JSON.stringify({ action: 'answer', message: 'claude answered.' }),
-      ]),
-    });
-    open = h;
-
-    const app = render(<App runtime={h.runtime} />);
-    try {
-      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
-      await h.runtime.conversation.send('who are you');
-      await waitFor(() => app.lastFrame(), 'claude answered.');
-
-      app.stdin.write('\u001B[<0;3;1M');
-      app.stdin.write('\u001B[<0;3;1m'); // the header row
-      await new Promise((resolve) => setTimeout(resolve, 60));
-      expect(app.lastFrame()).not.toContain('안녕?');
+      app.stdin.write('/clear');
+      app.stdin.write('\r');
+      // What was printed is gone with the screen; the header comes back with
+      // the first row of the new printing.
+      const frame = await waitFor(() => app.lastFrame(), 'context cleared');
+      expect(frame).not.toContain('Hello there.');
+      expect(frame.split('handsfree v')).toHaveLength(2);
     } finally {
       app.unmount();
     }
@@ -1789,51 +1475,6 @@ describe('terminal UI', () => {
     }
   });
 
-  it('still aims a click true when a markdown answer sits above the target', async () => {
-    // The whole point of rendering markdown into the row's own text is that
-    // `heightOf` keeps measuring what is drawn. A block that measures short by
-    // even one row sends every click below it to the wrong task.
-    const h = harness({
-      agents: {
-        claude: fakeAgent({
-          script: () => [
-            { do: 'say', text: '## Plan\n\n- read the file\n- change one line\n\nthe agent answer' },
-          ],
-        }),
-      },
-      llm: scriptedModel([
-        JSON.stringify({ action: 'call', tool: 'agent', input: { agent: 'claude', kind: 'answer', prompt: 'read it and change one line' } }),
-        JSON.stringify({ action: 'answer', message: 'claude answered.' }),
-      ]),
-    });
-    open = h;
-
-    const app = render(<App runtime={h.runtime} />);
-    try {
-      await waitFor(() => app.lastFrame(), PROMPT_CHAR);
-      await h.runtime.conversation.send('who are you');
-      await waitFor(() => app.lastFrame(), 'claude answered.');
-
-      app.stdin.write('\x0f'); // ctrl+o, so the block has inner rows: the brief
-      await waitFor(() => app.lastFrame(), 'read it and change one line');
-
-      // The click lands on the last line of a block whose earlier lines are
-      // markdown — so it only folds if those lines were measured correctly.
-      const row = (app.lastFrame() ?? '')
-        .split('\n')
-        .findIndex((line) => line.includes('the agent answer'));
-      expect(row).toBeGreaterThan(0);
-      app.stdin.write(`\u001B[<0;3;${row + 1}m`);
-
-      const deadline = Date.now() + 2_000;
-      while ((app.lastFrame() ?? '').includes('read it and change one line')) {
-        if (Date.now() > deadline) throw new Error('the click never folded the task');
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
-    } finally {
-      app.unmount();
-    }
-  });
   it('puts a permission question on screen and sends the answer back', async () => {
     const answers: string[] = [];
     const h = harness({

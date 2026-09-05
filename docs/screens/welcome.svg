@@ -1,50 +1,58 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="842" height="495" viewBox="0 0 842 495" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="14">
-<rect width="842" height="495" rx="10" fill="#1c1e22" stroke="#2c2f36"/>
-<rect x="1" y="30" width="840" height="464" fill="#141619"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="842" height="590" viewBox="0 0 842 590" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="14">
+<rect width="842" height="590" rx="10" fill="#1c1e22" stroke="#2c2f36"/>
+<rect x="1" y="30" width="840" height="559" fill="#141619"/>
 <circle cx="20" cy="15" r="5.5" fill="#ff5f57"/><circle cx="37" cy="15" r="5.5" fill="#febc2e"/><circle cx="54" cy="15" r="5.5" fill="#28c840"/>
 <text x="421" y="19" fill="#8b8f98" font-size="12" text-anchor="middle">handsfree — before a word is typed</text>
-<rect x="34.8" y="405.0" width="8.4" height="19" fill="#e4e6ea"/>
-<text x="18.0" y="77.0" fill="#e4e6ea" textLength="252.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">           ▐▛███▜▌            </text>
-<text x="270.0" y="77.0" fill="#e4e6ea" font-weight="600" textLength="75.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">handsfree</text>
-<text x="345.6" y="77.0" fill="rgb(155,155,155)" textLength="58.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> v0.2.0</text>
-<text x="18.0" y="96.0" fill="#e4e6ea" textLength="252.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">          ▝▜█████▛▘           </text>
-<text x="270.0" y="96.0" fill="rgb(155,155,155)" textLength="176.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">google/gemma-3-12b · </text>
-<text x="446.4" y="96.0" fill="rgb(217,119,87)" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">claude</text>
-<text x="496.8" y="96.0" fill="rgb(155,155,155)" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">, </text>
-<text x="513.6" y="96.0" fill="rgb(111,194,168)" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">codex</text>
-<text x="555.6" y="96.0" fill="rgb(155,155,155)" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">, </text>
-<text x="572.4" y="96.0" fill="rgb(138,180,248)" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">gemini</text>
-<text x="18.0" y="115.0" fill="#e4e6ea" textLength="252.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">            ▘▘ ▝▝             </text>
-<text x="270.0" y="115.0" fill="rgb(155,155,155)" textLength="361.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">~/.handsfree/runs/2026-08-28T09-12-10-12658</text>
-<text x="18.0" y="153.0" fill="#e4e6ea" textLength="67.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  Hello.</text>
-<text x="18.0" y="172.0" fill="#e4e6ea" textLength="260.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  What are we working on today?</text>
-<text x="18.0" y="210.0" fill="#e4e6ea" textLength="260.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  Try a line like one of these.</text>
-<text x="34.8" y="248.0" fill="rgb(217,217,217)" textLength="193.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">"fix the failing tests"</text>
-<text x="228.0" y="248.0" fill="rgb(155,155,155)" textLength="411.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">                // the planner picks who takes it</text>
-<text x="34.8" y="267.0" fill="rgb(217,217,217)" textLength="243.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">"@orchestrator plan this out"</text>
-<text x="278.4" y="267.0" fill="rgb(155,155,155)" textLength="319.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">          // call the planner yourself</text>
-<text x="34.8" y="286.0" fill="rgb(217,217,217)" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">"</text>
-<text x="43.2" y="286.0" fill="rgb(217,119,87)" textLength="58.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">@claude</text>
-<text x="102.0" y="286.0" fill="rgb(217,217,217)" textLength="176.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> summarise this file"</text>
-<text x="278.4" y="286.0" fill="rgb(155,155,155)" textLength="277.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">          // straight to an agent</text>
-<text x="34.8" y="305.0" fill="rgb(217,217,217)" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">"</text>
-<text x="43.2" y="305.0" fill="rgb(111,194,168)" textLength="117.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">@codex:gpt-5.6</text>
-<text x="160.8" y="305.0" fill="rgb(217,217,217)" textLength="168.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> write a test first"</text>
-<text x="328.8" y="305.0" fill="rgb(155,155,155)" textLength="294.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">    // name a model after the colon</text>
-<text x="34.8" y="324.0" fill="rgb(217,217,217)" textLength="75.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">"/agents"</text>
-<text x="110.4" y="324.0" fill="rgb(155,155,155)" textLength="512.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">                              // a command · who you can call</text>
-<text x="295.2" y="381.0" fill="rgb(217,217,217)" opacity="0.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">◇</text>
-<text x="303.6" y="381.0" fill="rgb(122,122,122)" textLength="184.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> google/gemma-3-12b · </text>
-<text x="488.4" y="381.0" fill="rgb(217,119,87)" opacity="0.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">○</text>
-<text x="496.8" y="381.0" fill="rgb(122,122,122)" textLength="100.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> opus[1m] · </text>
-<text x="597.6" y="381.0" fill="rgb(111,194,168)" opacity="0.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">○</text>
-<text x="606.0" y="381.0" fill="rgb(122,122,122)" textLength="92.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> gpt-5.6 · </text>
-<text x="698.4" y="381.0" fill="rgb(138,180,248)" opacity="0.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">○</text>
-<text x="706.8" y="381.0" fill="rgb(122,122,122)" textLength="109.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> gemini-3-pro</text>
-<text x="18.0" y="400.0" fill="rgb(106,106,106)" textLength="806.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">────────────────────────────────────────────────────────────────────────────────────────────────</text>
-<text x="18.0" y="419.0" fill="rgb(155,155,155)" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">❯ </text>
-<text x="18.0" y="438.0" fill="rgb(106,106,106)" textLength="806.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">────────────────────────────────────────────────────────────────────────────────────────────────</text>
-<text x="34.8" y="457.0" fill="rgb(155,155,155)" textLength="504.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">/ for commands · @ for agents · ctrl+o to expand all · /exit</text>
-<text x="555.6" y="457.0" fill="rgb(155,155,155)" textLength="260.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">…08-28T09-12-10-12658/workspace</text>
-<text x="34.8" y="476.0" fill="#98c379" textLength="319.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">⏵⏵ ask every time · shift+tab to cycle</text>
+<rect x="34.8" y="500.0" width="8.4" height="19" fill="#e4e6ea"/>
+<text x="18.0" y="77.0" fill="rgb(106,106,106)" textLength="806.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">╭──────────────────────────────────────────────────────────────────────────────────────────────╮</text>
+<text x="18.0" y="96.0" fill="rgb(106,106,106)" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="34.8" y="96.0" fill="#e4e6ea" font-weight="600" textLength="75.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">handsfree</text>
+<text x="110.4" y="96.0" fill="rgb(155,155,155)" textLength="58.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> v0.2.0</text>
+<text x="816.0" y="96.0" fill="rgb(106,106,106)" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="18.0" y="115.0" fill="rgb(106,106,106)" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="34.8" y="115.0" fill="rgb(155,155,155)" textLength="176.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">google/gemma-3-12b · </text>
+<text x="211.2" y="115.0" fill="rgb(217,119,87)" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">claude</text>
+<text x="261.6" y="115.0" fill="rgb(155,155,155)" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">, </text>
+<text x="278.4" y="115.0" fill="rgb(111,194,168)" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">codex</text>
+<text x="320.4" y="115.0" fill="rgb(155,155,155)" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">, </text>
+<text x="337.2" y="115.0" fill="rgb(138,180,248)" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">gemini</text>
+<text x="816.0" y="115.0" fill="rgb(106,106,106)" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="18.0" y="134.0" fill="rgb(106,106,106)" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="34.8" y="134.0" fill="rgb(155,155,155)" textLength="361.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">~/.handsfree/runs/2026-08-28T09-12-10-12658</text>
+<text x="816.0" y="134.0" fill="rgb(106,106,106)" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">│</text>
+<text x="18.0" y="153.0" fill="rgb(106,106,106)" textLength="806.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">╰──────────────────────────────────────────────────────────────────────────────────────────────╯</text>
+<text x="18.0" y="191.0" fill="#e4e6ea" textLength="67.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  Hello.</text>
+<text x="18.0" y="210.0" fill="#e4e6ea" textLength="260.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  What are we working on today?</text>
+<text x="18.0" y="248.0" fill="#e4e6ea" textLength="260.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  Try a line like one of these.</text>
+<text x="34.8" y="286.0" fill="rgb(217,217,217)" textLength="193.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">"fix the failing tests"</text>
+<text x="228.0" y="286.0" fill="rgb(155,155,155)" textLength="411.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">                // the planner picks who takes it</text>
+<text x="34.8" y="305.0" fill="rgb(217,217,217)" textLength="243.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">"@orchestrator plan this out"</text>
+<text x="278.4" y="305.0" fill="rgb(155,155,155)" textLength="319.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">          // call the planner yourself</text>
+<text x="34.8" y="324.0" fill="rgb(217,217,217)" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">"</text>
+<text x="43.2" y="324.0" fill="rgb(217,119,87)" textLength="58.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">@claude</text>
+<text x="102.0" y="324.0" fill="rgb(217,217,217)" textLength="176.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> summarise this file"</text>
+<text x="278.4" y="324.0" fill="rgb(155,155,155)" textLength="277.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">          // straight to an agent</text>
+<text x="34.8" y="343.0" fill="rgb(217,217,217)" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">"</text>
+<text x="43.2" y="343.0" fill="rgb(111,194,168)" textLength="117.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">@codex:gpt-5.6</text>
+<text x="160.8" y="343.0" fill="rgb(217,217,217)" textLength="168.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> write a test first"</text>
+<text x="328.8" y="343.0" fill="rgb(155,155,155)" textLength="294.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">    // name a model after the colon</text>
+<text x="34.8" y="362.0" fill="rgb(217,217,217)" textLength="75.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">"/agents"</text>
+<text x="110.4" y="362.0" fill="rgb(155,155,155)" textLength="512.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">                              // a command · who you can call</text>
+<text x="18.0" y="419.0" fill="#e4e6ea" textLength="714.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">                                                                              ▐▛███▜▌</text>
+<text x="18.0" y="438.0" fill="#e4e6ea" textLength="722.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">                                                                             ▝▜█████▛▘</text>
+<text x="18.0" y="457.0" fill="#e4e6ea" textLength="705.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">                                                                               ▘▘ ▝▝</text>
+<text x="295.2" y="476.0" fill="rgb(217,217,217)" opacity="0.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">◇</text>
+<text x="303.6" y="476.0" fill="rgb(122,122,122)" textLength="184.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> google/gemma-3-12b · </text>
+<text x="488.4" y="476.0" fill="rgb(217,119,87)" opacity="0.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">○</text>
+<text x="496.8" y="476.0" fill="rgb(122,122,122)" textLength="100.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> opus[1m] · </text>
+<text x="597.6" y="476.0" fill="rgb(111,194,168)" opacity="0.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">○</text>
+<text x="606.0" y="476.0" fill="rgb(122,122,122)" textLength="92.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> gpt-5.6 · </text>
+<text x="698.4" y="476.0" fill="rgb(138,180,248)" opacity="0.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">○</text>
+<text x="706.8" y="476.0" fill="rgb(122,122,122)" textLength="109.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> gemini-3-pro</text>
+<text x="18.0" y="495.0" fill="rgb(106,106,106)" textLength="806.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">────────────────────────────────────────────────────────────────────────────────────────────────</text>
+<text x="18.0" y="514.0" fill="rgb(155,155,155)" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">❯ </text>
+<text x="18.0" y="533.0" fill="rgb(106,106,106)" textLength="806.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">────────────────────────────────────────────────────────────────────────────────────────────────</text>
+<text x="34.8" y="552.0" fill="rgb(155,155,155)" textLength="504.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">/ for commands · @ for agents · ctrl+o to expand all · /exit</text>
+<text x="555.6" y="552.0" fill="rgb(155,155,155)" textLength="260.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">…08-28T09-12-10-12658/workspace</text>
+<text x="34.8" y="571.0" fill="#98c379" textLength="319.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">⏵⏵ ask every time · shift+tab to cycle</text>
 </svg>

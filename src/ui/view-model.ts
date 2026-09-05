@@ -54,11 +54,19 @@ export interface ViewItem {
   prose?: boolean;
   /**
    * The delegated task this row belongs to, opening and closing rows included.
-   * Kept separately from the click target: a tool result folds independently.
+   * Kept separately from the fold: a tool result folds independently.
    */
   taskId?: number;
-  /** The block a click toggles, and whether all its content is visible. */
+  /** The block ctrl+o toggles, and whether all its content is visible. */
   fold?: { id: string; expanded: boolean };
+  /**
+   * Whether the row can still change: it belongs to a task that has not
+   * stopped, its text is still streaming in, or its tool call is still
+   * running. A row that is not live is finished — what it says now is what
+   * it will say for the rest of the run — so a renderer that prints finished
+   * rows once and moves on can trust it.
+   */
+  live?: true;
 }
 
 /** Maximum length of a compact plan headline. */
@@ -404,9 +412,9 @@ export function buildView(
             false,
           ),
         );
-        // A task with nothing to fold has nothing for a click to do, so its
-        // rows are nobody's to hover or open: the hover would only promise a
-        // click that changes nothing.
+        // A task with nothing to fold has nothing for ctrl+o to do, so its
+        // rows carry no fold: a fold would only promise a toggle that changes
+        // nothing.
         if (foldable === 0) {
           for (const item of items.slice(taskStart)) item.taskId = undefined;
         } else {
@@ -570,8 +578,8 @@ export function buildView(
     }
   }
 
-  // Decide folding after streaming has settled. Tool results own their click
-  // target, including short results and results outside a delegation. The
+  // Decide folding after streaming has settled. Tool results own their fold,
+  // including short results and results outside a delegation. The
   // latest answer stays whole; older prose still follows its task's cap.
   for (const item of items) {
     if (item.role === 'agent' && item.prose === true) item.text = stripReport(item.text);
@@ -603,6 +611,19 @@ export function buildView(
       if (!expanded) capText(item, options.expandHint);
       else if (options.collapseHint) item.lines.push({ text: options.collapseHint, tone: 'muted' });
     }
+  }
+  // What can still change, for a renderer that prints finished rows once:
+  // every row of the task still open, the blocks still streaming in, and the
+  // tool calls still running.
+  if (currentTask !== undefined && taskStart >= 0) {
+    for (const item of items.slice(taskStart)) item.live = true;
+  }
+  for (const open of [openText, openThought, openAssistant?.item, openTool?.item]) {
+    if (open) open.live = true;
+  }
+  for (const item of items) {
+    const status = tools.get(item.key)?.status;
+    if (status !== undefined && status !== 'completed' && status !== 'failed') item.live = true;
   }
   // A block that was nothing but its REPORT has nothing left to draw.
   return items.filter((item) => !(item.role === 'agent' && item.prose === true && item.text === ''));
